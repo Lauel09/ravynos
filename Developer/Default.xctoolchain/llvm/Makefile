@@ -15,7 +15,7 @@ ${TOOLS}/clang ${TOOLS}/clang++: ${TOOLCHAIN}/usr/libexec/migcom ${.CURDIR}/Make
 	-C${.CURDIR}/clang/cmake/caches/Apple-stage1.cmake \
 	-DCMAKE_C_COMPILER=${HOST_CC} \
 	-DCMAKE_CXX_COMPILER=${HOST_CXX} \
-	-DCMAKE_C_FLAGS=${CFLAGS} \
+	"-DCMAKE_C_FLAGS=${CFLAGS}" \
 	"-DCMAKE_CXX_FLAGS=${CXXFLAGS}" \
 	-DCMAKE_CXX_STANDARD=17 \
 	-DCMAKE_CXX_STANDARD_REQUIRED=ON \
