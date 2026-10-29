@@ -1,6 +1,14 @@
 CC := ${HOST_CC}
 CXX := ${HOST_CXX}
 
+# LLVM is the long pole; build it with every available core instead of
+# serially.  .MAKE.JOBS carries an explicit -j from the top-level build.
+.if defined(.MAKE.JOBS) && !empty(.MAKE.JOBS)
+LLVM_BUILD_JOBS = ${.MAKE.JOBS}
+.else
+LLVM_BUILD_JOBS != (sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+.endif
+
 all: ${TOOLS}/clang
 
 .if "${.MAKE.OS}" != "Darwin"
@@ -47,7 +55,8 @@ ${TOOLS}/clang ${TOOLS}/clang++: ${TOOLCHAIN}/usr/libexec/migcom ${.CURDIR}/Make
 	-DCLANG_ENABLE_FORMAT=OFF \
 	-DCLANG_INCLUDE_TESTS=OFF \
 	-DTAPI_INCLUDE_TESTS=OFF
-	CC=${HOST_CC} CXX=${HOST_CXX} ${MAKE} -C${.OBJDIR}/../llvm_host all \
+	CC=${HOST_CC} CXX=${HOST_CXX} ${GMAKE} -j${LLVM_BUILD_JOBS} \
+	   -C${.OBJDIR}/../llvm_host all \
 	   llvm-ar llvm-nm llvm-ranlib llvm-strip dsymutil llvm-lipo \
 	   llvm-libtool-darwin llvm-objdump llvm-otool
 	cp -Rf ${.OBJDIR}/../llvm_host/bin ${TOOLCHAIN}/usr/
