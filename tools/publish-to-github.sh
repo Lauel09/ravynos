@@ -36,7 +36,9 @@ git push fork "$BASELINE_TAG" 2>/dev/null || true
 # Make the fork's presentation match its intent.
 gh repo edit "$FORK" \
     --description "macOS-first fork of ravynsoft/ravynos: builds on Apple Silicon, ships a portable root-free source->ISO->boot-verdict pipeline, and improves OS fidelity with need-driven reverse engineering." \
-    --homepage "https://github.com/${FORK}" 2>/dev/null || true
+    --homepage "https://github.com/${FORK}" \
+    --add-topic ravynos --add-topic macos --add-topic xnu \
+    --add-topic osdev --add-topic qemu 2>/dev/null || true
 
 echo "publish: done -> https://github.com/${FORK}/tree/${BRANCH}"
 echo "publish: open a PR or set the default branch in the GitHub UI if desired."
