@@ -16,11 +16,12 @@ BRANCH=fork/darwin-dev
 BASELINE_TAG=baseline-60aa4ff4b
 
 # Create the fork if it does not exist yet (idempotent).
-if ! gh repo view --json nameWithOwner >/dev/null 2>&1; then
+OWNER=$(gh api user -q .login)
+FORK="${OWNER}/ravynos"
+if ! gh repo view "$FORK" >/dev/null 2>&1; then
     gh repo fork ravynsoft/ravynos --clone=false
 fi
 
-FORK=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 echo "publish: fork is $FORK"
 
 # Point 'fork' at it.
