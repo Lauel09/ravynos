@@ -30,10 +30,11 @@ CFLAGS += -I/usr/include/libxml2
 .if "${.MAKE.OS}" == "Darwin"
 # The macOS SDK no longer ships OpenSSL headers; use Homebrew's keg-only copy
 OPENSSL_PREFIX != brew --prefix openssl@3 2>/dev/null || true
-.if !empty(OPENSSL_PREFIX)
+.if empty(OPENSSL_PREFIX)
+.error xar requires OpenSSL headers on Darwin: brew install openssl@3
+.endif
 CFLAGS += -I${OPENSSL_PREFIX}/include
 LDFLAGS += -L${OPENSSL_PREFIX}/lib
-.endif
 .endif
 
 XAR_SRCS = src/xar.c
