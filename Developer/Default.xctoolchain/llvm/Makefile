@@ -3,8 +3,8 @@ CXX := ${HOST_CXX}
 
 # The toolchain shim headers must not shadow the macOS SDK while building
 # LLVM, even though they stay on the global path for cctools.
-CFLAGS := ${CFLAGS:S,-I${.CURDIR}/../include,,g}
-CXXFLAGS := ${CXXFLAGS:S,-I${.CURDIR}/../include,,g}
+CFLAGS := ${CFLAGS:N-I*Default.xctoolchain/include}
+CXXFLAGS := ${CXXFLAGS:N-I*Default.xctoolchain/include}
 
 # LLVM is the long pole; build it with every available core instead of
 # serially.  .MAKE.JOBS carries an explicit -j from the top-level build.
