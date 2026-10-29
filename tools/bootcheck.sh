@@ -22,27 +22,40 @@ done
 
 OUTDIR=$(mktemp -d "${TMPDIR:-/tmp}/ravynos-bootcheck.XXXXXX")
 LOG="$OUTDIR/serial.log"
+QEMU_LOG="$OUTDIR/qemu.log"
 
 QPID=
 cleanup() {
-    [ -n "$QPID" ] && kill "$QPID" 2>/dev/null
+    if [ -n "$QPID" ]; then
+        kill "$QPID" 2>/dev/null
+        wait "$QPID" 2>/dev/null
+    fi
     return 0
 }
 trap cleanup EXIT INT TERM
 
 # Headless: no display, serial to file, monitor off. SeaBIOS prints nothing
 # on serial by default — any serial output comes from the image itself.
+# QEMU diagnostics go to their own file so the verdict stays one line.
 qemu-system-x86_64 -m 512 -cdrom "$ISO" \
     -display none -monitor none \
-    -serial "file:$LOG" -no-reboot &
+    -serial "file:$LOG" -no-reboot 2>"$QEMU_LOG" &
 QPID=$!
 
 elapsed=0
 while [ "$elapsed" -lt "$TIMEOUT" ]; do
-    if grep -q "$MILESTONE" "$LOG" 2>/dev/null; then
+    if grep -Fq -- "$MILESTONE" "$LOG" 2>/dev/null; then
         echo "BOOTCHECK PASS: '$MILESTONE' seen after ${elapsed}s"
         echo "serial log: $LOG"
         exit 0
+    fi
+    if ! kill -0 "$QPID" 2>/dev/null; then
+        echo "BOOTCHECK FAIL: QEMU exited before '$MILESTONE' appeared"
+        echo "serial log: $LOG"
+        echo "qemu log: $QEMU_LOG"
+        [ -s "$LOG" ] && { echo "---- serial tail ----"; tail -20 "$LOG"; }
+        [ -s "$QEMU_LOG" ] && { echo "---- qemu tail ----"; tail -20 "$QEMU_LOG"; }
+        exit 1
     fi
     elapsed=$((elapsed + 1))
     sleep 1
