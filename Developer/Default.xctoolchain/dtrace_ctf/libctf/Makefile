@@ -13,8 +13,15 @@ SRCS =	ctf_create.c \
 	ctf_subr.c \
 	ctf_types.c \
 	ctf_util.c \
-	fls.c \
-	qsort.c
+	fls.c
+
+# The bundled qsort_r() uses FreeBSD's comparator-last signature and clashes
+# with the system qsort_r() on Darwin. array.c already calls Darwin's
+# comparator-last-thunk variant correctly, so only build the fallback where
+# libc does not provide one (Linux).
+.if "${.MAKE.OS}" != "Darwin"
+SRCS += qsort.c
+.endif
 OBJS = ${SRCS:%.c=%.o}
 
 all: ${TOOLCHAIN}/usr/lib/libctf.a
