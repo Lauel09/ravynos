@@ -6,11 +6,10 @@ GNU_CONFIGURE_ARGS = --prefix=/usr --sysconfdir=/etc --bindir=/bin \
 		--sbindir=/sbin --localstatedir=/var
 
 # The shim headers under include/ stand in for missing Darwin headers on
-# Linux. On a Darwin host they shadow the real SDK (e.g. incomplete Mach
-# exception-port prototypes break LLVM), so only use them elsewhere.
-.if "${.MAKE.OS}" != "Darwin"
+# Linux. They must stay on the global include path for cctools and other
+# toolchain components; LLVM filters this directory out of its own flags
+# below so the shims cannot shadow the real SDK.
 CFLAGS += -I${.CURDIR}/include
-.endif
 .export CFLAGS
 
 all: ${TOOLCHAIN} ${.OBJDIR}/tapi/Version.inc
