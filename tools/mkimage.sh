@@ -6,7 +6,10 @@
 #   --stub   minimal El Torito image carrying the boot smoke-test stub
 #            (proves the xorriso -> QEMU -> serial-verdict loop; no OS content)
 #
-# Usage: mkimage.sh [--stub] -o out.iso
+# Usage: mkimage.sh [--stub] [-o out.iso]
+#
+# Without -o the name is derived from the tree (version + git short SHA), so
+# repeated builds are deterministic and easy to tell apart.
 #
 # Later modes will stage the real kernel/loader/ramdisk from the world build.
 
@@ -20,11 +23,20 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --stub) MODE=stub ;;
         -o) OUT=$2; shift ;;
-        *) echo "usage: mkimage.sh [--stub] -o out.iso" >&2; exit 2 ;;
+        *) echo "usage: mkimage.sh [--stub] [-o out.iso]" >&2; exit 2 ;;
     esac
     shift
 done
-[ -n "$OUT" ] || { echo "mkimage: -o out.iso required" >&2; exit 2; }
+
+if [ -z "$OUT" ]; then
+    ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+    VERSION=$(sed -n 's/^PROD_VERSION[[:space:]]*=[[:space:]]*//p' "$ROOT/Makefile" | head -1)
+    SHA=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    case $MODE in
+        stub) OUT="ravynos-stub-${SHA}.iso" ;;
+        *) OUT="ravynos-${VERSION:-unknown}-${SHA}.iso" ;;
+    esac
+fi
 
 case $MODE in
     stub)
