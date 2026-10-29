@@ -27,6 +27,14 @@ CFLAGS += -I${.CURDIR}/include -w -D__APPLE_CPP__ \
 .if "${.MAKE.OS}" == "Linux"
 CFLAGS += -I/usr/include/libxml2
 .endif
+.if "${.MAKE.OS}" == "Darwin"
+# The macOS SDK no longer ships OpenSSL headers; use Homebrew's keg-only copy
+OPENSSL_PREFIX != brew --prefix openssl@3 2>/dev/null || true
+.if !empty(OPENSSL_PREFIX)
+CFLAGS += -I${OPENSSL_PREFIX}/include
+LDFLAGS += -L${OPENSSL_PREFIX}/lib
+.endif
+.endif
 
 XAR_SRCS = src/xar.c
 XAR_OBJS = ${XAR_SRCS:%.c=%.o}
