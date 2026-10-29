@@ -1,4 +1,5 @@
 CC := ${HOST_CC}
+BUILD_UID != id -u
 SRCS =	error.c \
 	global.c \
 	header.c \
@@ -31,10 +32,11 @@ BINGRP = 0
 
 ${TOOLS}/mig: ${.CURDIR}/mig.sh
 	cp -f ${.ALLSRC} ${.TARGET}
-.if !NO_ROOT
+# chown to root:wheel requires root; user builds keep their own ownership
+.if "${BUILD_UID}" == "0" && !defined(NO_ROOT)
 	chown ${BINOWN}:${BINGRP} ${.TARGET}
-	chmod ${BINMODE} ${.TARGET}
 .endif
+	chmod ${BINMODE} ${.TARGET}
 
 ${.OBJDIR}/y.tab.c ${.OBJDIR}/y.tab.h: ${.CURDIR}/parser.y
 	${YACC} -d -b "${.OBJDIR}/y" ${.ALLSRC}
