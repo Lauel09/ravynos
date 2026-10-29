@@ -116,7 +116,7 @@ No investigation currently open; the first gets nominated by the first real gap 
 
 ## 6. Current blocker / work list (ordered)
 
-1. **[user action]** `gh auth login`, then `gh repo fork ravynsoft/ravynos --clone=false && git remote add fork <url>` — everything else in Phase 0 is done.
+1. **[user action]** `gh auth login`, then run `tools/publish-to-github.sh` (or the two manual commands) to create and push the fork; the branch and baseline tag are ready locally.
 2. **[Phase 1, active]** Let attempt 10 (clean x86_64 toolchain) run; fix failures in order. Commit the three validated macbuild fixes (libctf `qsort_r`, quoted LLVM C flags, Darwin shim-header scope) plus the `TARGET_ARCH` Makefile change once attempt 10 passes their stage.
 3. **[Phase 1, next]** Expect work in LLVM → cctools/xcbuild → SDK → kernel → userland. Keep every patch `uname`/`.MAKE.OS`-guarded and log failure→fix pairs here.
 4. **[Phase 2, next]** Stub loop is done; add real staging mode to `mkimage.sh` when kernel/loader artifacts exist. Keep `tools/pipeline-selftest.sh` green as a cheap regression test.
@@ -126,6 +126,7 @@ No investigation currently open; the first gets nominated by the first real gap 
 
 ## Changelog
 
+- **2026-10-30 (rev 5) — publish prep:** all work committed; local bundle `ravynos-fork-darwin-dev.bundle` created as a backup; `tools/publish-to-github.sh` added to create/push the fork once `gh auth login` is done. README/ROADMAP/PROGRESS added at repo root.
 - **2026-10-30 (rev 4) — Phase 1 build loop + Phase 2 stub proven:** ten `bmake world` attempts; fixed non-root chowns, yacc/lex shims, arm64 `TargetConditionals`, xar OpenSSL/libxml2, libctf `qsort_r`, quoted LLVM CMake flags, and shim-header shadowing. Target arch made explicit (`TARGET_ARCH=x86_64` default, arm64 opt-in). Portable pipeline scaffolded and its stub loop self-tested end to end (PASS). `Docs/BUILDING.md` corrected. Attempt 10 (clean x86_64 toolchain) running at time of writing.
 - **2026-10-30 (rev 3) — Phase 0 executed:** all Homebrew prerequisites installed (note: formula is `make`, not `gmake`, on macOS); clone unshallowed to full 745-commit history; `fork/darwin-dev` branch + `baseline-60aa4ff4b` tag created; rea wired to Ghidra 12.1.4 via `GHIDRA_INSTALL_DIR` in `~/.zshrc` (doctor green); redundant Ghidra zip deleted. `bmake -n version` parses; `bmake -n world` dry-run surfaced first two Phase 1 findings (xar libxml2 include path; xar↔libstuff ordering). Pending: `gh auth login` + fork creation (user action).
 - **2026-10-30 (rev 2):** Books RE pilot retired and deleted; RE doctrine rewritten (smallest-subject-first). Portable macOS+Linux image pipeline promoted to primary work item. `work/README.md` added.
