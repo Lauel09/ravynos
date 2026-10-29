@@ -19,6 +19,7 @@ ROOT_SOURCE_DIR = ${.CURDIR}
     CpuArch = aarch64
 .endif
 MACHINE_CPUARCH = ${CpuArch}
+
 MK_UNIFIED_OBJDIR = no
 MK_AUTO_OBJ = yes
 
@@ -53,6 +54,17 @@ CFLAGS = -Wno-incompatible-sysroot
 HOST_CC = ${CC}
 HOST_CXX = ${CXX}
 HOST_AR = ${AR}
+# Command Line Tools' yacc/lex are Xcode shims that refuse to run without a
+# full Xcode selected; fall back to bison/flex in yacc/lex mode when present.
+BISON_PATH != command -v bison 2>/dev/null || true
+FLEX_PATH != command -v flex 2>/dev/null || true
+.if !empty(BISON_PATH)
+YACC = ${BISON_PATH} -y
+.endif
+.if !empty(FLEX_PATH)
+LEX = ${FLEX_PATH}
+.endif
+.export YACC LEX
 .else
 HOST_CC ?= /usr/bin/cc
 HOST_CXX ?= /usr/bin/c++
