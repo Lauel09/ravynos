@@ -11,7 +11,9 @@
 # Without -o the name is derived from the tree (version + git short SHA), so
 # repeated builds are deterministic and easy to tell apart.
 #
-# Later modes will stage the real kernel/loader/ramdisk from the world build.
+# Real mode (once Phase 1 produces artifacts) will stage the built sysroot and
+# use mformat/mcopy for the FAT ESP and xorriso for the hybrid ISO. It must
+# never call mdconfig/newfs_msdos/mount/chroot/zpool/makefs/mkimg.
 
 set -eu
 
