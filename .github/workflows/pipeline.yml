@@ -1,0 +1,45 @@
+name: Portable pipeline self-test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    name: stub ISO -> QEMU verdict (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorriso nasm qemu-system-x86
+
+      - name: Install host tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install xorriso nasm qemu
+
+      - name: Run pipeline self-test
+        env:
+          BOOTCHECK_TIMEOUT: 60
+          TMPDIR: ${{ runner.temp }}
+        run: tools/pipeline-selftest.sh
+
+      - name: Upload serial log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-serial-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/ravynos-bootcheck.*/serial.log
+            ${{ runner.temp }}/ravynos-bootcheck.*/qemu.log
+          if-no-files-found: ignore
+          retention-days: 7
