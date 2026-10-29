@@ -5,21 +5,26 @@
 PROD_VERSION = 0.7.1
 PROD_FAMILY = Pre Alpha
 
-# Set ONE arch and ONE config
-ARCH_CONFIGS = X86_64
+# Target architecture is independent of the host. x86_64 is upstream's
+# supported target and the one QEMU boots; arm64 is an experiment until its
+# userland is complete. Select with: bmake TARGET_ARCH=arm64 world
+TARGET_ARCH ?= x86_64
+.if "${TARGET_ARCH}" == "x86_64"
+    BuildArch = X86
+    CpuArch = x86_64
+    ARCH_CONFIGS = X86_64
+.elif "${TARGET_ARCH}" == "arm64" || "${TARGET_ARCH}" == "aarch64"
+    BuildArch = AArch64
+    CpuArch = aarch64
+    ARCH_CONFIGS = ARM64
+.else
+.error Unsupported TARGET_ARCH=${TARGET_ARCH}; use x86_64 or arm64
+.endif
 KERNEL_CONFIGS = RELEASE
 
 ROOT_SOURCE_DIR = ${.CURDIR}
 
-.if ${MACHINE} == "x86_64" || ${MACHINE} == "amd64"
-    BuildArch = X86
-    CpuArch = x86_64
-.else
-    BuildArch = AArch64
-    CpuArch = aarch64
-.endif
 MACHINE_CPUARCH = ${CpuArch}
-
 MK_UNIFIED_OBJDIR = no
 MK_AUTO_OBJ = yes
 
@@ -121,7 +126,7 @@ TARGET_TRIPLE = ${CpuArch}-apple-darwin${DARWIN_MAJOR}
 
 SUBDIR ?= Developer .WAIT Kernel Libraries Frameworks BSD
 
-.export ROOT_SOURCE_DIR ROOT_BINARY_DIR ARCH_CONFIGS KERNEL_CONFIGS \
+.export ROOT_SOURCE_DIR ROOT_BINARY_DIR TARGET_ARCH ARCH_CONFIGS KERNEL_CONFIGS \
 	PROD_VERSION PROD_FAMILY CFLAGS DEVEL DARWIN_VERSION \
 	LLVM_VERSION_MAJOR LLVM_VERSION_MINOR LLVM_VERSION_PATCH \
 	LLVM_VERSION PROD_MAJOR PROD_MINOR PROD_PATCH DARWIN_MAJOR \
