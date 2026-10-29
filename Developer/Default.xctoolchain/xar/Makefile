@@ -22,8 +22,11 @@ LIBXAR_SRCS =	lib/archive.c \
 		lib/util.c \
 		lib/zxar.c
 LIBXAR_OBJS = ${LIBXAR_SRCS:%.c=%.o}
-CFLAGS += -I${.CURDIR}/include -I/usr/include/libxml2 -w -D__APPLE_CPP__ \
+CFLAGS += -I${.CURDIR}/include -w -D__APPLE_CPP__ \
 	  -D__LITTLE_ENDIAN__
+.if "${.MAKE.OS}" == "Linux"
+CFLAGS += -I/usr/include/libxml2
+.endif
 
 XAR_SRCS = src/xar.c
 XAR_OBJS = ${XAR_SRCS:%.c=%.o}
