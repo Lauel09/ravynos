@@ -113,6 +113,51 @@ expect_fail "bootcheck rejects a missing image" "$TOOLS/bootcheck.sh" "$TMP/nope
 expect_ok "--print-plan builds nothing" "$TOOLS/mkimage.sh" --stub --print-plan -o "$TMP/plan/x"
 if [ -f "$TMP/plan/x.iso" ]; then bad "--print-plan wrote an image"; else ok "--print-plan wrote no image"; fi
 
+# A staged root with symlinks.  This tree's own makefiles create them in
+# ${SYSROOT_DIR} (BSD/lib/bzip2/Makefile, BSD/lib/ncurses/Makefile) and ISO
+# 9660 as written here has no symlink type, so --root used to die on the
+# first one -- which is where a real sysroot would have stopped.
+SYSTREE="$TMP/systree"
+mkdir -p "$SYSTREE/bin" "$SYSTREE/usr/lib" "$SYSTREE/etc"
+printf 'binary-content\n' > "$SYSTREE/bin/tool"
+printf 'library-content\n' > "$SYSTREE/usr/lib/libReal.dylib"
+ln -s libReal.dylib "$SYSTREE/usr/lib/libAlias.dylib"   # relative, inside
+ln -s ../usr/lib "$SYSTREE/etc/libdir"                  # relative, inside
+ln -s /nonexistent/elsewhere "$SYSTREE/outside"         # absolute, skipped
+expect_ok "--root tolerates symlinks" \
+    "$TOOLS/mkimage.sh" --root "$SYSTREE" --format both --no-checksum -o "$TMP/systree/out"
+if [ -f "$TMP/systree/out.iso" ] && [ -f "$TMP/systree/out.img" ]; then
+    ok "symlinked staging root produced both images"
+else
+    bad "symlinked staging root produced no images"
+fi
+# The dereferenced entry must be a real file with the target's size, not a
+# link stub and not a hole.
+"$PYTHON" "$TOOLS/image/verify.py" iso "$TMP/systree/out.iso" --json > "$TMP/systree/iso.json" 2>/dev/null
+"$PYTHON" "$TOOLS/image/verify.py" img "$TMP/systree/out.img" --json > "$TMP/systree/img.json" 2>/dev/null
+if "$PYTHON" - "$TMP/systree/iso.json" "$TMP/systree/img.json" <<'PY'
+import json, sys
+want = len("library-content\n")
+for path in sys.argv[1:3]:
+    doc = json.load(open(path))
+    entries = doc.get("files") or doc.get("esp", {}).get("files") or []
+    hits = [f for f in entries if f["path"].upper().endswith("LIBALIAS.DYLIB")]
+    assert hits, f"{path}: no LIBALIAS entry in {[f['path'] for f in entries]}"
+    assert hits[0]["size"] == want, f"{path}: size {hits[0]['size']} != {want}"
+PY
+then ok "dereferenced symlink carries the target's content"
+else bad "dereferenced symlink does not carry the target's content"
+fi
+if "$PYTHON" - "$TMP/systree/iso.json" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+paths = [f["path"].upper() for f in doc["files"]]
+assert not any("OUTSIDE" in p for p in paths), paths
+PY
+then ok "absolute symlink was skipped, not followed"
+else bad "absolute symlink leaked into the image"
+fi
+
 # --------------------------------------------------------------------------
 if [ "$RUN_PIPELINE" = 1 ]; then
     banner "4. pipeline self-test (structure only)"

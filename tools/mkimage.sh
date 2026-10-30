@@ -204,6 +204,68 @@ image pipeline (tools/mkimage.sh -> tools/bootcheck.sh) end to end.
 EOF
 }
 
+# Symlinks in a staged root
+#
+# ISO 9660 as written here has no symlink type, and the FAT writer rejects
+# them, but a real sysroot is full of them: this tree's own staging creates
+# them itself (BSD/lib/bzip2/Makefile:53 `ln -sf bzdiff .../usr/bin/bzcmp`,
+# BSD/lib/ncurses/Makefile:25 and friends).  So `mkimage --root` used to die
+# on the first link, with "refusing to stage symlink".
+#
+# Policy, in order of safety:
+#   * a relative link that resolves inside the staged root is replaced by a
+#     copy of its target -- that is what the image should contain, and it is
+#     the case the tree actually produces;
+#   * anything else (absolute, escaping the root, dangling) is skipped with a
+#     warning.  Following an absolute link would copy *host* files into the
+#     image, which is a much worse failure than a missing convenience name.
+dereference_symlinks() {
+    _root=$1
+    [ -d "$_root" ] || return 0
+    _list="$_root/../.symlinks"
+    find "$_root" -type l -print > "$_list" 2>/dev/null || return 0
+    _rootreal=$(cd "$_root" && pwd -P) || return 0
+    _deref=0
+    _skipped=0
+    while IFS= read -r _link; do
+        [ -L "$_link" ] || continue
+        _target=$(readlink "$_link" 2>/dev/null) || continue
+        _ok=1
+        case $_target in
+            /*) _ok=0 ;;
+        esac
+        if [ "$_ok" = 1 ]; then
+            _dir=$(dirname "$_link")
+            _resolved=$(cd "$_dir" 2>/dev/null && cd "$(dirname "$_target")" 2>/dev/null &&
+                printf '%s/%s' "$(pwd -P)" "$(basename "$_target")") || _ok=0
+            if [ "$_ok" = 1 ]; then
+                case $_resolved in
+                    "$_rootreal"/*) ;;
+                    *) _ok=0 ;;
+                esac
+            fi
+            if [ "$_ok" = 1 ] && [ ! -e "$_resolved" ]; then _ok=0; fi
+        fi
+        if [ "$_ok" = 1 ]; then
+            rm -f "$_link"
+            if cp -RL "$_resolved" "$_link" 2>/dev/null; then
+                _deref=$((_deref + 1))
+                continue
+            fi
+            rm -rf "$_link"
+            warn "could not dereference $_link (target $_target); skipping it"
+            _skipped=$((_skipped + 1))
+        else
+            rm -f "$_link"
+            warn "skipping symlink $_link -> $_target (absolute, dangling or outside the root)"
+            _skipped=$((_skipped + 1))
+        fi
+    done < "$_list"
+    rm -f "$_list"
+    [ "$_deref" = 0 ] || log "dereferenced $_deref symlink(s); ISO/FAT have no symlink type"
+    [ "$_skipped" = 0 ] || log "skipped $_skipped symlink(s) that pointed outside the staged root"
+}
+
 stage_root() {
     [ -d "$ROOT_DIR" ] || die "staging root is not a directory: $ROOT_DIR"
     [ -n "$(ls -A "$ROOT_DIR" 2>/dev/null)" ] || die "staging root is empty: $ROOT_DIR"
@@ -235,6 +297,7 @@ stage_root() {
     if [ -n "$EFI_IMAGE" ] && [ ! -f "$STAGE/root/$EFI_IMAGE" ]; then
         die "--efi-image $EFI_IMAGE is not present in the staged root"
     fi
+    dereference_symlinks "$STAGE/root"
 }
 
 step "staging ($MODE)"
