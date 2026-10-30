@@ -263,6 +263,13 @@ fi
 
 record_stage "failed-$STAGE"
 step "bmake $STAGE failed after ${elapsed}s"
+# The first error, not just the tail: a build that fails in several places
+# ends with "stopped in" noise, and the message that explains it scrolls out
+# of the last twenty lines.  This is also what the CI log courier copies, so
+# the useful line survives even when the full log does not.
+printf '\nFirst errors in %s:\n' "$LOG"
+grep -n -m 8 -E 'error:|Error code [0-9]|stop(ped)? in .*|No such file|Fatal errors|cannot find' "$LOG" 2>/dev/null |
+    head -10 | cut -c1-240 | sed 's/^/  /' || true
 printf '\nLast 20 lines of %s:\n' "$LOG"
 tail -20 "$LOG" | sed 's/^/  /'
 cat <<EOF

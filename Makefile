@@ -56,9 +56,28 @@ CFLAGS = -Wno-incompatible-sysroot
 # If we are building from a different OS, we want to use the host's tools
 # to build our toolchain.
 .if "${.MAKE.OS}" == "Darwin"
+# HOST_CC is what bootstraps the toolchain: mig, cctools, xar and rpcgen are
+# compiled with it *before* llvm has produced ${TOOLCHAIN}/usr/bin/clang (llvm
+# itself depends on ${TOOLCHAIN}/usr/libexec/migcom, so that order cannot be
+# swapped).  Defining HOST_CC = ${CC} made bootstrap depend on the very
+# compiler it is supposed to build: on any host without a system bundle at
+# /Library/Developer/Toolchains/Default.xctoolchain -- every modern macOS
+# runner -- CC resolves into the empty in-tree toolchain and the build dies
+# with "…/usr/bin/clang: No such file or directory".  Use the system compiler
+# when there is one, and keep the old behaviour when the toolchain exists.
+.if exists(${TOOLCHAIN}/usr/bin/clang)
 HOST_CC = ${CC}
 HOST_CXX = ${CXX}
 HOST_AR = ${AR}
+.elif exists(/usr/bin/clang)
+HOST_CC = /usr/bin/clang
+HOST_CXX = /usr/bin/clang++
+HOST_AR = /usr/bin/ar
+.else
+HOST_CC ?= /usr/bin/cc
+HOST_CXX ?= /usr/bin/c++
+HOST_AR ?= /usr/bin/ar
+.endif
 # Command Line Tools' yacc/lex are Xcode shims that refuse to run without a
 # full Xcode selected; fall back to bison/flex in yacc/lex mode when present.
 BISON_PATH != command -v bison 2>/dev/null || true

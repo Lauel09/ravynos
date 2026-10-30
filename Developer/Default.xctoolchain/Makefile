@@ -12,6 +12,18 @@ GNU_CONFIGURE_ARGS = --prefix=/usr --sysconfdir=/etc --bindir=/bin \
 CFLAGS += -I${.CURDIR}/include
 .export CFLAGS
 
+# Bootstrap archiver: libraries under this directory (cctools/libstuff,
+# libmacho, dtrace_ctf, ...) are archived before llvm exists, but sys.mk
+# points AR/RANLIB at ${TOOLCHAIN}/usr/bin, which is empty until llvm
+# installs them.  Without this, the toolchain build gets past the compiler
+# and then fails on the first `ar`.
+.if !exists(${TOOLS}/clang)
+AR = /usr/bin/ar
+RANLIB = /usr/bin/ranlib
+NM = /usr/bin/nm
+.export AR RANLIB NM
+.endif
+
 all: ${TOOLCHAIN} ${.OBJDIR}/tapi/Version.inc
 
 ${TOOLCHAIN}:
