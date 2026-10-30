@@ -20,7 +20,10 @@ on:
     - cron: "17 5 * * *"   # daily, catches host-image drift
 
 permissions:
-  contents: read
+  # write, not read: every job republishes its own failure log as a commit
+  # comment (see .github/actions/ci-log-export).  On fork PRs the token is
+  # downgraded to read-only by GitHub and the export degrades to a warning.
+  contents: write
 
 concurrency:
   group: pipeline-${{ github.ref }}
@@ -42,7 +45,15 @@ jobs:
         run: python3 --version
 
       - name: Shell syntax, unit tests, CLI contract
-        run: tools/tests/run-tests.sh --no-pipeline -v
+        run: tools/tests/run-tests.sh --no-pipeline -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
+
+      - name: Export this job's log to the commit
+        if: failure()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: tests (${{ matrix.os }})
+          dir: ${{ runner.temp }}
+          note: "Step: shell syntax / unit tests / CLI contract"
 
   structure:
     name: structure (${{ matrix.os }}, ${{ matrix.backend }})
@@ -78,7 +89,8 @@ jobs:
             fmt=iso
           fi
           tools/mkimage.sh --stub --format "$fmt" --backend "${{ matrix.backend }}" \
-            -o "$TMPDIR/build/stub" --verify --json "$TMPDIR/build/stub.json"
+            -o "$TMPDIR/build/stub" --verify --json "$TMPDIR/build/stub.json" \
+            2>&1 | tee "$TMPDIR/structure-build.log"
           python3 tools/image/verify.py "$fmt" "$TMPDIR/build/stub.$fmt" --json \
             > "$TMPDIR/build/verify.json"
           cat "$TMPDIR/build/stub.json"
@@ -86,7 +98,14 @@ jobs:
       - name: End-to-end self-test (no QEMU)
         env:
           TMPDIR: ${{ runner.temp }}
-        run: tools/pipeline-selftest.sh --no-qemu
+        run: tools/pipeline-selftest.sh --no-qemu 2>&1 | tee "$RUNNER_TEMP/selftest-nq.log"
+
+      - name: Export this job's log to the commit
+        if: failure()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: structure (${{ matrix.os }}, ${{ matrix.backend }})
+          dir: ${{ runner.temp }}
 
       - name: Upload build record
         if: always()
@@ -123,13 +142,15 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-            -o "$TMPDIR/a/img" -q
-          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-            -o "$TMPDIR/b/img" -q
-          cmp "$TMPDIR/a/img.iso" "$TMPDIR/b/img.iso"
-          cmp "$TMPDIR/a/img.img" "$TMPDIR/b/img.img"
-          echo "both formats are byte-for-byte reproducible"
+          {
+            SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
+              -o "$TMPDIR/a/img" -q
+            SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
+              -o "$TMPDIR/b/img" -q
+            cmp "$TMPDIR/a/img.iso" "$TMPDIR/b/img.iso"
+            cmp "$TMPDIR/a/img.img" "$TMPDIR/b/img.img"
+            echo "both formats are byte-for-byte reproducible"
+          } 2>&1 | tee "$RUNNER_TEMP/reproduce.log"
 
       - name: Cross-host comparison
         # Each runner records its hashes; a maintainer can diff the two
@@ -141,6 +162,13 @@ jobs:
           done | tee "$TMPDIR/hashes.txt" || true
         env:
           TMPDIR: ${{ runner.temp }}
+
+      - name: Export this job's log to the commit
+        if: failure()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: reproducibility (${{ matrix.os }})
+          dir: ${{ runner.temp }}
 
       - name: Upload hashes
         if: always()
@@ -170,18 +198,61 @@ jobs:
           BOOTCHECK_TIMEOUT: "120"
         run: |
           set -euo pipefail
-          tools/pipeline-selftest.sh --keep | tee "$TMPDIR/selftest.log"
+          tools/pipeline-selftest.sh --keep 2>&1 | tee "$TMPDIR/selftest.log"
           work=$(sed -n 's/^  work  //p' "$TMPDIR/selftest.log" | tail -1)
           echo "WORK=$work" >> "$GITHUB_ENV"
 
-      - name: Publish the boot verdict as a check annotation
+      - name: Publish the boot verdict to the job summary
+        # This used to echo into the step stdout, where GitHub renders
+        # nothing.  The summary file is the surface that survives the run.
         if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
-          for f in "$TMPDIR"/ravynos-bootcheck.*/serial.log; do
+          set -u
+          found=0
+          for f in "$TMPDIR"/ravynos-bootcheck.*/serial.log \
+                   "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*/serial.log; do
             [ -f "$f" ] || continue
-            echo "## serial log: $f"
-            tail -40 "$f"
+            found=1
+            {
+              echo "### serial: $(basename "$(dirname "$f")")"
+              echo '```'
+              tail -40 "$f"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           done
+          for f in "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*.json \
+                   "$TMPDIR"/ravynos-bootcheck.*/verdict.json; do
+            [ -f "$f" ] || continue
+            echo "### verdict: $f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" = 0 ]; then
+            echo "no serial logs were produced (the run failed before QEMU started)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Same content as a commit comment, which also survives the run.
+          logs="$(ls -t "$TMPDIR"/ravynos-bootcheck.*/serial.log \
+                        "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*/serial.log \
+                        2>/dev/null | head -6 | tr '\n' ' ')"
+          echo "CI_BOOT_LOGS=$logs" >> "$GITHUB_ENV"
+
+      - name: Publish the boot evidence (pass or fail)
+        # `always()`, not `failure()`: a green boot is the one verdict that
+        # cannot be reconstructed from an artifact bundle alone -- artifacts
+        # are served from the same blocked host as the logs -- so the raw
+        # serial output and QEMU's own version/accel line go into a commit
+        # comment either way.
+        if: always()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: boot verdict (${{ matrix.os }})
+          dir: ${{ runner.temp }}
+          logs: ${{ env.CI_BOOT_LOGS }}
+          note: ${{ job.status }} — serial markers, accel probe, verdict JSON
 
       - name: Upload images, logs and verdicts
         if: always()
@@ -194,6 +265,8 @@ jobs:
             ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.json
             ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.manifest.txt
             ${{ runner.temp }}/ravynos-bootcheck.*/serial.log
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/stub.json
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/stub.manifest.txt
             ${{ runner.temp }}/ravynos-bootcheck.*/qemu.log
             ${{ runner.temp }}/ravynos-bootcheck.*/screenshot.ppm
             ${{ runner.temp }}/selftest.log

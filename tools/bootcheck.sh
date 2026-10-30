@@ -106,15 +106,50 @@ rm -f "$MON"
 # --------------------------------------------------------------------------
 # Acceleration: TCG is always correct; KVM/HVF are faster when available.
 # --------------------------------------------------------------------------
+#
+# `-accel help` lists what the binary was compiled with, which is not the same
+# as what this host can actually run: on Apple Silicon, qemu-system-x86_64
+# advertises hvf and then refuses it at start-up because HVF cannot virtualise
+# a foreign-architecture guest.  Selecting on `-accel help` therefore picked
+# hvf on macOS arm64 runners and failed the job before the guest ever ran.
+# The only honest test is to start the machine: paused, headless, two seconds,
+# then look at whether the process is still alive.
+try_accel() {
+    _accel=$1
+    : > "$OUTDIR/accel-$_accel.log"
+    "$QEMU" -accel "$_accel" -S -display none -monitor none -serial none \
+        -parallel none > "$OUTDIR/accel-$_accel.log" 2>&1 &
+    _pid=$!
+    sleep 2
+    if kill -0 "$_pid" 2>/dev/null; then
+        kill "$_pid" 2>/dev/null
+        wait "$_pid" 2>/dev/null
+        return 0
+    fi
+    wait "$_pid" 2>/dev/null
+    return 1
+}
+
 ACCEL=${BOOTCHECK_ACCEL:-}
 if [ -z "$ACCEL" ]; then
     case $(uname -s) in
-        Darwin)
-            if "$QEMU" -accel help 2>/dev/null | grep -qw hvf; then ACCEL=hvf; fi ;;
-        Linux)
-            if [ -r /dev/kvm ] && [ -w /dev/kvm ] &&
-                "$QEMU" -accel help 2>/dev/null | grep -qw kvm; then ACCEL=kvm; fi ;;
+        Darwin) candidates="hvf tcg" ;;
+        *)      candidates="kvm tcg" ;;
     esac
+    for cand in $candidates; do
+        # Cheap pre-checks first, so a wrong host does not pay two seconds per
+        # candidate; the probe is still authoritative.
+        case $cand in
+            kvm) [ -r /dev/kvm ] && [ -w /dev/kvm ] || continue ;;
+        esac
+        if try_accel "$cand"; then
+            ACCEL=$cand
+            log "bootcheck: acceleration '$cand' probed OK"
+            break
+        fi
+        warn "acceleration '$cand' is not usable here: $(tail -1 "$OUTDIR/accel-$cand.log" 2>/dev/null)"
+    done
+    [ -n "$ACCEL" ] || ACCEL=tcg
 fi
 
 # --------------------------------------------------------------------------
