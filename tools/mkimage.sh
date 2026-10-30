@@ -172,10 +172,16 @@ stage_stub() {
     fi
     mkdir -p "$STAGE/root/BOOT"
     [ -n "$BOOT_IMAGE" ] || BOOT_IMAGE=BOOT/BOOTSTUB.BIN
-    if have nasm && [ "$MODE" = stub ]; then
-        # Keep the readable .asm authoritative when an assembler exists.
-        nasm -f bin -o "$STAGE/root/$BOOT_IMAGE" "$SCRIPT_DIR/bootstub/bootstub.asm"
-        log "staged boot stub with nasm (tools/bootstub/bootstub.asm)"
+    if have nasm; then
+        # Keep the readable .asm sources authoritative when an assembler
+        # exists; the python generator is the fallback for bare hosts.
+        case $MODE in
+            stub)            asm=bootstub.asm ;;
+            stub-milestones) asm=bootstub-milestones.asm ;;
+        esac
+        nasm -f bin -o "$STAGE/root/$BOOT_IMAGE" "$SCRIPT_DIR/bootstub/$asm" \
+            || die "nasm failed on tools/bootstub/$asm"
+        log "staged boot stub with nasm (tools/bootstub/$asm)"
     else
         [ -n "${PYTHON:-}" ] || die "need nasm or python3 to build the boot stub"
         # shellcheck disable=SC2086 -- the marker list is intentionally split

@@ -92,8 +92,11 @@ A ~200-line freestanding PE32+ application, built with clang
 (`-target x86_64-unknown-windows -ffreestanding -fshort-wchar -mno-red-zone`),
 that prints `RAVYNOS-LOADER-OK` over `SerialIo`, then `EFI_SUCCESS`.
 
-Deliverables: `tools/bootloader/uefi_stub.c` + `Makefile`, plus
-`mkimage.sh --efi-image EFI/BOOT/BOOTX64.EFI`.
+Deliverables (in tree, not yet built on this host): `tools/bootloader/uefi_stub.c`,
+`tools/bootloader/Makefile` and `tools/bootloader/README.md`.  The skeleton
+declares the UEFI tables it uses inline — no gnu-efi, no EDK2 checkout — prints
+`RAVYNOS-LOADER-OK` over the serial protocol with a `ConOut` mirror, and returns.
+Package it with `mkimage.sh --efi-image EFI/BOOT/BOOTX64.EFI`.
 
 **Exit:** `tools/bootcheck.sh out/uefi.iso --uefi --expect RAVYNOS-LOADER-OK`
 passes under OVMF. This validates the ISO's UEFI catalog entry, the ESP

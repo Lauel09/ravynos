@@ -131,9 +131,16 @@ writer is cross-checked against pycdlib and the FAT writer against pyfatfs
 during development, and every artifact is validated by `verify.py` in CI.
 Reproducibility is asserted by a CI job on both host families.
 
+**Loader:** `Docs/BootLoader.md` records the decision (UEFI application is
+primary; the ISO already carries a BIOS slot *and* a UEFI catalog entry) and a
+five-step plan.  Step B's skeleton is in tree: `tools/bootloader/uefi_stub.c`
+plus a `Makefile` — a freestanding PE32+ application with the UEFI tables
+declared inline (no gnu-efi, no EDK2), printing `RAVYNOS-LOADER-OK` over the
+serial protocol with a `ConOut` mirror.  It has not been compiled here; the
+next step is to build it and boot it under OVMF.
+
 **Remaining for the M2 exit criterion:** a real staged sysroot from the Phase 1
-build, and a loader that emits `RAVYNOS-LOADER-OK` … `RAVYNOS-USERSPACE-OK`
-(decision + staged plan: `Docs/BootLoader.md`).
+build, and a loader that emits `RAVYNOS-LOADER-OK` … `RAVYNOS-USERSPACE-OK`.
 
 **CI:** `.github/workflows/pipeline.yml` (tests, per-backend structure,
 reproducibility, QEMU boots on Ubuntu + macOS), `build.yml`

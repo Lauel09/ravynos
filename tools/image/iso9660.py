@@ -242,7 +242,7 @@ def find_entry(root: IsoDir, relpath: str) -> IsoFile:
         if isinstance(match, IsoFile):
             raise ValueError(f"not a directory: {part} in {relpath}")
         node = match
-    raise ValueError(f"empty boot image path")
+    raise ValueError("empty boot image path")
 
 
 # --------------------------------------------------------------------------
