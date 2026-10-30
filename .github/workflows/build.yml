@@ -33,6 +33,12 @@ on:
     - cron: "0 3 * * *"
   push:
     branches: [fork/darwin-dev]
+  pull_request:
+    # Pull requests are the only trigger that can be reached without the
+    # `workflow` token scope that `gh workflow run` needs, so this is how a
+    # build gets started from an agent environment: open the PR, read the
+    # verdict the job publishes as a commit comment.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   # write: each job republishes its own log as a commit comment, because the
@@ -47,6 +53,10 @@ concurrency:
 
 env:
   TARGET_ARCH: ${{ inputs.target_arch || 'x86_64' }}
+  # world by default; set the repository variable MACBUILD_STAGE to run a
+  # single stage (version|Developer|Kernel|Libraries|BSD) instead, which is
+  # the cheaper way to find out where a full build stops.
+  MACBUILD_STAGE: ${{ vars.MACBUILD_STAGE || 'world' }}
 
 jobs:
   build:
@@ -108,11 +118,12 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -o pipefail
-          tools/macbuild.sh --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
+          tools/macbuild.sh --stage "$MACBUILD_STAGE" \
+            --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
             2>&1 | tee "$TMPDIR/build-world.console.log"
 
       - name: Export this job's log to the commit
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: build world (${{ matrix.label }})
@@ -233,7 +244,7 @@ jobs:
           } | tee "$TMPDIR/image.log"
 
       - name: Export this job's log to the commit
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: mkimage (${{ matrix.label }})
@@ -307,7 +318,7 @@ jobs:
             --outdir "$TMPDIR/boot" --json "$TMPDIR/boot/verdict.json"
 
       - name: Export the boot verdict to the commit
-        if: always()
+        if: always() && !cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: boot verdict (${{ matrix.label }})

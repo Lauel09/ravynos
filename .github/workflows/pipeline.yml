@@ -48,7 +48,7 @@ jobs:
         run: tools/tests/run-tests.sh --no-pipeline -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
 
       - name: Export this job's log to the commit
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: tests (${{ matrix.os }})
@@ -101,7 +101,7 @@ jobs:
         run: tools/pipeline-selftest.sh --no-qemu 2>&1 | tee "$RUNNER_TEMP/selftest-nq.log"
 
       - name: Export this job's log to the commit
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: structure (${{ matrix.os }}, ${{ matrix.backend }})
@@ -196,7 +196,7 @@ jobs:
           TMPDIR: ${{ runner.temp }}
 
       - name: Export this job's log to the commit
-        if: failure()
+        if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
         with:
           title: reproducibility (${{ matrix.os }})
