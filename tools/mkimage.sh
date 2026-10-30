@@ -275,7 +275,15 @@ if [ "$want_iso" = 1 ]; then
 fi
 if [ "$want_img" = 1 ]; then
     case $BACKEND in
-        auto)      if have mformat && have mcopy; then IMG_BACKEND=mtools; else IMG_BACKEND=python; fi ;;
+        # auto prefers the Python writer for .img.  It is dependency-free and
+        # byte-reproducible (proven in CI); mtools is not reproducible, and
+        # two builds of the same tree differ inside the FAT volume, so making
+        # it the default would put a non-reproducible artifact on the default
+        # path.  Ask for --backend mtools explicitly when you want it; CI does,
+        # in the structure and reproducibility jobs.
+        auto)      if [ -n "${PYTHON:-}" ]; then IMG_BACKEND=python
+                   elif have mformat && have mcopy; then IMG_BACKEND=mtools
+                   else IMG_BACKEND=python; fi ;;
         mtools)    need mformat mcopy; IMG_BACKEND=mtools ;;
         python)    IMG_BACKEND=python ;;
         xorriso)   die "--backend xorriso cannot write .img; use mtools or python" 2 ;;

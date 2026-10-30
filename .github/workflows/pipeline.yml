@@ -164,7 +164,22 @@ jobs:
               sleep 2   # force the two builds across a second boundary
               SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub \
                 --format "$fmt" --backend "$backend" -o "$base-b" -q
-              cmp "$base-a.$ext" "$base-b.$ext"
+              if ! cmp -s "$base-a.$ext" "$base-b.$ext"; then
+                # Print enough to identify the culprit next time: the byte
+                # offsets are useless on their own.
+                echo "  $backend/$fmt: DIFFERS"
+                cmp -l "$base-a.$ext" "$base-b.$ext" 2>&1 | head -8 || true
+                first=$(cmp -l "$base-a.$ext" "$base-b.$ext" 2>/dev/null |
+                        head -1 | awk '{print $1}')
+                if [ -n "${first:-}" ]; then
+                  start=$((first > 33 ? first - 33 : 0))
+                  echo "  --- a around byte $first (offset $start) ---"
+                  od -A d -t x1 -j "$start" -N 96 "$base-a.$ext" 2>/dev/null || true
+                  echo "  --- b ---"
+                  od -A d -t x1 -j "$start" -N 96 "$base-b.$ext" 2>/dev/null || true
+                fi
+                cmp "$base-a.$ext" "$base-b.$ext"
+              fi
               echo "  $backend/$fmt: byte-for-byte reproducible ($(shasum -a 256 "$base-a.$ext" 2>/dev/null | cut -c1-16 || sha256sum "$base-a.$ext" | cut -c1-16))"
             done
           } 2>&1 | tee "$RUNNER_TEMP/reproduce.log"
