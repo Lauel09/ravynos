@@ -16,6 +16,7 @@ set -eu
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TOOLS=$(CDPATH= cd -- "$HERE/.." && pwd)
+ROOT_UNDER_TEST=$(CDPATH= cd -- "$TOOLS/.." && pwd)
 . "$TOOLS/lib/common.sh"
 
 RUN_PIPELINE=1
@@ -112,6 +113,20 @@ expect_fail "bootcheck rejects a missing image" "$TOOLS/bootcheck.sh" "$TMP/nope
 # A plan-only run must not produce output files.
 expect_ok "--print-plan builds nothing" "$TOOLS/mkimage.sh" --stub --print-plan -o "$TMP/plan/x"
 if [ -f "$TMP/plan/x.iso" ]; then bad "--print-plan wrote an image"; else ok "--print-plan wrote no image"; fi
+
+# repo_root must find the checkout from a script in tools/, not its parent.
+# It used to assume the caller lived in tools/lib and return dirname($0)/../..
+# -- one level too high for tools/*.sh, which sent `bmake world` into the
+# repository's parent directory and stamped images "version unknown".
+probe="$TOOLS/.repo-root-probe.$$"
+printf '#!/bin/sh\n. "$(dirname -- "$0")/lib/common.sh"\nrepo_root\n' > "$probe"
+root_from_probe=$(sh "$probe" 2>/dev/null || true)
+rm -f "$probe"
+if [ "$root_from_probe" = "$ROOT_UNDER_TEST" ]; then
+    ok "repo_root resolves to the checkout from tools/"
+else
+    bad "repo_root from tools/ returned '${root_from_probe:-<nothing>}', expected $ROOT_UNDER_TEST"
+fi
 
 # A staged root with symlinks.  This tree's own makefiles create them in
 # ${SYSROOT_DIR} (BSD/lib/bzip2/Makefile, BSD/lib/ncurses/Makefile) and ISO
