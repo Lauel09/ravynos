@@ -35,7 +35,10 @@ on:
     branches: [fork/darwin-dev]
 
 permissions:
-  contents: read
+  # write: each job republishes its own log as a commit comment, because the
+  # Actions log-blob host is not reachable from every client (see
+  # .github/actions/ci-log-export).
+  contents: write
   packages: read
 
 concurrency:
@@ -108,14 +111,36 @@ jobs:
           tools/macbuild.sh --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
             2>&1 | tee "$TMPDIR/build-world.console.log"
 
+      - name: Export this job's log to the commit
+        if: failure()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: build world (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          note: "bmake world on ${{ matrix.os }}; the tail of the build log is attached"
+
       - name: Locate staged output
         id: staged
         if: always()
         run: |
-          for candidate in ../build/stage ../build/root ../build/world; do
+          # ../build/sysroot is the one this tree actually populates: the leaf
+          # Makefiles do not implement DESTDIR/install, they copy into
+          # ${SYSROOT_DIR} = ${ROOT_BINARY_DIR}/sysroot via a to-sysroot
+          # target (see Makefile:130 and BSD/bin/ls/Makefile).  The old list
+          # did not include it, so a fully built userland would have been
+          # reported as "no staged sysroot" and the stub packaged instead.
+          for candidate in ../build/sysroot ../build/stage ../build/root ../build/world; do
             if [ -d "$candidate" ] && [ -n "$(ls -A "$candidate" 2>/dev/null)" ]; then
               echo "dir=$candidate" >> "$GITHUB_OUTPUT"
               echo "staged sysroot found: $candidate"
+              # Inventory, so the log says what the image will contain rather
+              # than only that something exists.
+              echo "--- inventory ---"
+              find "$candidate" -type f | wc -l | sed 's/^/  files: /'
+              find "$candidate" -maxdepth 2 | head -40
+              { find "$candidate" -type l | wc -l | sed 's/^/  symlinks: /'
+                du -sh "$candidate" 2>/dev/null | sed 's/^/  size: /'
+              } 2>/dev/null
               break
             fi
           done
@@ -198,11 +223,21 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC2086
-          tools/mkimage.sh ${{ steps.source.outputs.mode }} --format both \
-            -o "$TMPDIR/out/ravynos" --verify \
-            --json "$TMPDIR/out/ravynos.json"
-          ls -l "$TMPDIR/out"
+          {
+            echo "mkimage mode: ${{ steps.source.outputs.mode }}"
+            # shellcheck disable=SC2086
+            tools/mkimage.sh ${{ steps.source.outputs.mode }} --format both \
+              -o "$TMPDIR/out/ravynos" --verify \
+              --json "$TMPDIR/out/ravynos.json" 2>&1
+            ls -l "$TMPDIR/out"
+          } | tee "$TMPDIR/image.log"
+
+      - name: Export this job's log to the commit
+        if: failure()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: mkimage (${{ matrix.label }})
+          dir: ${{ runner.temp }}
 
       - name: Summarise
         run: |
@@ -270,6 +305,14 @@ jobs:
             --expect RAVYNOS-USERSPACE-OK \
             --screenshot \
             --outdir "$TMPDIR/boot" --json "$TMPDIR/boot/verdict.json"
+
+      - name: Export the boot verdict to the commit
+        if: always()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: boot verdict (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          logs: ${{ runner.temp }}/boot/serial.log ${{ runner.temp }}/boot/verdict.json
 
       - name: Attach the verdict to the run summary
         if: always()
