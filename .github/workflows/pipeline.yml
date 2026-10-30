@@ -169,8 +169,12 @@ jobs:
                 # offsets are useless on their own.
                 echo "  $backend/$fmt: DIFFERS"
                 cmp -l "$base-a.$ext" "$base-b.$ext" 2>&1 | head -8 || true
+                # `|| true`: cmp exits 1 when the files differ, and under
+                # `set -euo pipefail` that killed the step before it could
+                # print the window -- which is exactly what happened on the
+                # run that first detected the mtools difference.
                 first=$(cmp -l "$base-a.$ext" "$base-b.$ext" 2>/dev/null |
-                        head -1 | awk '{print $1}')
+                        head -1 | awk '{print $1}' || true)
                 if [ -n "${first:-}" ]; then
                   start=$((first > 33 ? first - 33 : 0))
                   echo "  --- a around byte $first (offset $start) ---"

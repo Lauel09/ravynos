@@ -101,6 +101,10 @@ if [ -n "$SCAN_DIRS" ]; then
         find "$d" -maxdepth 4 -type f -name '*.log' 2>/dev/null
     done | while IFS= read -r f; do
         [ -f "$f" ] || continue
+        # BSD stat first, GNU stat second: each is asked with the other's
+        # flag, so the failure path is deliberate, not a portability bug.
+        # audit:allow gnu-only-flag (deliberate fallback chain)
+        # audit:allow bsd-only-flag (deliberate fallback chain)
         mt=$(stat -f%m "$f" 2>/dev/null || stat -c%Y "$f" 2>/dev/null || echo 0)
         printf '%s %s\n' "$mt" "$f"
     done | sort -n | tail -6 | while read -r _mt f; do

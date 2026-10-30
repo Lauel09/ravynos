@@ -158,6 +158,15 @@ It has now been run by GitHub runners, and the boot path has a verdict.
 | HVF is unusable for an x86 guest on Apple Silicon | `qemu-system-x86_64: -accel hvf: invalid accelerator hvf`, then TCG boots | macos-latest |
 | **Not** reproducible: mtools `.img` | two builds differ at byte 17825745 | ubuntu |
 
+Independent cross-check (rev 13, run on Debian 12 x86_64 with pycdlib and
+pyfatfs from PyPI, neither used by the writers): pycdlib parses the generated
+ISO and reports boot_indicator `0x88`, boot media `0` (no emulation), load RBA
+26, 4 sectors — byte-for-byte the same facts `verify.py` reports for the same
+file — and reads `BOOT/BOOTSTUB.BIN` (2048) and `README.TXT` (105) back;
+pyfatfs mounts the generated GPT/FAT16 image at offset 1 MiB and reads
+`/EFI/BOOT/BOOTX64.EFI` and `/README.TXT`. So the writers agree with
+independent implementations, not only with our own verifier.
+
 The markers come from a hand-written 16-bit stub (`tools/bootstub/`), **not**
 from XNU: this proves the ISO → El Torito → QEMU → serial → verdict loop, not
 an operating system.  No boot has used KVM (GitHub runners do not expose
