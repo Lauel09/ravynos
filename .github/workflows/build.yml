@@ -122,6 +122,20 @@ jobs:
             --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
             2>&1 | tee "$TMPDIR/build-world.console.log"
 
+      - name: Announce the build in the commit (so a long run is watchable)
+        # A build that takes hours is otherwise invisible until it ends: the
+        # run log lives on a host some clients cannot reach.  This posts the
+        # parameters, the cache state and the bmake verdict up front, and the
+        # courier below replaces the same comment with the log on failure.
+        if: always() && !cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: build start (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          logs: >-
+            ${{ runner.temp }}/build-world.console.log
+          note: "stage=${{ env.MACBUILD_STAGE }} arch=${{ env.TARGET_ARCH }} host=${{ matrix.os }}"
+
       - name: Export this job's log to the commit
         if: failure() || cancelled()
         uses: ./.github/actions/ci-log-export
