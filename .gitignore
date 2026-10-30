@@ -89,3 +89,7 @@ macbuild.log
 work/**/ghidra-project/
 work/**/*.gpr
 work/**/*.rep
+
+# Python bytecode from the pipeline's test runs
+__pycache__/
+*.pyc
