@@ -316,4 +316,18 @@ typedef void (*os_function_t)(void *_Nullable);
 typedef void (^os_block_t)(void);
 #endif
 
+// Modern SDKs expose pointer-ABI single assumptions via these macros.
+#ifndef OS_ASSUME_PTR_ABI_SINGLE_BEGIN
+#define OS_ASSUME_PTR_ABI_SINGLE_BEGIN __ASSUME_PTR_ABI_SINGLE_BEGIN
+#endif
+#ifndef OS_ASSUME_PTR_ABI_SINGLE_END
+#define OS_ASSUME_PTR_ABI_SINGLE_END __ASSUME_PTR_ABI_SINGLE_END
+#endif
+#ifndef OS_UNSAFE_INDEXABLE
+#define OS_UNSAFE_INDEXABLE __unsafe_indexable
+#endif
+#ifndef OS_HEADER_INDEXABLE
+#define OS_HEADER_INDEXABLE __header_indexable
+#endif
+
 #endif // __OS_BASE__

@@ -90,6 +90,13 @@ TOOLCHAIN = ${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform/Developer/To
 TOOLS = ${TOOLCHAIN}/usr/bin
 DEVEL = ${ROOT_SOURCE_DIR}/Developer
 
+# The linker built by cctools is installed as ld64; point LD at it on
+# Darwin so the rest of the build does not fall back to the host linker.
+.if "${.MAKE.OS}" == "Darwin"
+LD = ${TOOLCHAIN}/usr/bin/ld64
+.export LD
+.endif
+
 DARWIN_VERSION != head -1 ${ROOT_SOURCE_DIR}/Kernel/xnu/config/MasterVersion
 
 LLVM_VERSION_MAJOR != grep 'set.LLVM_VERSION_MAJOR' Developer/Default.xctoolchain/llvm/llvm/CMakeLists.txt | sed -E 's/^.* ([0-9]+).*$$/\1/'

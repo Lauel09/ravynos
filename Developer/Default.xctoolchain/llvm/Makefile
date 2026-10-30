@@ -21,7 +21,7 @@ CFLAGS = -UHAVE_MACH_MACH_H -UAPPLE -U__APPLE__ -UHAVE_DECL_ARC4RANDOM
 CXXFLAGS = ${CFLAGS} -U_GLIBCXX_USE_CXX11_ABI -D_GLIBCXX_USE_CXX11_ABI=0
 .endif
 
-${TOOLCHAIN}/usr/lib/libLLVM.a ${TOOLCHAIN}/usr/lib/libtapi.so \
+${TOOLCHAIN}/usr/lib/libLLVM.a ${TOOLCHAIN}/usr/lib/libtapi.dylib \
 ${TOOLS}/clang ${TOOLS}/clang++: ${TOOLCHAIN}/usr/libexec/migcom ${.CURDIR}/Makefile
 	cmake -S ${.CURDIR}/llvm -B ${.OBJDIR}/../llvm_host -Wno-dev \
 	-DCMAKE_BUILD_TYPE=Release \

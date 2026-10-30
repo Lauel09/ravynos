@@ -8848,7 +8848,7 @@ bool isObjectFile(const uint8_t* fileContent, uint64_t fileLength, cpu_type_t* r
 	if ( mach_o::relocatable::Parser<x86>::validFile(fileContent) ) {
 		const macho_header<Pointer32<LittleEndian> >* header = (const macho_header<Pointer32<LittleEndian> >*)fileContent;
 		*result = CPU_TYPE_I386;
-		*subResult = CPU_SUBTYPE_X86_ALL;
+		*subResult = CPU_SUBTYPE_X86_64_ALL;
 		Parser<x86>::findPlatforms(header, fileLength, platformsFound);
 		return true;
 	}

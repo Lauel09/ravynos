@@ -27,7 +27,7 @@
 #include <string.h>
 #define PLATFORM_UNKNOWN 0
 #define PLATFORM_MACOS 1
-#define CPU_SUBTYPE_X86_ALL 3
+#define CPU_SUBTYPE_X86_64_ALL 3
 namespace {
 	typedef long double max_align_t;
 }
@@ -788,7 +788,7 @@ bool isDylibFile(const uint8_t* fileContent, uint64_t fileLength, cpu_type_t* re
 	}
 	if ( Parser<x86>::validFile(fileContent, false) ) {
 		*result = CPU_TYPE_I386;
-		*subResult = CPU_SUBTYPE_X86_ALL;
+		*subResult = CPU_SUBTYPE_X86_64_ALL;
 		const auto* header = reinterpret_cast<const macho_header<Pointer32<LittleEndian>>*>(fileContent);
 		*platform = Parser<x86>::findPlatform(header, fileLength, minOsVers);
 		return true;

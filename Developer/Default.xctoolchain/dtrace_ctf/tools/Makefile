@@ -84,6 +84,8 @@ LDFLAGS += -L${TOOLCHAIN}/usr/lib -lelf -ldwarf -lctf -lz
 .if "${.MAKE.OS}" == "Linux"
 CFLAGS += -D__unused="" -I/usr/include/c++/11 -I/usr/include/${CpuArch}-linux-gnu/c++/11
 LDFLAGS += -L/usr/lib/llvm-15/lib -lLLVM -ldispatch
+.elif "${.MAKE.OS}" == "Darwin"
+LDFLAGS += -lLLVMSupport -lLLVMDemangle
 .endif
 CXXFLAGS += -std=c++17 
 

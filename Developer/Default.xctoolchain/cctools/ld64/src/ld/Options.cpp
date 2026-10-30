@@ -779,7 +779,7 @@ void Options::selectFallbackArch(const char *arch)
 		// <rdar://problem/39797337> let x86_64h fallback and use x86_64 slice
 		if ( (fArchitecture == CPU_TYPE_X86_64) && (fSubArchitecture == CPU_SUBTYPE_X86_64_H) ) {
 			fFallbackArchitecture    = CPU_TYPE_X86_64;
-			fFallbackSubArchitecture = CPU_SUBTYPE_X86_ALL;
+			fFallbackSubArchitecture = CPU_SUBTYPE_X86_64_ALL;
 		}
 	}
 }

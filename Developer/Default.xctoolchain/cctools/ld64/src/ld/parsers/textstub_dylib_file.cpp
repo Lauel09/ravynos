@@ -22,7 +22,7 @@
  * @APPLE_LICENSE_HEADER_END@
  */
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 #include <algorithm>
 #include <sys/types.h>
 #ifndef uint8_t
@@ -31,8 +31,12 @@ typedef unsigned char uint8_t;
 #ifndef uint32_t
 typedef unsigned int uint32_t;
 #endif
+#ifndef PLATFORM_UNKNOWN
 #define PLATFORM_UNKNOWN 0
+#endif
+#ifndef PLATFORM_MACOS
 #define PLATFORM_MACOS 1
+#endif
 namespace {
 	typedef long double max_align_t;
 }

@@ -28,6 +28,11 @@ FLAGS += -Du_int8_t=__uint8_t -Du_int32_t=__uint32_t \
 LDFLAGS += -lacl -latomic -lBlocksRuntime -luuid -lmd -lz -lssl -lcrypto -lxml2 -lbsd
 .else
 RPATH_ORIGIN = -rpath,@executable_path
+OPENSSL_PREFIX != brew --prefix openssl@3 2>/dev/null || true
+.if !empty(OPENSSL_PREFIX)
+LDFLAGS += -L${OPENSSL_PREFIX}/lib
+.endif
+LDFLAGS += -lxml2 -lz -lssl -lcrypto
 .endif
 
 CFLAGS += ${FLAGS}
@@ -101,7 +106,7 @@ PASSES_OBJS = ${PASSES_SRCS:%.cpp=%.o}
 TARGET_DIRS = ${.OBJDIR}/ld/parsers ${.OBJDIR}/ld/code-sign-blobs \
 	      ${.OBJDIR}/ld/passes/stubs
 DEPENDS = ${TARGET_DIRS} ${TOOLCHAIN}/usr/lib/libxar.a \
-	  ${.OBJDIR}/../../../llvm_host/lib/libtapi.so
+	  ${.OBJDIR}/../../../llvm_host/lib/libtapi.dylib
 
 all: ${TOOLS}/ld64
 
