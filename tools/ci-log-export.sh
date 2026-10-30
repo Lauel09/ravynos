@@ -57,8 +57,11 @@ NOTES=
 MAX_BYTES=52000
 DRY_RUN=0
 LOGS_LIST=$(mktemp "${TMPDIR:-/tmp}/ci-log-list.XXXXXX") || exit 1
+TMP_SCAN=$(mktemp "${TMPDIR:-/tmp}/ci-log-scan.XXXXXX") || exit 1
+SCAN_REPORT=''
+
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/ci-log-body.XXXXXX") || exit 1
-trap 'rm -f "$LOGS_LIST" "$BODY_FILE" 2>/dev/null' EXIT INT TERM
+trap 'rm -f "$LOGS_LIST" "$TMP_SCAN" "$BODY_FILE" 2>/dev/null' EXIT INT TERM
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -107,9 +110,18 @@ if [ -n "$SCAN_DIRS" ]; then
         # audit:allow bsd-only-flag (deliberate fallback chain)
         mt=$(stat -f%m "$f" 2>/dev/null || stat -c%Y "$f" 2>/dev/null || echo 0)
         printf '%s %s\n' "$mt" "$f"
-    done | sort -n | tail -6 | while read -r _mt f; do
+    done | sort -n | while read -r _mt f; do
+        printf '%s\n' "$f" >> "$TMP_SCAN"
+    done
+    found=$(grep -c . "$TMP_SCAN" 2>/dev/null || echo 0)
+    # Newest first, capped at six: a job that writes dozens of logs should
+    # not produce an unreadable blob.
+    tail -6 "$TMP_SCAN" | while read -r f; do
         grep -qxF "$f" "$LOGS_LIST" 2>/dev/null || printf '%s\n' "$f" >> "$LOGS_LIST"
     done
+    attached=$(grep -c . "$LOGS_LIST" 2>/dev/null || echo 0)
+    SCAN_REPORT="_scan: $found .log file(s) under the log directory; $attached attached (newest 6 at most)._"
+    rm -f "$TMP_SCAN"
 fi
 
 # A job can fail before any step tees anything -- a broken setup action, a
@@ -132,7 +144,7 @@ PER_LOG=$((58000 / LOG_COUNT))
 
 {
     printf '%s\n' "$MARKER"
-    printf '### CI failure log: %s\n\n' "$TITLE"
+    printf '### CI job log: %s\n\n' "$TITLE"
     printf 'Run `%s` job `%s` on `%s`%s%s, commit `%s`.\n' \
         "${GITHUB_RUN_ID:-local}" "${GITHUB_JOB:-?}" "${RUNNER_OS:-?}" \
         "${RUNNER_ARCH:+ ($RUNNER_ARCH)}" "" "${SHA}"
@@ -175,6 +187,7 @@ PER_LOG=$((58000 / LOG_COUNT))
         done
         [ "$matched" = 1 ] || printf '\n_log not produced: `%s` (step failed before writing it)_\n' "$pattern"
     done < "$LOGS_LIST"
+    [ -z "$SCAN_REPORT" ] || printf '\n%s\n' "$SCAN_REPORT"
     if [ "$NO_LOGS" = 1 ]; then
         printf '\n**No log files were produced.** This job most likely failed '
         printf 'before any step could tee output (environment setup, a broken '

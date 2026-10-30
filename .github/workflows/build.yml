@@ -128,7 +128,14 @@ jobs:
         with:
           title: build world (${{ matrix.label }})
           dir: ${{ runner.temp }}
-          note: "bmake world on ${{ matrix.os }}; the tail of the build log is attached"
+          # Named explicitly: macbuild.sh redirects the interesting output into
+          # its own --log file, and on the first build run that file did not
+          # reach the comment -- so the failure text, the whole point of this
+          # step, was the one thing missing.
+          logs: >-
+            ${{ runner.temp }}/build-world.log
+            ${{ runner.temp }}/build-world.console.log
+          note: "bmake ${{ env.MACBUILD_STAGE }} on ${{ matrix.os }} (TARGET_ARCH=${{ env.TARGET_ARCH }})"
 
       - name: Locate staged output
         id: staged
