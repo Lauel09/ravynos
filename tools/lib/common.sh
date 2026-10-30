@@ -210,5 +210,6 @@ find_python() {
 
 # host_summary  one-line description used in build manifests.
 host_summary() {
+    # audit:allow arch-assumption (this *describes* the host; it never picks a target)
     printf '%s %s (%s)' "$(uname -s)" "$(uname -r)" "$(uname -m)"
 }

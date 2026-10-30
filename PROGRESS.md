@@ -1,6 +1,6 @@
 # RavynOS Fork — Progress Log
 
-**Last updated:** 2026-10-30 (rev 11 — portable pipeline complete through real staging; CI matrix; macOS build driver + portability audit)
+**Last updated:** 2026-10-30 (rev 12 — portable pipeline complete through real staging; CI matrix; macOS build driver + portability audit)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.
 
@@ -107,6 +107,22 @@ Preliminary finding from the dry run: `xar` relies on build ordering for
 `libstuff.a` rather than declaring it. The real build creates it first, so no
 change was needed; revisit if a parallel build exposes a race.
 
+### 3.3 Audit-driven portability fixes (rev 12)
+
+`tools/macbuild-audit.py` (see `Docs/macOS-Host.md` §5) found the following
+cross-host hazards without running a build. Both were fixed additively; neither
+changes behaviour on FreeBSD/Linux where the original spelling worked.
+
+| Where | Hazard | Fix |
+|---|---|---|
+| `BSD/share/mk/bsd.crunchgen.mk` | `sed -i ''` (BSD syntax) fails under GNU sed | rewrite through `${OUTMK}.tmp` with a plain `sed -e` + `mv` |
+| `BSD/usr.bin/man/man.sh` | `stat -f %i` (BSD) fails under GNU coreutils in the hardlink self-test | POSIX `ls -i | awk` |
+
+Deliberate, annotated exceptions (`# audit:allow`) remain in `GNU/bin/dmidecode/Makefile`
+(host detection for a GNU-make `?=` default) and `tools/lib/common.sh` (host
+description, never target selection). The audit is clean at `--severity medium`
+over the whole tree.
+
 ## 4. Bootable image pipeline status — **Phase 2, complete except content**
 
 `ISO/build.sh` remains FreeBSD-host-only and root-requiring; it is retired for
@@ -174,6 +190,10 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-10-30 (rev 12) — audit-driven portability fixes:** replaced a BSD-only
+  `sed -i ''` in `bsd.crunchgen.mk` and a BSD-only `stat -f %i` in `man.sh` with
+  portable equivalents, and annotated the two deliberate host-detection
+  exceptions. The audit is now clean at `--severity medium` tree-wide.
 - **2026-10-30 (rev 11) — pipeline completed, CI + build tooling:** `mkimage.sh`
   gained real staging mode, the GPT/FAT `.img` variant and explicit backends;
   dependency-free ISO/El-Torito, FAT16/GPT and boot-stub writers plus an

@@ -64,7 +64,7 @@ SKIP_PATTERNS = (
     # Overlay scripts run inside the installed system, not on the build host.
     "/ISO/overlays/",
     # Vendored third-party CI scaffolding.
-    "/.gitlab-ci/", "/libinput/",
+    "/.gitlab-ci/", "/libinput/", "/libpng/ci/", "/BATS Scripts/",
     "/old-launchd/", "/utils/ci/", "/utils/release/",
     # Vendored LLVM subprojects: read, never edited by this fork.
     "/llvm/llvm/", "/llvm/lldb/", "/llvm/clang/", "/llvm/compiler-rt/",
@@ -112,7 +112,7 @@ CHECKS = [
      "make-and-script",
      "BSD/macOS-only option; fails with GNU coreutils"),
     ("arch-assumption", "medium",
-     re.compile(r"uname\s+-m|hw\.optional|MACHINE_ARCH\s*[?:]?="),
+     re.compile(r"uname\s+-m|hw\.optional"),
      "make-and-script",
      "host architecture leaking into target selection; use TARGET_ARCH"),
     ("xcode-shim", "low",
@@ -194,6 +194,12 @@ def scan(root: str, subdirs: list[str], min_severity: str) -> list[dict]:
                             # without invoking it; a tool name that is part of
                             # a path (usr.sbin/makefs/tests) is not an
                             # invocation either.
+                            if name == "arch-assumption":
+                                # Detecting the *host* is legitimate and
+                                # necessary (HOST_MACHINE, _HOST_ARCH); using
+                                # it to pick the *target* is the bug.
+                                if re.search(r"(?:^|[^A-Z_])(?:_?HOST\w*)\s*[:!?+]?=", line):
+                                    continue
                             if name == "freebsd-tool":
                                 if ".warning" in line or ".info" in line:
                                     continue
