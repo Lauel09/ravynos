@@ -142,7 +142,7 @@ No investigation currently open; the first gets nominated by the first real gap 
 
 ## Changelog
 
-- **2026-10-30 (rev 9) — session backup:** attempts 10–15 logged; toolchain now reaches `cctools/ld64` and fails on `reallocf` (BSD libc helper missing on macOS) in `ResponseFiles.cpp`. Uncommitted fixes in tree: `libtapi.so`→`libtapi.dylib`, `CPU_SUBTYPE_X86_ALL`→`CPU_SUBTYPE_X86_64_ALL`, and the `reallocf` call sites. Fork published; CI green on both hosts. All builds stopped at user request; resume with `bmake Developer`.
+- **2026-10-30 (rev 10) — M1 toolchain milestone:** `bmake Developer` now exits 0 on macOS. All accumulated `macbuild:` fixes committed as a single milestone (cctools/ld64, dtrace_ctf, os/base.h, TAPI, LLVM, top-level `LD`/`TARGET_ARCH`). Next: `bmake world` for the kernel, SDK and userland.
 - **2026-10-30 (rev 7) — published + CI green:** fork at https://github.com/Lauel09/ravynos; CI pipeline self-test green on Ubuntu and macOS; `tools/bootview.sh` added.
 - **2026-10-30 (rev 6) — published:** fork created, default branch set, branch and tag pushed.
 - **2026-10-30 (rev 4) — Phase 1 build loop + Phase 2 stub proven:** ten `bmake world` attempts; fixed non-root chowns, yacc/lex shims, arm64 `TargetConditionals`, xar OpenSSL/libxml2, libctf `qsort_r`, quoted LLVM CMake flags, and shim-header shadowing. Target arch made explicit (`TARGET_ARCH=x86_64` default, arm64 opt-in). Portable pipeline scaffolded and its stub loop self-tested end to end (PASS). `Docs/BUILDING.md` corrected.
