@@ -317,13 +317,44 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # --------------------------------------------------------------------------
+# Timestamps
+#
+# Stage files are created seconds apart, and both writers record file
+# modification times in directory entries, so two builds of the *same* content
+# produced different bytes whenever they straddled a second boundary.  On
+# macOS with xorriso 1.5.8 the pipeline self-test caught it (two ISOs, same
+# size, different sha256); on Linux xorriso 1.5.6 it only passed because the
+# two runs happened to land inside one second.  Normalise the staging tree to
+# the build epoch in UTC -- both backends then see identical inputs.
+# --------------------------------------------------------------------------
+normalize_mtimes() {
+    [ -d "$STAGE/root" ] || return 0
+    stamp=$("$PYTHON" -c 'import sys,time
+print(time.strftime("%Y%m%d%H%M.%S", time.gmtime(int(sys.argv[1]))))' "$EPOCH") ||
+        { warn "could not format the build timestamp; leaving mtimes alone"
+          return 0; }
+    # TZ=UTC0 keeps both touch and the formatter on UTC on every host.
+    find "$STAGE/root" -exec env TZ=UTC0 touch -t "$stamp" {} + 2>/dev/null ||
+        find "$STAGE/root" -exec env TZ=UTC0 touch -t "$stamp" {} \; 2>/dev/null ||
+        warn "could not normalise staged mtimes; output may not be reproducible"
+}
+
+# --------------------------------------------------------------------------
 # Writers
 # --------------------------------------------------------------------------
 write_iso() {
     out=$1
     if [ "$ISO_BACKEND" = xorriso ]; then
-        set -- -as mkisofs -quiet -V "$VOLUME_ID" -o "$out" \
-            -b "$BOOT_IMAGE" -no-emul-boot -boot-load-size "$BOOT_LOAD_SIZE"
+        set -- -as mkisofs -quiet -V "$VOLUME_ID" -o "$out"
+        # Only claim a boot image when there is one.  `-b ""` made libisofs
+        # answer "Trying to use an invalid file as boot image" and abort, so
+        # `mkimage --root` failed outright on any host with xorriso -- i.e. on
+        # every CI runner -- while the Python backend, which guards the same
+        # option, sailed through.  A --root tree need not be bootable.
+        if [ -n "$BOOT_IMAGE" ]; then
+            set -- "$@" -b "$BOOT_IMAGE" -no-emul-boot \
+                -boot-load-size "$BOOT_LOAD_SIZE"
+        fi
         if [ -n "$EFI_IMAGE" ]; then
             set -- "$@" -eltorito-alt-boot -e "$EFI_IMAGE" -no-emul-boot
         fi
@@ -378,6 +409,8 @@ write_img() {
 
 # The python ISO writer needs a boot image to be bootable; warn rather than
 # quietly shipping a non-bootable artifact, since that is the whole point.
+normalize_mtimes
+
 if [ "$want_iso" = 1 ] && [ -z "$BOOT_IMAGE" ]; then
     warn "no boot image selected; the ISO will be valid but not bootable"
 fi

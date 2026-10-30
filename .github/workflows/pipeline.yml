@@ -133,23 +133,40 @@ jobs:
       - uses: ./.github/actions/install-host-tools
         with:
           qemu: "false"
-          xorriso: "false"
-          mtools: "false"
+          # Every backend, not just the Python fallback: this job used to
+          # install nothing, so it only ever proved that the backend a bare
+          # runner has is reproducible.  The boot job uses xorriso where it
+          # exists, and that is the one that turned out not to be.
+          xorriso: "true"
+          mtools: "true"
           nasm: "false"
 
-      - name: Two independent builds must be byte-identical
+      - name: Two independent builds must be byte-identical, per backend
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
           {
-            SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-              -o "$TMPDIR/a/img" -q
-            SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-              -o "$TMPDIR/b/img" -q
-            cmp "$TMPDIR/a/img.iso" "$TMPDIR/b/img.iso"
-            cmp "$TMPDIR/a/img.img" "$TMPDIR/b/img.img"
-            echo "both formats are byte-for-byte reproducible"
+            for pair in python:iso:iso xorriso:iso:iso mtools:img:img; do
+              backend=${pair%%:*}
+              rest=${pair#*:}
+              fmt=${rest%%:*}
+              ext=${rest##*:}
+              tool=xorriso
+              [ "$backend" = mtools ] && tool=mformat
+              if ! command -v "$tool" >/dev/null 2>&1; then
+                echo "  SKIP $backend/$fmt: $tool is not installed"
+                continue
+              fi
+              base="$TMPDIR/$backend-$fmt"
+              SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub \
+                --format "$fmt" --backend "$backend" -o "$base-a" -q
+              sleep 2   # force the two builds across a second boundary
+              SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub \
+                --format "$fmt" --backend "$backend" -o "$base-b" -q
+              cmp "$base-a.$ext" "$base-b.$ext"
+              echo "  $backend/$fmt: byte-for-byte reproducible ($(shasum -a 256 "$base-a.$ext" 2>/dev/null | cut -c1-16 || sha256sum "$base-a.$ext" | cut -c1-16))"
+            done
           } 2>&1 | tee "$RUNNER_TEMP/reproduce.log"
 
       - name: Cross-host comparison
@@ -157,7 +174,7 @@ jobs:
         # artifacts to check that macOS and Linux agree too.
         if: always()
         run: |
-          for f in "$TMPDIR"/a/*.iso "$TMPDIR"/a/*.img; do
+          for f in "$TMPDIR"/*-a.iso "$TMPDIR"/*-a.img; do
             [ -f "$f" ] && { shasum -a 256 "$f" 2>/dev/null || sha256sum "$f"; }
           done | tee "$TMPDIR/hashes.txt" || true
         env:
