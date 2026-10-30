@@ -776,8 +776,12 @@ def main(argv: list[str]) -> int:
     w.set_defaults(func=cmd_wrap)
 
     args = ap.parse_args(argv)
-    if args.timestamp:
-        raw = args.timestamp
+    # Only the `build` subparser defines --timestamp.  Reading args.timestamp
+    # unconditionally made `wrap` -- the mtools backend's GPT step -- die with
+    # AttributeError before writing anything, on every host, since it landed.
+    raw_timestamp = getattr(args, "timestamp", None)
+    if raw_timestamp:
+        raw = raw_timestamp
         if raw.upper() == "SOURCE_DATE_EPOCH":
             env = os.environ.get("SOURCE_DATE_EPOCH", "")
             args.epoch = int(env) if env.isdigit() else DEFAULT_EPOCH

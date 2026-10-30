@@ -108,7 +108,11 @@ if [ -n "$SCAN_DIRS" ]; then
     done
 fi
 
-[ -s "$LOGS_LIST" ] || die "no logs to attach (nothing was teed into the log directory)" 2
+# A job can fail before any step tees anything -- a broken setup action, a
+# bad workflow file, a cancelled run.  Silence is the worst answer there, so
+# post the metadata-only comment rather than refusing.
+NO_LOGS=0
+[ -s "$LOGS_LIST" ] || NO_LOGS=1
 
 # --------------------------------------------------------------------------
 # Build the comment body
@@ -167,6 +171,11 @@ PER_LOG=$((58000 / LOG_COUNT))
         done
         [ "$matched" = 1 ] || printf '\n_log not produced: `%s` (step failed before writing it)_\n' "$pattern"
     done < "$LOGS_LIST"
+    if [ "$NO_LOGS" = 1 ]; then
+        printf '\n**No log files were produced.** This job most likely failed '
+        printf 'before any step could tee output (environment setup, a broken '
+        printf 'workflow or action definition, or cancellation).\n'
+    fi
     printf '\n---\n_Host: `%s`%s. Exported by `tools/ci-log-export.sh`._\n' \
         "$(uname -srm 2>/dev/null || echo unknown)" \
         "${GITHUB_WORKFLOW:+, workflow \`$GITHUB_WORKFLOW\`}"

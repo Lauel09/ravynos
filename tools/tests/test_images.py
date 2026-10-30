@@ -436,6 +436,45 @@ class CommandLineTests(TempDirTest):
                                "img", out)
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_fat_cli_wrap_in_gpt(self) -> None:
+        # `fat.py wrap` is the mtools backend's GPT step.  It used to crash
+        # with AttributeError before writing anything, because main() read
+        # args.timestamp, which only the `build` subparser defines -- so
+        # --backend mtools could not have worked on any host.  Nothing tested
+        # the subcommand, which is why it shipped.
+        stage = self.path("stage")
+        os.makedirs(stage)
+        write_tree(stage, {"EFI/BOOT/BOOTX64.EFI": b"MZ"})
+        fat = self.path("bare.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "build", stage, "-o", fat, "--size-mb", "16",
+                               "--no-gpt", "--timestamp", str(EPOCH))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        out = self.path("wrapped.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "wrap", "--fat", fat, "-o", out,
+                               "--offset-sectors", "2048", "--label", "RAVYNOS")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "verify.py"),
+                               "img", out)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("VERIFY OK", result.stdout)
+
+    def test_wrap_rejects_a_misaligned_fat(self) -> None:
+        bad = self.path("odd.img")
+        with open(bad, "wb") as fh:
+            fh.write(b"x" * 1000)
+        out = self.path("out.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "wrap", "--fat", bad, "-o", out)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("multiple of", result.stderr)
+        self.assertFalse(os.path.exists(out))
+
     def test_verify_rejects_a_text_file(self) -> None:
         path = self.path("not-an-image.iso")
         with open(path, "w") as fh:

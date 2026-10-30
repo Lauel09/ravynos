@@ -145,11 +145,16 @@ if { [ "$BACKEND" = python ] || [ "$BACKEND" = auto ] || [ "$VERIFY" = 1 ]; } &&
     die "python3 is required for the selected backend/verification (or pass --backend xorriso)"
 fi
 
-EPOCH=$(case $TIMESTAMP_SPEC in
-    git|"") default_epoch ;;
-    SOURCE_DATE_EPOCH|source-date-epoch) default_epoch ;;
-    *) printf '%s\n' "$TIMESTAMP_SPEC" ;;
-esac)
+# Plain case, not `$(case ... esac)`: the nested form parses under dash and
+# bash 5 but not under the bash 3.2 that macOS ships as /bin/sh, where it
+# fails at parse time with "syntax error near unexpected token `;;'".  That
+# single line is why every macOS job in run 41058908780 died before doing any
+# work.  `sh -n` on the same host accepts it, which is why the syntax layer
+# did not catch it.
+case $TIMESTAMP_SPEC in
+    git|""|SOURCE_DATE_EPOCH|source-date-epoch) EPOCH=$(default_epoch) ;;
+    *)                                          EPOCH=$TIMESTAMP_SPEC ;;
+esac
 case $EPOCH in ''|*[!0-9]*) die "--timestamp must be epoch seconds, 'git' or SOURCE_DATE_EPOCH" 2 ;; esac
 
 VERSION=$(prod_version); [ -n "$VERSION" ] || VERSION=unknown
@@ -347,7 +352,16 @@ write_img() {
         sectors=$(( ${SIZE_MB:-16} * 1024 * 1024 / 512 ))
         mformat -i "$fat_img" -C -T "$sectors" -h 64 -s 32 -v "$FAT_LABEL" -N 0 :: ||
             die "mformat failed"
-        ( cd "$STAGE/root" && mcopy -i "$fat_img" -s -Q -m . :: ) || die "mcopy failed"
+        # mtools rejects a literal "." as a source path ("Cannot create entry
+        # named . or .."), which is how `--backend mtools` failed on every
+        # runner that had mtools installed.  Copy the top-level entries by
+        # name instead, dotfiles included.  -m keeps the source mtime, so the
+        # result is deterministic for as long as the staged tree is.
+        ( cd "$STAGE/root" || exit 1
+          for entry in .[!.]* *; do
+              [ -e "$entry" ] || continue
+              mcopy -i "$fat_img" -s -Q -m "$entry" :: || exit 1
+          done ) || die "mcopy failed"
         size_opt=
         [ -n "$SIZE_MB" ] && size_opt="--size-mb $SIZE_MB"
         # shellcheck disable=SC2086

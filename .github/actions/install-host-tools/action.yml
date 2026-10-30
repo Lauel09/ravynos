@@ -40,8 +40,12 @@ runs:
         [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu-system-x86"
         # file(1) and dosfstools are useful when diagnosing artifacts.
         pkgs="$pkgs file dosfstools"
-        echo "installing:$pkgs"
-        sudo apt-get install -y -qq $pkgs
+        if [ -z "${pkgs# }" ]; then
+          echo "nothing to install (all inputs false)"
+        else
+          echo "installing:$pkgs"
+          sudo apt-get install -y -qq $pkgs
+        fi
 
     - name: Install tools (macOS)
       if: runner.os == 'macOS'
@@ -53,9 +57,16 @@ runs:
         [ "${{ inputs.mtools }}" = "true" ] && pkgs="$pkgs mtools"
         [ "${{ inputs.nasm }}" = "true" ] && pkgs="$pkgs nasm"
         [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu"
-        echo "installing:$pkgs"
-        # Homebrew on macOS runners is preinstalled; avoid a full auto-update.
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install $pkgs
+        if [ -z "${pkgs# }" ]; then
+          # `brew install` with no formula is an error, so a job that asked
+          # for nothing (the reproducibility job) used to fail while setting
+          # up its toolchain -- before it had run a single test.
+          echo "nothing to install (all inputs false)"
+        else
+          echo "installing:$pkgs"
+          # Homebrew on macOS runners is preinstalled; no full auto-update.
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install $pkgs
+        fi
 
     - name: Report tool versions
       shell: bash
