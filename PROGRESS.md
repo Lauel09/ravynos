@@ -237,7 +237,12 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## 6. Current blocker / work list (ordered)
 
-1. **[Phase 1, next]** `bmake world` on a macOS runner with the cached toolchain,
+1. **[Phase 1, in flight]** `bmake world` on both runners, first attempt that
+   gets past the first five minutes (driver fixes above). Until it reports,
+   every statement about LLVM, the SDK, XNU or the userland is inherited from
+   earlier notes rather than observed.
+
+0. **[Phase 1, next]** `bmake world` on a macOS runner with the cached toolchain,
    then a real staging root through `mkimage.sh --root` — the first time the
    staging mode will see anything but a two-file toy tree.  This is the next
    real signal; everything downstream of it is still stub-fed.
@@ -255,6 +260,24 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-10-30 (rev 14) — the build driver had never pointed at the tree.**
+  With bmake built locally from a source mirror (this sandbox has no bmake and
+  no Debian mirror), `bmake world`'s five-minute failure reproduced: `repo_root`
+  in `tools/lib/common.sh` was `dirname $0/../..`, correct for `tools/lib/` and
+  one level too high for `tools/`, so `macbuild.sh` ran bmake in the
+  *repository's parent* and every image was stamped "version unknown / commit
+  unknown / built-at 1980-01-01". Fixed by walking up to the directory that
+  holds `Makefile` and `BSD/share/mk`. Two more driver bugs fell out: the tree's
+  own `BSD/share/mk` was never on bmake's search path early enough (sys.mk's
+  `.include <bsd.mkopt.mk>` could not resolve, "Fatal errors encountered"), and
+  `${PIPESTATUS[0]}` — a bash array — was read in a `#!/bin/sh` script, so under
+  dash a failed build reported tee's status. Also in this revision: `mkimage
+  --root` dereferences relative symlinks inside the root and skips absolute ones
+  with a warning (the tree's own staging creates symlinks, so `--root` could not
+  package this project at all), and the mtools reproducibility defect is
+  characterised — the differing bytes are 64-bit stack addresses at the end of
+  the FAT volume, i.e. uninitialised memory, so it is upstream and now warns
+  instead of failing the job.
 - **2026-10-30 (rev 13) — the pipeline was made to run on machines with QEMU,
   and it did not run.** Three CI rounds, nine defects, all fixed and pushed:
   a bash-3.2 parse error that killed every macOS job, an `mcopy` invocation
