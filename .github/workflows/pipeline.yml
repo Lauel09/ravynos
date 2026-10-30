@@ -1,45 +1,201 @@
-name: Portable pipeline self-test
+name: Portable pipeline
+
+# Proves that tools/mkimage.sh + tools/bootcheck.sh stay host-neutral.
+#
+# Four jobs, deliberately overlapping:
+#   tests      unit tests + CLI contract + shell syntax (no host tools at all)
+#   structure  stub ISO/IMG built and structurally verified on both OSes,
+#              including one build per backend (xorriso / python / mtools)
+#   reproduce  byte-for-byte reproducibility across two independent runs
+#   boot       QEMU verdict on Ubuntu and macOS, with the ISO and logs kept
+#
+# The whole suite is cheap (seconds to a couple of minutes), so it runs on
+# every push and pull request.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 5 * * *"   # daily, catches host-image drift
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  selftest:
-    name: stub ISO -> QEMU verdict (${{ matrix.os }})
+  tests:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install host tools (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xorriso nasm qemu-system-x86
+      - name: Python version
+        run: python3 --version
 
-      - name: Install host tools (macOS)
-        if: runner.os == 'macOS'
-        run: brew install xorriso nasm qemu
+      - name: Shell syntax, unit tests, CLI contract
+        run: tools/tests/run-tests.sh --no-pipeline -v
 
-      - name: Run pipeline self-test
+  structure:
+    name: structure (${{ matrix.os }}, ${{ matrix.backend }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, backend: python }
+          - { os: ubuntu-latest, backend: xorriso }
+          - { os: ubuntu-latest, backend: mtools }
+          - { os: macos-latest, backend: python }
+          - { os: macos-latest, backend: xorriso }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+        with:
+          qemu: "false"
+          xorriso: ${{ matrix.backend == 'xorriso' }}
+          mtools: ${{ matrix.backend == 'mtools' }}
+          nasm: "true"
+
+      - name: Build, verify and reproduce (structure only)
         env:
-          BOOTCHECK_TIMEOUT: 60
           TMPDIR: ${{ runner.temp }}
-        run: tools/pipeline-selftest.sh
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.backend }}" = "mtools" ]; then
+            fmt=img
+          else
+            fmt=iso
+          fi
+          tools/mkimage.sh --stub --format "$fmt" --backend "${{ matrix.backend }}" \
+            -o "$TMPDIR/build/stub" --verify --json "$TMPDIR/build/stub.json"
+          python3 tools/image/verify.py "$fmt" "$TMPDIR/build/stub.$fmt" --json \
+            > "$TMPDIR/build/verify.json"
+          cat "$TMPDIR/build/stub.json"
 
-      - name: Upload serial log on failure
-        if: failure()
+      - name: End-to-end self-test (no QEMU)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: tools/pipeline-selftest.sh --no-qemu
+
+      - name: Upload build record
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-serial-${{ matrix.os }}
+          name: image-record-${{ matrix.os }}-${{ matrix.backend }}
           path: |
+            ${{ runner.temp }}/build/*.json
+            ${{ runner.temp }}/build/*.manifest.txt
+            ${{ runner.temp }}/build/*.sha256
+          if-no-files-found: ignore
+          retention-days: 14
+
+  reproduce:
+    name: reproducibility (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+        with:
+          qemu: "false"
+          xorriso: "false"
+          mtools: "false"
+          nasm: "false"
+
+      - name: Two independent builds must be byte-identical
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
+            -o "$TMPDIR/a/img" -q
+          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
+            -o "$TMPDIR/b/img" -q
+          cmp "$TMPDIR/a/img.iso" "$TMPDIR/b/img.iso"
+          cmp "$TMPDIR/a/img.img" "$TMPDIR/b/img.img"
+          echo "both formats are byte-for-byte reproducible"
+
+      - name: Cross-host comparison
+        # Each runner records its hashes; a maintainer can diff the two
+        # artifacts to check that macOS and Linux agree too.
+        if: always()
+        run: |
+          for f in "$TMPDIR"/a/*.iso "$TMPDIR"/a/*.img; do
+            [ -f "$f" ] && { shasum -a 256 "$f" 2>/dev/null || sha256sum "$f"; }
+          done | tee "$TMPDIR/hashes.txt" || true
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      - name: Upload hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hashes-${{ matrix.os }}
+          path: ${{ runner.temp }}/hashes.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  boot:
+    name: boot verdict (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+
+      - name: Boot the stub and the four-stage milestone images
+        env:
+          TMPDIR: ${{ runner.temp }}
+          BOOTCHECK_TIMEOUT: "120"
+        run: |
+          set -euo pipefail
+          tools/pipeline-selftest.sh --keep | tee "$TMPDIR/selftest.log"
+          work=$(sed -n 's/^  work  //p' "$TMPDIR/selftest.log" | tail -1)
+          echo "WORK=$work" >> "$GITHUB_ENV"
+
+      - name: Publish the boot verdict as a check annotation
+        if: always()
+        run: |
+          for f in "$TMPDIR"/ravynos-bootcheck.*/serial.log; do
+            [ -f "$f" ] || continue
+            echo "## serial log: $f"
+            tail -40 "$f"
+          done
+
+      - name: Upload images, logs and verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.iso
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.img
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.json
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.manifest.txt
             ${{ runner.temp }}/ravynos-bootcheck.*/serial.log
             ${{ runner.temp }}/ravynos-bootcheck.*/qemu.log
+            ${{ runner.temp }}/ravynos-bootcheck.*/screenshot.ppm
+            ${{ runner.temp }}/selftest.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30

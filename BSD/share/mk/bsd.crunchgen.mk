@@ -124,9 +124,12 @@ ${OUTPUTS}: ${CONF}
 	    ${CRUNCHGEN} -fq -m ${OUTMK} -c ${OUTC} ${CONF}
 	# Avoid redundantly calling 'make objs' which we've done by our
 	# own dependencies.
-	sed -i '' \
-	    -e "s/^\(${PROG}:.*\) \$$(SUBMAKE_TARGETS)/\1/" \
-	    ${OUTMK}
+	# Rewrite through a temporary file rather than `sed -i`: the in-place
+	# flag takes an argument on BSD and none on GNU, so no single spelling
+	# works for both hosts (macbuild:).
+	sed -e "s/^\(${PROG}:.*\) \$$(SUBMAKE_TARGETS)/\1/" \
+	    ${OUTMK} > ${OUTMK}.tmp
+	mv ${OUTMK}.tmp ${OUTMK}
 
 # These 2 targets cannot use .MAKE since they depend on the generated
 # ${OUTMK} above.

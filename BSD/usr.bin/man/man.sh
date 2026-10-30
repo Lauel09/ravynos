@@ -1019,7 +1019,7 @@ whatis_usage() {
 
 # Supported commands
 do_apropos() {
-	[ $(stat -f %i /usr/bin/man) -ne $(stat -f %i /usr/bin/apropos) ] && \
+	[ $(ls -i /usr/bin/man | awk '{print $1}') -ne $(ls -i /usr/bin/apropos | awk '{print $1}') ] && \
 		exec apropos "$@"
 	search_whatis apropos "$@"
 }
@@ -1117,7 +1117,7 @@ do_manpath() {
 }
 
 do_whatis() {
-	[ $(stat -f %i /usr/bin/man) -ne $(stat -f %i /usr/bin/whatis) ] && \
+	[ $(ls -i /usr/bin/man | awk '{print $1}') -ne $(ls -i /usr/bin/whatis | awk '{print $1}') ] && \
 		exec whatis "$@"
 	search_whatis whatis "$@"
 }

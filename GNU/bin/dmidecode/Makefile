@@ -44,7 +44,8 @@ INSTALL_DIR     := $(INSTALL) -m 755 -d
 INSTALL_PROGRAM := $(INSTALL) -m 755
 RM              := rm -f
 
-# BSD make provides $MACHINE, but GNU make doesn't
+# BSD make provides $MACHINE, but GNU make doesn't.
+# audit:allow arch-assumption (host detection for a ?= default, not target selection)
 MACHINE ?= $(shell uname -m 2>/dev/null)
 
 # These programs are only useful on x86

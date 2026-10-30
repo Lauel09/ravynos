@@ -26,43 +26,53 @@ This fork exists to do three things, in order:
 
 ## Current status
 
-- **Phase 0** — fork/environment bootstrap: done except creating the fork
-  remote (`gh auth login`, then `gh repo fork`).
-- **Phase 1** — building on macOS: active. Ten `bmake world` attempts logged;
-  the host toolchain (LLVM, cctools, xar, libctf, mig, …) is compiling with an
-  explicit `x86_64` target cross-built from this arm64 Mac. See
-  [`PROGRESS.md`](PROGRESS.md).
-- **Phase 2** — portable image pipeline: **proven end to end in stub mode.**
-  `tools/mkimage.sh --stub` builds an El Torito ISO and `tools/bootcheck.sh`
-  boots it under QEMU and reports a serial marker; `tools/pipeline-selftest.sh`
-  runs both and passes in ~1 s on this Mac. Real staging mode waits on Phase 1
-  artifacts.
-- **Phase 3** — a first CI slice exists:
-  [`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml) runs the
-  stub self-test on Ubuntu and macOS.
-- **Phases 4–5** — reverse-engineering loop and parity demos: not started;
-  doctrine and workspace are in [`work/README.md`](work/README.md) and
-  [`ROADMAP.md`](ROADMAP.md).
+- **Phase 0** — fork/environment bootstrap: complete.
+- **Phase 1** — building on macOS: active. The host toolchain milestone is
+  done; the failure→fix log lives in [`PROGRESS.md`](PROGRESS.md) §3.2 and the
+  conventions in [`Docs/macOS-Host.md`](Docs/macOS-Host.md).
+  `tools/macbuild.sh` drives the loop (preflight, logging, per-stage resume,
+  `--audit`), and `tools/macbuild-audit.py` statically finds the host
+  assumptions that break a build before one is attempted.
+- **Phase 2** — portable image pipeline: **working, with real staging mode.**
+  `tools/mkimage.sh` builds El Torito ISOs (BIOS and/or UEFI entries) and
+  GPT/FAT ESP disk images, root-free, from a stub *or* a staged sysroot, with
+  xorriso/mtools *or* dependency-free Python backends. `tools/bootcheck.sh`
+  turns a QEMU boot into a multi-milestone verdict with logs, screenshots and
+  JSON. `tools/image/verify.py` validates image structure independently of the
+  writers. Reference: [`Docs/Pipeline.md`](Docs/Pipeline.md).
+- **Phase 3** — CI: [`pipeline.yml`](.github/workflows/pipeline.yml) runs
+  tests, per-backend structure checks, reproducibility and real QEMU boots on
+  Ubuntu and macOS; [`build.yml`](.github/workflows/build.yml) and
+  [`nightly.yml`](.github/workflows/nightly.yml) chain `bmake world` →
+  `mkimage` → `bootcheck`.
+- **Phase 4** — reverse-engineering loop: workspace and templates are in
+  [`work/README.md`](work/README.md); no investigation is open until Phase 1/2
+  nominate a real gap.
+- **Phase 5** — parity demos: not started.
 
 Full plan and exit criteria: [`ROADMAP.md`](ROADMAP.md).
 
 ## Quick start
 
 ```sh
-# Build (BSD make; default target is x86_64 even on Apple Silicon)
+# Build (BSD make; the target is x86_64 even on Apple Silicon)
 cd /path/to/ravynos
-bmake world
-# Cross-build the AArch64 experiment instead:
-bmake TARGET_ARCH=arm64 world
+tools/macbuild.sh                 # preflight + bmake world, logged and resumable
+bmake world                       # or run bmake directly
 
 # Portable pipeline (no root, no mounts)
 tools/mkimage.sh --stub -o stub.iso
 tools/bootcheck.sh stub.iso
-tools/pipeline-selftest.sh
+tools/pipeline-selftest.sh        # the whole loop
+tools/tests/run-tests.sh          # unit tests + CLI contract
+
+# A real image once a staged sysroot exists
+tools/mkimage.sh --root ../build/stage --format both -o out/ravynos --verify
 ```
 
 Prerequisites on macOS: `brew install bmake cmake ninja make bison flex qemu
-xorriso mtools nasm openssl@3`. See [`Docs/BUILDING.md`](Docs/BUILDING.md).
+xorriso mtools nasm openssl@3 libxml2 zlib`. See
+[`Docs/BUILDING.md`](Docs/BUILDING.md).
 
 ## Repository layout
 
@@ -72,8 +82,10 @@ xorriso mtools nasm openssl@3`. See [`Docs/BUILDING.md`](Docs/BUILDING.md).
 | `Kernel/` | XNU kernel and kexts |
 | `Frameworks/`, `Libraries/`, `BSD/` | System frameworks, libraries and userland |
 | `ISO/` | Legacy FreeBSD-host ISO assembly (superseded by `tools/`) |
-| `tools/` | Portable image pipeline and boot smoke tests |
-| `work/` | Reverse-engineering evidence and notes (need-driven) |
+| `tools/` | Portable image pipeline, image writers/verifier, boot smoke tests, macOS build driver |
+| `tools/image/` | Dependency-free ISO 9660/El Torito, FAT16/GPT writers and the structural verifier |
+| `work/` | Reverse-engineering workspace: doctrine, templates, evidence (need-driven) |
+| `Docs/` | Build, pipeline, bootloader and macOS-host documentation |
 
 ## Conventions
 

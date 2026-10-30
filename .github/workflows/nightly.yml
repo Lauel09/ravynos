@@ -1,0 +1,148 @@
+name: Nightly from scratch
+
+# Catches cache rot: the toolchain cache in build.yml can hide a broken
+# Developer/ tree for weeks because nothing ever rebuilds it from zero.
+# This workflow deliberately disables caching, builds both host families,
+# packages an image, boots it, and files an issue when any of that fails.
+#
+# It is also the first thing to look at when an ordinary build starts failing
+# for no apparent reason: if nightly is green and an incremental build is not,
+# the cache is the problem.
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  clean-build:
+    name: clean bmake world (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, label: macos-arm64 }
+          - { os: ubuntu-latest, label: linux-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install \
+            bmake cmake ninja make bison flex openssl@3 libxml2 zlib
+
+      - name: Install build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bmake cmake ninja-build make bison flex clang lld \
+            libssl-dev libxml2-dev zlib1g-dev uuid-dev libarchive-dev \
+            libbz2-dev liblzma-dev pkg-config python3
+
+      - name: Remove any previous build tree
+        run: rm -rf ../build
+
+      - name: Build world (no cache)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          tools/macbuild.sh --target-arch x86_64 \
+            --log "$TMPDIR/build-world.log" 2>&1 |
+            tee "$TMPDIR/build-world.console.log"
+          echo "build took $(( $(date +%s) - start ))s"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-log-${{ matrix.label }}
+          path: |
+            ${{ runner.temp }}/build-world.log
+            ${{ runner.temp }}/build-world.console.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  pipeline:
+    name: image + boot (${{ matrix.os }})
+    needs: clean-build
+    if: always() && needs.clean-build.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x86_64 }
+          - { os: macos-latest, label: macos-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+
+      - name: Full pipeline self-test including boots
+        env:
+          TMPDIR: ${{ runner.temp }}
+          BOOTCHECK_TIMEOUT: "180"
+        run: tools/pipeline-selftest.sh --keep
+
+      - name: Upload images and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-pipeline-${{ matrix.label }}
+          path: |
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.iso
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.img
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.json
+            ${{ runner.temp }}/ravynos-bootcheck.*/*.log
+            ${{ runner.temp }}/ravynos-bootcheck.*/*.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  report:
+    name: file an issue on failure
+    needs: [clean-build, pipeline]
+    if: always() && (needs.clean-build.result == 'failure' || needs.pipeline.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open or update the nightly failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          title="nightly: build or boot failure"
+          existing=$(gh issue list --state open --search "$title in:title" \
+            --json number --jq '.[0].number // empty')
+          body="Nightly run failed: $RUN_URL
+
+          This workflow builds both host families from scratch, then packages and
+          boots an image.  The artifact logs are attached to the run.
+
+          Triage order:
+          1. \`build-log-*\` artifacts -- which host, which stage?
+          2. \`nightly-pipeline-*\` -- did the image build, or only the boot fail?
+          3. If only incremental builds fail, suspect the toolchain cache."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -70,17 +70,41 @@ Darwin-specific changes.
 ## Portable image pipeline
 
 The FreeBSD-only `ISO/build.sh` is not used on macOS or Linux. The replacement
-pipeline is root-free and host-neutral:
+pipeline is root-free, mount-free and host-neutral:
 
 ```sh
-tools/mkimage.sh --stub -o stub.iso   # loader-only smoke-test image
-tools/bootcheck.sh stub.iso           # QEMU boot verdict
-tools/pipeline-selftest.sh            # both of the above, end to end
+tools/mkimage.sh --stub -o stub.iso        # loader-only smoke-test image
+tools/mkimage.sh --stub --format both      # ISO + dd-able disk image
+tools/bootcheck.sh stub.iso                # QEMU boot verdict
+tools/pipeline-selftest.sh                 # the whole loop, end to end
+tools/tests/run-tests.sh                   # unit tests, CLI contract, syntax
 ```
 
-`mkimage.sh` uses `xorriso`; `bootcheck.sh` uses `qemu-system-x86_64`. The stub
-mode additionally needs `nasm`. No mounts, chroot, `mdconfig`, `zpool` or root
-privileges are involved.
+`mkimage.sh` prefers `xorriso` (ISO) and `mtools` (FAT ESP) but ships
+dependency-free Python backends, so a host with only Python 3 can still build
+and verify images.  `bootcheck.sh` uses `qemu-system-x86_64`.  No mounts,
+chroot, `mdconfig`, `zpool` or root privileges are involved — the pipeline
+refuses to run as root on purpose.
+
+Full reference: [`Docs/Pipeline.md`](Pipeline.md).  Real-image mode
+(`--root DIR`, plus the bootloader decision) is described there and in
+[`Docs/BootLoader.md`](BootLoader.md).
+
+## Building on macOS
+
+`bmake world` works directly, but the driver adds host checks, logging, resume
+state and a portability audit:
+
+```sh
+tools/macbuild.sh --audit            # preflight + static portability audit
+tools/macbuild.sh                    # bmake TARGET_ARCH=x86_64 world, logged
+tools/macbuild.sh --stage Developer  # one stage
+tools/macbuild.sh --dry-run          # parse the makefiles, build nothing
+```
+
+See [`Docs/macOS-Host.md`](macOS-Host.md) for prerequisites, the failure
+taxonomy and the fix conventions (`macbuild:` commits, host guards, Linux
+stays green).
 
 ## Troubleshooting
 
