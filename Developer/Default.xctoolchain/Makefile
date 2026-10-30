@@ -29,7 +29,7 @@ ${.OBJDIR}/tapi/Version.inc: ${.CURDIR}/llvm/tapi/include/tapi/Version.inc.in
 	   -e "s/@TAPI_VERSION@/${LLVM_VERSION}/" ${.ALLSRC} > ${.TARGET}
 
 
-SUBDIR = gmake mig unifdef cctools/libstuff cctools/libmacho xar rpcgen \
+SUBDIR = mig unifdef cctools/libstuff cctools/libmacho xar rpcgen \
 	 dtrace_ctf/libctf dtrace_ctf/libelf dtrace_ctf/libdwarf llvm \
 	 cctools dtrace_ctf/tools plktool xcbuild lzvndecode iig
 

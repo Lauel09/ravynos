@@ -33,11 +33,7 @@ all: ${RAVYN_SDKROOT}/usr/local/lib/kernel/${LIB}.a
 ${RAVYN_SDKROOT}/usr/local/lib/kernel/${LIB}.a: ${OBJS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/local/lib/kernel
 	${TOOLS}/libtool -static \
-	  -o ${.TARGET} -no_warning_for_no_symbols ${OBJS} \
-	  -L${RAVYN_SDKROOT}/usr/local/lib/dyld -lplatform \
-	  -L${RAVYN_SDKROOT}/usr/local/lib/kernel -lkernel \
-	  -L${RAVYN_SDKROOT}/usr/lib -L${RAVYN_SDKROOT}/usr/lib/system \
-	  -lc++ -lc++abi ${RAVYN_SDKROOT}/usr/lib/libclang_rt.osx.a
+	  -o ${.TARGET} -no_warning_for_no_symbols ${OBJS}
 
 .include <bsd.lib.mk>
 
