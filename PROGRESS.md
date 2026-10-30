@@ -1,10 +1,19 @@
 # RavynOS Fork — Progress Log
 
-**Last updated:** 2026-10-30 (rev 8 — build loop through attempt 13; toolchain still in progress)
+**Last updated:** 2026-10-30 (rev 11 — portable pipeline complete through real staging; CI matrix; macOS build driver + portability audit)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.
 
-> **Status: Phase 1 in progress.** The host toolchain builds through LLVM and now fails in `cctools/ld64` on a TAPI library-name mismatch (`libtapi.so` vs `libtapi.dylib`); that fix is in the working tree and not yet committed. Phase 2's root-free stub loop is proven end to end and its CI runs green on both Ubuntu and macOS. Phase 0 is complete: the fork is published at https://github.com/Lauel09/ravynos.
+> **Status (rev 11):** Phase 1's toolchain milestone is done (`bmake Developer`
+> exits 0 on macOS) and the loop is now tooled: `tools/macbuild.sh` (preflight,
+> logging, per-stage resume, `--audit`) and `tools/macbuild-audit.py` (static
+> host-hazard scan, clean at high severity). Next is SDK → kernel → userland.
+> Phase 2 is complete except for real-image *content*: `tools/mkimage.sh` has
+> real staging mode, ISO and `.img`, xorriso/mtools or dependency-free Python
+> backends, an independent structural verifier and a test suite; the QEMU
+> verdict is multi-milestone. Phase 3's three workflows are written and await
+> their first CI run. Phase 0 complete: the fork is published at
+> https://github.com/Lauel09/ravynos.
 
 ---
 
@@ -98,26 +107,39 @@ Preliminary finding from the dry run: `xar` relies on build ordering for
 `libstuff.a` rather than declaring it. The real build creates it first, so no
 change was needed; revisit if a parallel build exposes a race.
 
-## 4. Bootable image pipeline status — **active work item (Phase 2)**
+## 4. Bootable image pipeline status — **Phase 2, complete except content**
 
-`ISO/build.sh` is **FreeBSD-host-only** and requires root (`mdconfig`, `zpool`, `gpart`, `mkuzip`, `makefs`, `mkimg`, `newfs_msdos`, `mount msdosfs`, `chroot`, `etdump`). **Decision (2026-10-30): do not port it.** Replace with a portable pipeline (`tools/mkimage.sh` + `tools/bootcheck.sh`) on `xorriso` + `mtools` + QEMU — no root, no mounts, no chroot, identical on macOS and Linux. Substitution table and design: `roadmap.md` Phase 2.
+`ISO/build.sh` remains FreeBSD-host-only and root-requiring; it is retired for
+our purposes and replaced by the portable pipeline. Substitution table and
+design: `ROADMAP.md` Phase 2; reference documentation: `Docs/Pipeline.md`.
 
-**Implemented and proven (stub mode):** `tools/mkimage.sh --stub` builds an
-El Torito no-emulation ISO carrying `tools/bootstub/bootstub.asm`; QEMU boots
-it headless and `tools/bootcheck.sh` greps COM1 for
-`RAVYNOS-BOOTCHECK-STUB-OK`. `tools/pipeline-selftest.sh` runs the whole loop
-and **passes in ~1 s** on this Mac. The stub needs `nasm` in addition to
-QEMU/xorriso. `bootcheck.sh` keeps serial and QEMU logs, detects early QEMU
-exit and reaps the process cleanly; `BOOTCHECK_MEM` overrides the 2 GB default.
-`tools/bootview.sh` provides a graphical inspector.
+**Delivered (rev 11):**
 
-Next Phase 2 step: add the real staging mode to `mkimage.sh` once Phase 1
-produces kernel/loader/userland artifacts; the ISO plumbing itself is no
-longer the risk. No bootloader source exists in the tree yet, so the real image
-will need a loader decision (QEMU `-kernel` direct boot vs. an EFI loader).
+| Piece | Status |
+|---|---|
+| `tools/mkimage.sh` | stub / milestone-stub / **`--root` real staging** modes; `--format iso|img|both`; `--backend auto|xorriso|python|mtools`; manifest, `.sha256`, `.build.json`; refuses root; `--print-plan`, `--verify` |
+| `tools/image/iso9660.py` | complete ISO 9660 + El Torito writer (PVD, both path tables, level 1/2 identifiers, BIOS *and* UEFI catalog entries), no dependencies |
+| `tools/image/fat.py` | FAT16 + primary/backup GPT writer with VFAT long names, deterministic GUIDs, auto cluster sizing |
+| `tools/image/bootstub.py` | hand-assembled 16-bit stub generator (COM1 marker, multi-marker support) so the QEMU path needs no nasm |
+| `tools/image/verify.py` | independent structural verifier: ISO descriptors/tree/El Torito checksum, GPT CRCs, FAT chains — milliseconds, no QEMU |
+| `tools/bootcheck.sh` | multi-marker milestones, KVM/HVF/TCG auto-select, OVMF/`.img`, `--kernel` direct boot, screenshot, JSON verdict, logs preserved |
+| `tools/pipeline-selftest.sh` | build → verify → reproducibility → content-change → two QEMU boots; `--no-qemu` for a fast CI gate |
+| `tools/tests/` | 30 unit tests + CLI contract + shell-syntax layer; no host tools required |
 
-CI: `.github/workflows/pipeline.yml` runs `tools/pipeline-selftest.sh` on
-`ubuntu-latest` and `macos-latest` and is **green on both**.
+**Validation:** the selftest passes structure-only in ~1 s on Linux; the ISO
+writer is cross-checked against pycdlib and the FAT writer against pyfatfs
+during development, and every artifact is validated by `verify.py` in CI.
+Reproducibility is asserted by a CI job on both host families.
+
+**Remaining for the M2 exit criterion:** a real staged sysroot from the Phase 1
+build, and a loader that emits `RAVYNOS-LOADER-OK` … `RAVYNOS-USERSPACE-OK`
+(decision + staged plan: `Docs/BootLoader.md`).
+
+**CI:** `.github/workflows/pipeline.yml` (tests, per-backend structure,
+reproducibility, QEMU boots on Ubuntu + macOS), `build.yml`
+(`bmake world` → `mkimage` → `bootcheck`, toolchain cache keyed on
+`Developer/**`), `nightly.yml` (from scratch, files an issue on failure), and
+`.github/actions/install-host-tools` for the shared matrix setup.
 
 ## 5. Reverse-engineering workspace (`work/`)
 
@@ -128,7 +150,10 @@ CI: `.github/workflows/pipeline.yml` runs `tools/pipeline-selftest.sh` on
 | `ghidra_12.1.4.zip` | ✅ deleted after verification (reclaimed ~570 MB) |
 | Doctrine | Smallest subject that answers the question; need-driven targets only. See `work/README.md` |
 
-No investigation currently open; the first gets nominated by the first real gap Phases 1–2 produce.
+`work/` now exists in-tree with the doctrine, a template investigation
+(`work/_template/`: `NOTES.md`, a buildable probe, a provenance file) and the
+evidence conventions. No investigation is open; the first is nominated by the
+first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## 6. Current blocker / work list (ordered)
 
@@ -142,6 +167,17 @@ No investigation currently open; the first gets nominated by the first real gap 
 
 ## Changelog
 
+- **2026-10-30 (rev 11) — pipeline completed, CI + build tooling:** `mkimage.sh`
+  gained real staging mode, the GPT/FAT `.img` variant and explicit backends;
+  dependency-free ISO/El-Torito, FAT16/GPT and boot-stub writers plus an
+  independent verifier landed under `tools/image/`; `bootcheck.sh` became a
+  multi-milestone verdict with JSON output, acceleration selection, OVMF
+  support and screenshots; `tools/tests/` adds 30 unit tests, a CLI contract and
+  a shell-syntax layer. CI: `pipeline.yml` rewritten (tests / structure /
+  reproducibility / boot), plus `build.yml`, `nightly.yml` and a reusable
+  `install-host-tools` action. Phase 1 tooling: `tools/macbuild.sh` and
+  `tools/macbuild-audit.py` (clean at `--severity high`). Docs: `Docs/Pipeline.md`,
+  `Docs/BootLoader.md`, `Docs/macOS-Host.md`, `work/README.md` + templates.
 - **2026-10-30 (rev 10) — M1 toolchain milestone:** `bmake Developer` now exits 0 on macOS. All accumulated `macbuild:` fixes committed as a single milestone (cctools/ld64, dtrace_ctf, os/base.h, TAPI, LLVM, top-level `LD`/`TARGET_ARCH`). Next: `bmake world` for the kernel, SDK and userland.
 - **2026-10-30 (rev 7) — published + CI green:** fork at https://github.com/Lauel09/ravynos; CI pipeline self-test green on Ubuntu and macOS; `tools/bootview.sh` added.
 - **2026-10-30 (rev 6) — published:** fork created, default branch set, branch and tag pushed.

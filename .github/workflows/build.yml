@@ -1,0 +1,298 @@
+name: Build, image, boot
+
+# Phase 1/3: full world build on both host families, then the portable image
+# pipeline, then a QEMU boot verdict -- the M1 -> M2 -> M3 chain end to end.
+#
+# Trigger policy while M1 (bmake world on macOS) is still in progress:
+#   * workflow_dispatch and the nightly schedule always run;
+#   * pushes run only when the repository variable BUILD_ON_PUSH is "true".
+#     Set it with:  gh variable set BUILD_ON_PUSH --body true
+# so a half-finished build never turns every commit red, and flipping one
+# variable turns per-push CI on without touching this file.
+#
+# The image and bootcheck jobs adapt to what the build produced: if a staged
+# sysroot appears (a "stage" target or tools/macbuild.sh --stage), it is
+# packaged; otherwise they fall back to the stub image and say so in the job
+# summary, so the pipeline stays testable before the OS is complete.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_arch:
+        description: Target architecture
+        required: false
+        default: x86_64
+        type: choice
+        options: [x86_64, arm64]
+      full_clean:
+        description: Ignore the toolchain cache and rebuild from scratch
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [fork/darwin-dev]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TARGET_ARCH: ${{ inputs.target_arch || 'x86_64' }}
+
+jobs:
+  build:
+    name: bmake world (${{ matrix.os }})
+    if: github.event_name != 'push' || vars.BUILD_ON_PUSH == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, label: macos-arm64 }
+          - { os: ubuntu-latest, label: linux-x86_64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install \
+            bmake cmake ninja make bison flex openssl@3 libxml2 zlib
+
+      - name: Install build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            bmake cmake ninja-build make bison flex clang lld \
+            libssl-dev libxml2-dev zlib1g-dev uuid-dev libarchive-dev \
+            libbz2-dev liblzma-dev pkg-config python3
+
+      - name: Restore toolchain cache
+        if: ${{ !inputs.full_clean }}
+        uses: actions/cache@v4
+        with:
+          # Keyed on the toolchain sources: any change under Developer/
+          # invalidates it, which is exactly when a rebuild is required.
+          key: toolchain-${{ matrix.label }}-${{ env.TARGET_ARCH }}-${{ hashFiles('Developer/**') }}
+          restore-keys: |
+            toolchain-${{ matrix.label }}-${{ env.TARGET_ARCH }}-
+          path: |
+            ../build/Developer
+            ../build/tmp
+
+      - name: Show toolchain cache status
+        run: |
+          if [ -d ../build/Developer ]; then
+            echo "toolchain cache: hit ($(du -sh ../build/Developer | cut -f1))"
+          else
+            echo "toolchain cache: miss (full LLVM build expected)"
+            # Keep the job from silently burning six hours unnoticed.
+            echo "::notice title=Full toolchain build::No cached toolchain; this run rebuilds LLVM."
+          fi
+
+      - name: Build world
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -o pipefail
+          tools/macbuild.sh --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
+            2>&1 | tee "$TMPDIR/build-world.console.log"
+
+      - name: Locate staged output
+        id: staged
+        if: always()
+        run: |
+          for candidate in ../build/stage ../build/root ../build/world; do
+            if [ -d "$candidate" ] && [ -n "$(ls -A "$candidate" 2>/dev/null)" ]; then
+              echo "dir=$candidate" >> "$GITHUB_OUTPUT"
+              echo "staged sysroot found: $candidate"
+              break
+            fi
+          done
+          if ! grep -q '^dir=' "$GITHUB_OUTPUT" 2>/dev/null; then
+            echo "no staged sysroot; the image job will build the stub instead"
+            echo "dir=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package build outputs
+        if: always() && steps.staged.outputs.dir != ''
+        run: |
+          mkdir -p "$TMPDIR/artifact"
+          tar -C "${{ steps.staged.outputs.dir }}" -czf \
+            "$TMPDIR/artifact/stage.tar.gz" .
+          du -h "$TMPDIR/artifact/stage.tar.gz"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.label }}
+          path: |
+            ${{ runner.temp }}/build-world.log
+            ${{ runner.temp }}/build-world.console.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload staged sysroot
+        if: always() && steps.staged.outputs.dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-${{ matrix.label }}
+          path: ${{ runner.temp }}/artifact/stage.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
+
+  image:
+    name: mkimage (${{ matrix.os }})
+    needs: build
+    if: always() && needs.build.result != 'cancelled'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x86_64 }
+          - { os: macos-latest, label: macos-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+
+      - name: Download a staged sysroot if the build produced one
+        id: stage
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: stage-${{ matrix.label }}
+          path: ${{ runner.temp }}/stage-dl
+
+      - name: Unpack or fall back to the stub
+        id: source
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR/stage"
+          if [ -f "$TMPDIR/stage-dl/stage.tar.gz" ]; then
+            tar -C "$TMPDIR/stage" -xzf "$TMPDIR/stage-dl/stage.tar.gz"
+            echo "mode=--root $TMPDIR/stage" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Real image::packaging the built sysroot"
+          else
+            echo "mode=--stub" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Stub image::no staged sysroot from the build; packaging the boot stub"
+          fi
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      - name: Build the image
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          tools/mkimage.sh ${{ steps.source.outputs.mode }} --format both \
+            -o "$TMPDIR/out/ravynos" --verify \
+            --json "$TMPDIR/out/ravynos.json"
+          ls -l "$TMPDIR/out"
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Image (${{ matrix.label }})"
+            echo '```'
+            find "$TMPDIR/out" -maxdepth 1 -type f -printf '%f %s bytes\n' 2>/dev/null ||
+              find "$TMPDIR/out" -maxdepth 1 -type f -exec ls -l {} \;
+            echo '```'
+            [ -f "$TMPDIR/out/ravynos.json" ] && cat "$TMPDIR/out/ravynos.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          TMPDIR: ${{ runner.temp }}
+
+      - name: Upload image
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.label }}
+          path: |
+            ${{ runner.temp }}/out/ravynos.iso
+            ${{ runner.temp }}/out/ravynos.img
+            ${{ runner.temp }}/out/*.json
+            ${{ runner.temp }}/out/*.manifest.txt
+            ${{ runner.temp }}/out/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  bootcheck:
+    name: boot verdict (${{ matrix.os }})
+    needs: image
+    if: always() && needs.image.result == 'success'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x86_64 }
+          - { os: macos-latest, label: macos-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ matrix.label }}
+          path: ${{ runner.temp }}/image
+
+      - name: Boot the ISO
+        env:
+          TMPDIR: ${{ runner.temp }}
+          BOOTCHECK_TIMEOUT: "180"
+        run: |
+          set -euo pipefail
+          iso="$TMPDIR/image/ravynos.iso"
+          # Accept either the stub marker (image built without a sysroot) or
+          # the full milestone chain (real image), so the job is meaningful
+          # before and after M1 without being rewritten.
+          tools/bootcheck.sh "$iso" --expect-any \
+            --expect RAVYNOS-BOOTCHECK-STUB-OK \
+            --expect RAVYNOS-LOADER-OK \
+            --expect RAVYNOS-KERNEL-OK \
+            --expect RAVYNOS-ROOT-MOUNT-OK \
+            --expect RAVYNOS-USERSPACE-OK \
+            --screenshot \
+            --outdir "$TMPDIR/boot" --json "$TMPDIR/boot/verdict.json"
+
+      - name: Attach the verdict to the run summary
+        if: always()
+        run: |
+          {
+            echo "### Boot verdict (${{ matrix.label }})"
+            echo '```json'
+            cat "$TMPDIR/boot/verdict.json" 2>/dev/null || echo '{"verdict":"missing"}'
+            echo '```'
+            echo '```'
+            tail -40 "$TMPDIR/boot/serial.log" 2>/dev/null || echo 'no serial output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload boot logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ matrix.label }}
+          path: |
+            ${{ runner.temp }}/boot/serial.log
+            ${{ runner.temp }}/boot/qemu.log
+            ${{ runner.temp }}/boot/verdict.json
+            ${{ runner.temp }}/boot/screenshot.ppm
+          if-no-files-found: ignore
+          retention-days: 30

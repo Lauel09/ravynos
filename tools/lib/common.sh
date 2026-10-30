@@ -188,6 +188,9 @@ human_size() {
 
 # file_size FILE  size in bytes, portable across BSD and GNU stat.
 file_size() {
+    # Try BSD stat first, then GNU; each is queried with the other's flag, so
+    # the failure path is expected rather than a portability bug.
+    # audit:allow gnu-only-flag (deliberate fallback chain)
     stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null || echo 0
 }
 

@@ -1,0 +1,62 @@
+name: Install host tools
+description: >
+  Install the host tools the portable image pipeline uses, on Ubuntu and macOS.
+  Everything installed here is optional at runtime: tools/mkimage.sh falls back
+  to the dependency-free Python backends when xorriso or mtools are missing,
+  so CI deliberately exercises both the "full toolchain" and "bare runner"
+  paths (see .github/workflows/pipeline.yml).
+
+inputs:
+  qemu:
+    description: Install QEMU as well (needed for boot checks)
+    required: false
+    default: "true"
+  xorriso:
+    description: Install xorriso (ISO backend)
+    required: false
+    default: "true"
+  mtools:
+    description: Install mtools (FAT/ESP backend for .img)
+    required: false
+    default: "true"
+  nasm:
+    description: Install nasm (boot stub assembler)
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install tools (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        pkgs=""
+        [ "${{ inputs.xorriso }}" = "true" ] && pkgs="$pkgs xorriso"
+        [ "${{ inputs.mtools }}" = "true" ] && pkgs="$pkgs mtools"
+        [ "${{ inputs.nasm }}" = "true" ] && pkgs="$pkgs nasm"
+        [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu-system-x86"
+        # file(1) and dosfstools are useful when diagnosing artifacts.
+        pkgs="$pkgs file dosfstools"
+        echo "installing:$pkgs"
+        sudo apt-get install -y -qq $pkgs
+
+    - name: Install tools (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        pkgs=""
+        [ "${{ inputs.xorriso }}" = "true" ] && pkgs="$pkgs xorriso"
+        [ "${{ inputs.mtools }}" = "true" ] && pkgs="$pkgs mtools"
+        [ "${{ inputs.nasm }}" = "true" ] && pkgs="$pkgs nasm"
+        [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu"
+        echo "installing:$pkgs"
+        # Homebrew on macOS runners is preinstalled; avoid a full auto-update.
+        HOMEBREW_NO_AUTO_UPDATE=1 brew install $pkgs
+
+    - name: Report tool versions
+      shell: bash
+      run: tools/mkimage.sh --list-tools

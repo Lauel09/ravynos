@@ -68,3 +68,24 @@ ravynOS.xcodeproj
 /Developer/Default.xctoolchain/xcbuild/Libraries/xcsdk/xcode-select
 /Developer/Default.xctoolchain/xcbuild/Libraries/xcsdk/xcrun
 /Developer/Default.xctoolchain/xcbuild/Libraries/xcworkspace/dump_xcworkspace
+
+# ---------------------------------------------------------------------------
+# Portable image pipeline output (tools/mkimage.sh, tools/bootcheck.sh)
+# ---------------------------------------------------------------------------
+*.iso
+*.img
+*.iso.sha256
+*.img.sha256
+*.manifest.txt
+*.build.json
+serial.log
+qemu.log
+screenshot.ppm
+/build-*.log
+macbuild.log
+
+# Reverse-engineering scratch: rea/Ghidra projects are large and machine
+# specific.  Evidence that matters is committed as small JSON + provenance.
+work/**/ghidra-project/
+work/**/*.gpr
+work/**/*.rep

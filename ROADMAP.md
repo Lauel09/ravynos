@@ -1,6 +1,6 @@
 # RavynOS Fork — Roadmap
 
-**Last updated:** 2026-10-30 (rev 3: explicit target arch; Phase 1 build loop and Phase 2 stub loop underway)
+**Last updated:** 2026-10-30 (rev 4: portable pipeline complete through real staging + .img; CI matrix; macOS build driver and portability audit)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**
@@ -36,7 +36,16 @@
 
 **Goal:** `bmake world` completes on this MacBook.
 
-**Status (2026-10-30):** build loop active; ten attempts logged, eight distinct host assumptions fixed (non-root chowns, yacc/lex shims, arm64 `TargetConditionals`, xar OpenSSL/libxml2, libctf `qsort_r`, quoted LLVM CMake flags, Darwin shim-header scope). Clean x86_64 toolchain rebuild running. Full failure→fix table: `progress.md` §3.2.
+**Status (2026-10-30, rev 4):** toolchain milestone reached — `bmake Developer`
+exits 0 on macOS. The loop is now tooled rather than manual: `tools/macbuild.sh`
+runs preflight checks (bmake/gmake/cmake/ninja/bison/flex, Xcode path, case-
+sensitive filesystem, free space), logs the build, records per-stage state so an
+interrupted LLVM build is resumable, and prints the next actions on failure.
+`tools/macbuild-audit.py` statically finds the host assumptions that break a
+build (non-root chowns, FreeBSD-only tools, GNU-only flags, host-arch leakage)
+before one is attempted, and is clean at `--severity high` over the build
+surface. Remaining: SDK → kernel → userland. Failure→fix table: `PROGRESS.md`
+§3.2; conventions: `Docs/macOS-Host.md`.
 
 Approach: run the build, fix failures host-by-host, keep every patch guarded so Linux is unaffected. Expected work areas (in likely order):
 
@@ -54,7 +63,32 @@ Conventions: one fix per commit, prefix `macbuild:`, log every failure→fix pai
 
 **Goal:** `tools/mkimage.sh` + `tools/bootcheck.sh` run **unchanged on macOS and Linux**, no root, producing `ravynos-<version>-<git-short>.iso` (+ `.img`) and a pass/fail boot verdict. Work starts in parallel with Phase 1 — the pipeline can be scaffolded and validated with stub content (loader-only image, even a foreign kernel) before the full OS build is green, so QEMU-verdict plumbing is proven early.
 
-**Status (2026-10-30):** stub mode **proven end to end**. `tools/mkimage.sh --stub` emits an El Torito ISO with a tiny COM1 marker; `tools/bootcheck.sh` boots it under QEMU and returns a verdict; `tools/pipeline-selftest.sh` runs both and passes in ~1 s on macOS. Remaining: real staging mode (kernel/loader/userland from the Phase 1 build), `.img` variant, and Linux-host validation.
+**Status (2026-10-30, rev 4): done except real-image content.** Every deliverable
+below exists and is tested:
+
+* `tools/mkimage.sh` — stub, milestone-stub and **real staging (`--root`)** modes;
+  ISO **and** `.img` (`--format both`); explicit backends (`xorriso`, `mtools`,
+  or dependency-free `python`); manifests, `.sha256`, and a machine-readable
+  build record. Refuses to run as root; never mounts, chroots or needs
+  FreeBSD-only tools.
+* Dependency-free writers — `tools/image/iso9660.py` (ISO 9660 + El Torito, BIOS
+  and UEFI entries, level 1/2 names, both path tables) and
+  `tools/image/fat.py` (FAT16 + primary/backup GPT, VFAT long names), so the
+  pipeline runs on a host with nothing but Python 3. `tools/image/bootstub.py`
+  assembles the boot stub without nasm.
+* `tools/image/verify.py` — independent structural verification in milliseconds
+  (ISO descriptors, directory tree, El Torito checksum and extents; GPT CRCs and
+  FAT chains), so CI gates on structure before spending time on QEMU.
+* `tools/bootcheck.sh` — multi-marker milestone chain, KVM/HVF/TCG selection,
+  OVMF/`.img` and `--kernel` direct boot, screenshots, JSON verdict, logs always
+  preserved.
+* `tools/tests/run-tests.sh` + `tools/tests/test_images.py` — 30 unit tests plus
+  a CLI contract, shell-syntax and self-test layer; runs with no host tools.
+* Reproducibility — images are a function of (tree, volume id, commit epoch);
+  asserted by a CI job on both host families.
+
+Remaining for the exit criterion: a real staged sysroot to package (Phase 1) and
+a loader that emits the milestone markers (`Docs/BootLoader.md`).
 
 The current `ISO/build.sh` is FreeBSD-host-only and requires root: `mdconfig`, `zpool`/`gpart`, `mkuzip`, `makefs`, `mkimg`, `newfs_msdos`, `mount msdosfs`, `chroot`, `etdump`. We do **not** port that script — we replace it with a portable pipeline built on tools that exist via brew *and* standard Linux package managers:
 
@@ -81,7 +115,14 @@ Deliverables:
 
 **Goal:** every push gets built and boot-verdicted automatically — on both host families, which Phase 2's portability makes cheap.
 
-**Status (2026-10-30):** a first slice exists — `.github/workflows/pipeline.yml` runs the Phase 2 stub self-test on Ubuntu and macOS, proving the scripts stay host-neutral before the full build matrix. Unvalidated until the branch is pushed.
+**Status (2026-10-30, rev 4): three workflows written, pending first CI run.**
+`pipeline.yml` runs unit tests, per-backend structure checks (python/xorriso/
+mtools), cross-host reproducibility and real QEMU boots on Ubuntu + macOS;
+`build.yml` chains `bmake world` → `mkimage` → `bootcheck` with a toolchain cache
+keyed on `Developer/**`, per-push activation gated on the `BUILD_ON_PUSH`
+repository variable until M1 is green; `nightly.yml` rebuilds from scratch and
+files an issue on failure. A reusable `install-host-tools` action keeps the
+matrices consistent.
 
 1. GitHub Actions `.github/workflows/build.yml`:
    - Job 1 **build** — matrix: `macos-latest` + `ubuntu-latest`. Cache the toolchain dir keyed on a hash of `Developer/`; keep Linux green as the invariant.
@@ -130,7 +171,7 @@ Standing rules: only analyze software we own/are entitled to inspect; open-sourc
 |---|---|---|
 | M0 | Fork + Mac env ready | push to fork works; `bmake -n` parses; `rea doctor` green; xorriso/mtools/qemu present |
 | M1 | Builds on macOS | `bmake world` (or `tools/macbuild.sh`) exit 0 |
-| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux |
+| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux — **stub proven; real-image content pending M1 + loader** |
 | M3 | CI | PRs auto-built on mac+linux; ISO artifact + boot verdict on every push |
 | M4 | RE loop live | one gap → probe → note → merged fix, full evidence trail |
 | M5 | Parity demos | a real Mac app runs under ravynOS (QEMU or hardware) |
@@ -156,9 +197,15 @@ gh repo fork ravynsoft/ravynos --clone=false
 cd /path/to/test-ravyn-os/ravynos && git remote add fork <your-fork-url>
 
 # Phase 1 — build loop; fix top-down, prefix commits "macbuild:".
-# TARGET_ARCH defaults to x86_64; use TARGET_ARCH=arm64 for the experiment.
-cd /path/to/test-ravyn-os/ravynos && bmake world
+# The driver adds preflight, logging and resume; TARGET_ARCH defaults to x86_64.
+cd /path/to/ravynos && tools/macbuild.sh                 # or: bmake world
+tools/macbuild.sh --audit --stage Developer              # static hazard check
 
-# Phase 2 — cheap regression test for the portable pipeline (stub -> QEMU verdict):
-cd /path/to/test-ravyn-os/ravynos && tools/pipeline-selftest.sh
+# Phase 2 — the portable pipeline.
+tools/mkimage.sh --stub --format both -o out/stub        # ISO + disk image
+tools/mkimage.sh --root ../build/stage --format both \
+    --boot-image BOOT/LOADER --efi-image EFI/BOOT/BOOTX64.EFI --verify
+tools/bootcheck.sh out/stub.iso --expect RAVYNOS-BOOTCHECK-STUB-OK
+tools/pipeline-selftest.sh                               # whole loop
+tools/tests/run-tests.sh                                 # unit + CLI tests
 ```
