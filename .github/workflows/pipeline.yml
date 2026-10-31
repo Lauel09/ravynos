@@ -326,15 +326,21 @@ jobs:
           retention-days: 30
 
   uefi:
-    # Step B of Docs/BootLoader.md had never run: the loader was never
-    # compiled anywhere, and bootcheck.sh --uefi had never been exercised, so
-    # "the ISO carries a UEFI catalog entry" was an unverified claim about a
-    # payload nobody had built.  This job closes that: clang + lld-link build
-    # the loader, the PE32+ headers are checked, mkimage stages a real ESP and
-    # ISO, and OVMF boots both and has to print the loader's marker on COM1.
+    # The whole boot chain, end to end, under OVMF:
+    #   loader (PE32+) -> ELF kernel handoff -> kernel command console
+    #   loader (no kernel) -> /EFI/SHELL.EFI -> interactive prompt
+    #
+    # Three media are booted, because "OVMF did not run our image" has three
+    # very different causes and one boot cannot tell them apart:
+    #   iso    the shipping path: El Torito UEFI entry carrying a FAT volume
+    #   img    GPT + ESP, the dd-able path
+    #   bare   the same FAT volume with no partition table at all (a
+    #          "superfloppy"), which isolates the FAT writer from the GPT one
+    # Whichever of them runs the loader proves the payload; the job fails only
+    # when none of them does.
     name: UEFI loader (OVMF)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -347,17 +353,27 @@ jobs:
           ovmf: "true"
           clang: "true"
 
-      - name: Build the loader (clang + lld-link)
+      - name: Build the boot payloads (loader, shell, kernel)
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR/uefi"
-          tools/bootloader/build.sh -o "$TMPDIR/uefi/BOOTX64.EFI" \
-            2>&1 | tee "$TMPDIR/uefi/loader-build.log"
-          python3 tools/image/pe.py "$TMPDIR/uefi/BOOTX64.EFI" \
-            --require-subsystem 10 --json "$TMPDIR/uefi/pe.json" \
-            2>&1 | tee -a "$TMPDIR/uefi/loader-build.log"
+          {
+            echo "== loader =="
+            tools/bootloader/build.sh -o "$TMPDIR/uefi/BOOTX64.EFI"
+            python3 tools/image/pe.py "$TMPDIR/uefi/BOOTX64.EFI" \
+              --require-subsystem 10 --json "$TMPDIR/uefi/pe.json"
+            echo "== shell =="
+            tools/shell/build.sh -o "$TMPDIR/uefi/SHELL.EFI"
+            python3 tools/image/pe.py "$TMPDIR/uefi/SHELL.EFI" \
+              --require-subsystem 10 --json "$TMPDIR/uefi/pe-shell.json"
+            echo "== kernel =="
+            OUT="$TMPDIR/uefi/KERNEL.ELF" Kernel/ravynkern/build.sh
+            python3 tools/image/elf.py "$TMPDIR/uefi/KERNEL.ELF" \
+              --require-load --min-vaddr 0x100000 --max-end 0x100000000 \
+              --json "$TMPDIR/uefi/kernel.json"
+          } 2>&1 | tee "$TMPDIR/uefi/payloads.log"
 
       - name: Inspect the loader image
         # A crash inside the image is only diagnosable with the headers and
@@ -378,7 +394,7 @@ jobs:
             llvm-objdump-18 -d --no-show-raw-insn "$efi" 2>/dev/null ||
               llvm-objdump -d --no-show-raw-insn "$efi" 2>&1 || true
           } > "$TMPDIR/uefi/inspect.log" 2>&1
-          sed -n '1,80p' "$TMPDIR/uefi/inspect.log"
+          sed -n '1,40p' "$TMPDIR/uefi/inspect.log"
 
       - name: Stage an ESP and build the ISO and disk image
         env:
@@ -394,33 +410,26 @@ jobs:
           python3 tools/image/bootstub.py -o "$stage/BOOT/BOOTSTUB.BIN" \
             --marker RAVYNOS-BOOTCHECK-STUB-OK
           printf 'ravynOS UEFI loader probe\n' > "$stage/README.TXT"
+          # --kernel/--shell also place the payloads inside the FAT volume that
+          # wraps the El Torito UEFI entry: firmware only mounts *that* volume,
+          # so a kernel left outside it would be invisible to the loader.
           tools/mkimage.sh --root "$stage" --format both \
             --boot-image BOOT/BOOTSTUB.BIN \
             --efi-payload EFI/BOOT/BOOTX64.EFI \
+            --kernel "$TMPDIR/uefi/KERNEL.ELF" \
+            --shell "$TMPDIR/uefi/SHELL.EFI" \
             -o "$TMPDIR/uefi/loader" --verify \
             --json "$TMPDIR/uefi/loader.build.json" \
             2>&1 | tee "$TMPDIR/uefi/image.log"
-
-      - name: Boot the GPT/ESP image under OVMF
-        id: boot_img
-        # A hung boot used to burn the whole job: bootcheck's timeout counter
-        # was pinned at 1 (fixed in the same commit as this job), and a step
-        # has no second line of defence.  Both boots now run with their own
-        # budget and `continue-on-error`, so the ISO path is exercised even
-        # when the ESP path fails, and the "Check both verdicts" step below
-        # turns the outcomes into the job verdict.
-        timeout-minutes: 8
-        continue-on-error: true
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          set -uo pipefail
-          mkdir -p "$TMPDIR/uefi"
-          tools/bootcheck.sh "$TMPDIR/uefi/loader.img" --uefi \
-            --expect RAVYNOS-LOADER-OK --timeout 180 \
-            --outdir "$TMPDIR/uefi/boot-img" \
-            --json "$TMPDIR/uefi/verdict-img.json" \
-            2>&1 | tee "$TMPDIR/uefi/boot-img.log"
+          # The same FAT volume with no partition table, for the diagnostic
+          # boot: if firmware mounts this one and not the GPT/ESP image, the
+          # fault is in the GPT writer, and if it mounts neither, it is in the
+          # FAT writer or in the payload.
+          python3 tools/image/fat.py build "$stage" \
+            -o "$TMPDIR/uefi/bare.img" --no-gpt --size-mb 16 \
+            --label RAVYNOS --timestamp 1600000000 \
+            --print-manifest "$TMPDIR/uefi/bare.manifest.txt" \
+            2>&1 | tee -a "$TMPDIR/uefi/image.log"
 
       - name: Boot the ISO under OVMF (El Torito EFI entry)
         id: boot_iso
@@ -430,32 +439,111 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -uo pipefail
-          mkdir -p "$TMPDIR/uefi"
           tools/bootcheck.sh "$TMPDIR/uefi/loader.iso" --uefi \
-            --expect RAVYNOS-LOADER-OK --timeout 180 \
+            --expect-any \
+            --expect RAVYNOS-LOADER-OK \
+            --expect RAVYNOS-KERNEL-OK \
+            --expect RAVYNOS-KSHELL-OK \
+            --expect RAVYNOS-SHELL-OK \
+            --timeout 180 \
             --outdir "$TMPDIR/uefi/boot-iso" \
             --json "$TMPDIR/uefi/verdict-iso.json" \
             2>&1 | tee "$TMPDIR/uefi/boot-iso.log"
 
-      - name: Check both verdicts
+      - name: Boot the GPT/ESP image under OVMF
+        id: boot_img
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -uo pipefail
+          tools/bootcheck.sh "$TMPDIR/uefi/loader.img" --uefi \
+            --expect-any \
+            --expect RAVYNOS-LOADER-OK \
+            --expect RAVYNOS-KERNEL-OK \
+            --expect RAVYNOS-KSHELL-OK \
+            --expect RAVYNOS-SHELL-OK \
+            --timeout 180 \
+            --outdir "$TMPDIR/uefi/boot-img" \
+            --json "$TMPDIR/uefi/verdict-img.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-img.log"
+
+      - name: Boot the bare FAT volume under OVMF (diagnostic)
+        id: boot_bare
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -uo pipefail
+          tools/bootcheck.sh "$TMPDIR/uefi/bare.img" --uefi \
+            --expect-any \
+            --expect RAVYNOS-LOADER-OK \
+            --expect RAVYNOS-KERNEL-OK \
+            --expect RAVYNOS-KSHELL-OK \
+            --expect RAVYNOS-SHELL-OK \
+            --timeout 180 \
+            --outdir "$TMPDIR/uefi/boot-bare" \
+            --json "$TMPDIR/uefi/verdict-bare.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-bare.log"
+
+      - name: Drive the prompt over serial
+        # The kernel console and the shell both read COM1.  Type into them and
+        # require an answer, which is what "the user can run commands" means.
+        id: shell
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -uo pipefail
+          cat > "$TMPDIR/uefi/commands.txt" <<'CMDS'
+          help
+          ver
+          mem
+          exit
+          CMDS
+          tools/bootcheck.sh "$TMPDIR/uefi/loader.iso" --uefi \
+            --expect-any \
+            --expect RAVYNOS-KSHELL-OK \
+            --expect RAVYNOS-SHELL-OK \
+            --send "$TMPDIR/uefi/commands.txt" --send-delay 25 --send-interval 3 \
+            --timeout 200 \
+            --outdir "$TMPDIR/uefi/boot-shell" \
+            --json "$TMPDIR/uefi/verdict-shell.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-shell.log"
+
+      - name: Check the verdicts
         if: always()
         env:
           TMPDIR: ${{ runner.temp }}
-          IMG_OUTCOME: ${{ steps.boot_img.outcome }}
           ISO_OUTCOME: ${{ steps.boot_iso.outcome }}
+          IMG_OUTCOME: ${{ steps.boot_img.outcome }}
+          BARE_OUTCOME: ${{ steps.boot_bare.outcome }}
+          SHELL_OUTCOME: ${{ steps.shell.outcome }}
         run: |
           set -u
-          rc=0
-          echo "ESP image boot: $IMG_OUTCOME"
-          echo "ISO (El Torito) boot: $ISO_OUTCOME"
+          echo "ISO (El Torito) boot:  $ISO_OUTCOME"
+          echo "GPT/ESP image boot:     $IMG_OUTCOME"
+          echo "bare FAT volume boot:   $BARE_OUTCOME"
+          echo "serial prompt session:  $SHELL_OUTCOME"
+          marker=0
           for f in "$TMPDIR"/uefi/boot-*/serial.log; do
             [ -f "$f" ] || continue
             echo "---- $f ($(wc -c < "$f") bytes) ----"
             tail -40 "$f"
+            grep -Eq 'RAVYNOS-(LOADER|KERNEL|KSHELL|SHELL)-OK' "$f" && marker=1
           done
-          [ "$IMG_OUTCOME" = success ] || rc=1
-          [ "$ISO_OUTCOME" = success ] || rc=1
-          exit "$rc"
+          if [ "$marker" = 0 ]; then
+            echo "::error title=No OVMF boot reached the loader::none of the ISO, the ESP image or the bare FAT volume ran BOOTX64.EFI; see the serial logs above"
+            exit 1
+          fi
+          # A prompt answered over serial is the milestone this job exists for;
+          # report it loudly even while the other paths are still being fixed.
+          if grep -Fq RAVYNOS-KSHELL-OK "$TMPDIR"/uefi/boot-shell/serial.log 2>/dev/null; then
+            echo "::notice title=Kernel console::the kernel command console accepted input over COM1"
+          fi
 
       - name: Publish the UEFI verdict to the job summary
         if: always()
@@ -472,9 +560,10 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
-          for f in "$TMPDIR"/uefi/verdict-*.json "$TMPDIR"/uefi/pe.json; do
+          for f in "$TMPDIR"/uefi/verdict-*.json "$TMPDIR"/uefi/pe.json \
+                   "$TMPDIR"/uefi/kernel.json; do
             [ -f "$f" ] || continue
-            { echo "### $f"; echo '```json'; cat "$f"; echo '```'; } \
+            { echo "### $(basename "$f")"; echo '```json'; cat "$f"; echo '```'; } \
               >> "$GITHUB_STEP_SUMMARY"
           done
 
@@ -485,23 +574,25 @@ jobs:
           title: UEFI loader (OVMF)
           dir: ${{ runner.temp }}/uefi
           logs: |
-            ${{ runner.temp }}/uefi/loader-build.log
+            ${{ runner.temp }}/uefi/payloads.log
             ${{ runner.temp }}/uefi/inspect.log
             ${{ runner.temp }}/uefi/image.log
-          note: ${{ job.status }} — loader build, PE32+ headers, image layout, OVMF serial markers
+          note: ${{ job.status }} — payloads, PE32+ headers, image layout, OVMF serial markers
 
-      - name: Upload the loader, images and verdicts
+      - name: Upload the payloads, images and verdicts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uefi-loader
           path: |
             ${{ runner.temp }}/uefi/BOOTX64.EFI
-            ${{ runner.temp }}/uefi/pe.json
+            ${{ runner.temp }}/uefi/SHELL.EFI
+            ${{ runner.temp }}/uefi/KERNEL.ELF
+            ${{ runner.temp }}/uefi/*.json
             ${{ runner.temp }}/uefi/loader.iso
             ${{ runner.temp }}/uefi/loader.img
-            ${{ runner.temp }}/uefi/loader.build.json
-            ${{ runner.temp }}/uefi/verdict-*.json
+            ${{ runner.temp }}/uefi/bare.img
+            ${{ runner.temp }}/uefi/commands.txt
             ${{ runner.temp }}/uefi/boot-*/serial.log
             ${{ runner.temp }}/uefi/boot-*/qemu.log
           if-no-files-found: ignore

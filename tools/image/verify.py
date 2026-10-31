@@ -29,10 +29,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
 import sys
 import zlib
 
+import elf as elfmod
 import pe as pemod
 
 SECTOR = 2048
@@ -320,6 +322,9 @@ def check_uefi_payload(image: bytes, boot: dict, files: list[dict]) -> None:
                  "EFI/BOOT/BOOTX64.EFI (mkimage --efi-payload wraps one)")
         fat = verify_fat16(payload, f"El Torito UEFI entry {record['path']}")
         fat["files"].sort(key=lambda f: f["path"])
+        # The kernel check has to run before check_efi_files, which drops the
+        # per-file bytes to keep the JSON report serialisable.
+        kernel = check_kernel_files(fat, "El Torito UEFI entry")
         images = check_efi_files(fat, "El Torito UEFI entry")
         boot_paths = ("EFI/BOOT/BOOTX64.EFI", "EFI/BOOT/BOOTAA64.EFI")
         by_path = {f["path"].upper(): f for f in fat["files"]}
@@ -335,6 +340,7 @@ def check_uefi_payload(image: bytes, boot: dict, files: list[dict]) -> None:
             "path": record["path"],
             "size": record["size"],
             "format": "fat16",
+            "kernel": kernel,
             "boot": boot["path"],
             "machine": boot["machine"],
             "subsystem": boot["subsystem"],
@@ -619,6 +625,7 @@ def verify_img(path: str) -> dict:
     part = image[esp["start_lba"] * FAT_SECTOR:(esp["end_lba"] + 1) * FAT_SECTOR]
     fat = verify_fat16(part, "ESP")
     fat["files"].sort(key=lambda f: f["path"])
+    fat["kernel"] = check_kernel_files(fat, "ESP")
     fat["efi_images"] = check_efi_files(fat, "ESP")
     return {
         "format": "gpt-fat16",
@@ -659,6 +666,40 @@ def check_efi_files(fat: dict, where: str) -> list[dict]:
             "size": f["size"],
         })
     return images
+
+
+def check_kernel_files(fat: dict, where: str) -> dict | None:
+    """Validate a staged kernel payload inside a FAT volume.
+
+    The loader copies ``EFI/KERNEL.ELF`` (or ``BOOT/KERNEL``) PT_LOAD segments
+    to their link addresses and jumps, so a kernel that is not ELF64/ET_EXEC,
+    has no PT_LOAD, is linked below 1 MiB or above the 4 GiB identity map, or
+    whose entry point is outside the image is a boot that hangs or dies in
+    memory no backtrace can describe.  Checking the bytes that are *inside the
+    image* is the point: the file that fed mkimage is not always the file that
+    ends up there.
+    """
+    found = None
+    for f in fat["files"]:
+        if f["path"].upper() not in ("EFI/KERNEL.ELF", "BOOT/KERNEL"):
+            continue
+        try:
+            info = elfmod.parse_bytes(f.get("data", b""), f["path"])
+        except elfmod.ElfError as exc:
+            fail(f"{f['path']} on the {where} is not a valid ELF64 image: {exc}")
+        issues = elfmod.problems(info, require_load=True,
+                                 min_vaddr=0x100000,
+                                 max_end=0x100000000)
+        if issues:
+            fail(f"{f['path']} on the {where} cannot be loaded: "
+                 + "; ".join(issues))
+        found = {
+            "path": f["path"],
+            "size": f["size"],
+            "entry": info["entry"],
+            "segments": len([p for p in info["phdrs"] if p["type"] == 1]),
+        }
+    return found
 
 
 def verify_efiboot(path: str) -> dict:
@@ -754,6 +795,10 @@ def summarise(info: dict) -> None:
             print(f"    {f['size']:>10}  /{f['path']}")
         if len(esp["files"]) > 20:
             print(f"    ... {len(esp['files']) - 20} more")
+        if esp.get("kernel"):
+            k = esp["kernel"]
+            print(f"  kernel        /{k['path']} (ELF64, entry {k['entry']:#x}, "
+                  f"{k['segments']} PT_LOAD)")
         for e in esp.get("efi_images", []):
             print(f"  EFI image     /{e['path']} ({e['machine']} "
                   f"{e['subsystem']}, entry {e['entry_rva']:#x})")

@@ -18,6 +18,12 @@
 #                       bootloader (early kernel bring-up)
 #   --append STRING     kernel command line for -kernel boots
 #   --uefi              boot with OVMF firmware (needed for .img/ESP boots)
+#   --send FILE         drive the guest console: connect QEMU's serial port to a
+#                       unix socket and type each line of FILE into it, so a
+#                       shell or kernel prompt can be exercised headlessly
+#   --send-delay SECS   wait this long after the guest starts before typing
+#                       (default 8; firmware needs time to reach a prompt)
+#   --send-interval S   gap between typed lines (default 2)
 #   --screenshot        capture a framebuffer screenshot via the QEMU monitor
 #   --outdir DIR        where serial.log / qemu.log / screenshot land; a fresh
 #                       temp dir by default, always printed
@@ -58,6 +64,9 @@ OUTDIR=
 JSON_OUT=
 EXPECT_ANY=0
 QUIET=${QUIET:-0}
+SEND_FILE=
+SEND_DELAY=${BOOTCHECK_SEND_DELAY:-8}
+SEND_INTERVAL=${BOOTCHECK_SEND_INTERVAL:-2}
 
 MILESTONES="RAVYNOS-LOADER-OK RAVYNOS-KERNEL-OK RAVYNOS-ROOT-MOUNT-OK RAVYNOS-USERSPACE-OK"
 
@@ -76,7 +85,10 @@ while [ $# -gt 0 ]; do
         --kernel)     KERNEL=$2; shift ;;
         --append)     APPEND=$2; shift ;;
         --uefi)       UEFI=1 ;;
-        --screenshot) SCREENSHOT=1 ;;
+        --send)          SEND_FILE=$2; shift ;;
+        --send-delay)    SEND_DELAY=$2; shift ;;
+        --send-interval) SEND_INTERVAL=$2; shift ;;
+        --screenshot)    SCREENSHOT=1 ;;
         --outdir)     OUTDIR=$2; shift ;;
         --json)       JSON_OUT=$2; shift ;;
         -q|--quiet)   QUIET=1 ;;
@@ -94,6 +106,14 @@ done
 [ -n "$EXPECT" ] || EXPECT=RAVYNOS-BOOTCHECK-STUB-OK
 have "$QEMU" || { printf 'bootcheck: missing %s\n' "$QEMU" >&2; exit 2; }
 case $TIMEOUT in ''|*[!0-9]*) printf 'bootcheck: --timeout must be seconds\n' >&2; exit 2 ;; esac
+case $SEND_DELAY$SEND_INTERVAL in ''|*[!0-9]*)
+    printf 'bootcheck: --send-delay/--send-interval must be seconds\n' >&2
+    exit 2 ;;
+esac
+if [ -n "$SEND_FILE" ] && [ ! -f "$SEND_FILE" ]; then
+    printf 'bootcheck: no such --send file: %s\n' "$SEND_FILE" >&2
+    exit 2
+fi
 
 if [ -z "$OUTDIR" ]; then
     OUTDIR=$(mktemp -d "${TMPDIR:-/tmp}/ravynos-bootcheck.XXXXXX") || exit 2
@@ -104,6 +124,8 @@ LOG="$OUTDIR/serial.log"
 QEMU_LOG="$OUTDIR/qemu.log"
 SHOT="$OUTDIR/screenshot.ppm"
 MON="$OUTDIR/monitor.sock"
+SERIAL_SOCK="$OUTDIR/serial.sock"
+rm -f "$SERIAL_SOCK"
 : > "$LOG"
 : > "$QEMU_LOG"
 rm -f "$MON"
@@ -230,8 +252,75 @@ fi
 [ -n "$ACCEL" ] && set -- "$@" -accel "$ACCEL"
 [ -n "$FW" ] && set -- "$@" -drive "if=pflash,format=raw,readonly=on,file=$FW"
 [ -n "$FW_VARS" ] && set -- "$@" -drive "if=pflash,format=raw,file=$FW_VARS"
-set -- "$@" -display none -monitor "unix:$MON,server,nowait" \
-    -serial "file:$LOG" -no-reboot
+set -- "$@" -display none -monitor "unix:$MON,server,nowait" -no-reboot
+if [ -n "$SEND_FILE" ]; then
+    # A socket, not a file: a file-backed serial port is output-only, so a
+    # prompt could never be answered.  QEMU listens, the driver below
+    # connects, copies everything to serial.log and types the script.
+    set -- "$@" -serial "unix:$SERIAL_SOCK,server=on,wait=off"
+else
+    set -- "$@" -serial "file:$LOG"
+fi
+
+# The serial driver owns the socket for the whole boot.  It is started before
+# QEMU so no early output is lost, and it outlives the polling loop, which
+# reads serial.log while the driver appends to it.
+SERIAL_PID=
+if [ -n "$SEND_FILE" ]; then
+    PY=$(find_python) || { printf 'bootcheck: --send needs python3\n' >&2; exit 2; }
+    "$PY" - "$SERIAL_SOCK" "$LOG" "$SEND_FILE" "$SEND_DELAY" "$SEND_INTERVAL" <<'PY' &
+import socket, sys, time
+
+sock_path, log_path, script, initial, interval = sys.argv[1:6]
+initial, interval = float(initial), float(interval)
+
+lines = []
+for raw in open(script, encoding="utf-8"):
+    line = raw.rstrip("\r\n")
+    if line and not line.startswith("#"):
+        lines.append(line)
+
+sock = None
+for _ in range(600):                      # QEMU creates the listener
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        sock.connect(sock_path)
+        break
+    except OSError:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        sock = None
+        time.sleep(0.1)
+if sock is None:
+    sys.exit(1)
+sock.setblocking(False)
+
+log = open(log_path, "ab", buffering=0)
+start = time.time()
+sent = 0
+next_send = start + initial
+while True:
+    try:
+        chunk = sock.recv(65536)
+        if chunk:
+            log.write(chunk)
+    except (BlockingIOError, InterruptedError):
+        pass
+    except OSError:
+        break
+    now = time.time()
+    if sent < len(lines) and now >= next_send:
+        sock.sendall(lines[sent].encode() + b"\r")
+        sent += 1
+        next_send = now + interval
+    time.sleep(0.05)
+log.close()
+PY
+    SERIAL_PID=$!
+fi
 
 log "bootcheck: $QEMU -m $MEM (accel ${ACCEL:-tcg}), timeout ${TIMEOUT}s"
 # shellcheck disable=SC2086  # QEMU_FLAGS is intentionally word-split
@@ -240,6 +329,10 @@ QPID=$!
 
 finished=0
 cleanup() {
+    if [ "${SERIAL_PID:-}" != "" ]; then
+        kill "$SERIAL_PID" 2>/dev/null || true
+        wait "$SERIAL_PID" 2>/dev/null || true
+    fi
     if [ "$finished" = 0 ]; then
         kill "$QPID" 2>/dev/null || true
         wait "$QPID" 2>/dev/null || true
@@ -353,6 +446,11 @@ if [ "$running" = 1 ]; then
 fi
 wait "$QPID" 2>/dev/null
 QSTATUS=$?
+if [ "${SERIAL_PID:-}" != "" ]; then
+    sleep 0.3                    # let the driver flush the guest's last output
+    kill "$SERIAL_PID" 2>/dev/null || true
+    wait "$SERIAL_PID" 2>/dev/null || true
+fi
 finished=1
 
 # --------------------------------------------------------------------------
@@ -411,9 +509,13 @@ if [ -n "$JSON_OUT" ]; then
     PY=$(find_python) || PY=
     markers_arg=$(printf '%s' "$EXPECT" | tr '\n' '\001')
     if [ -n "$PY" ]; then
+        json_sent=0
+        if [ -n "$SEND_FILE" ]; then
+            json_sent=$(grep -cve '^[[:space:]]*$' "$SEND_FILE" 2>/dev/null) || json_sent=0
+        fi
         "$PY" - "$JSON_OUT" "$IMAGE" "$rc" "$elapsed" "${ACCEL:-tcg}" \
             "$QSTATUS" "$LOG" "$QEMU_LOG" "$missing" "$markers_arg" \
-            "$SCREENSHOT" "$SHOT" <<'PY' || warn "could not write $JSON_OUT"
+            "$SCREENSHOT" "$SHOT" "$json_sent" <<'PY' || warn "could not write $JSON_OUT"
 import json, os, sys
 (out, image, rc, elapsed, accel, qstatus, log, qemu_log, missing,
  markers_arg, screenshot, shot) = sys.argv[1:]
@@ -431,6 +533,7 @@ record = {
     "qemu_log": qemu_log,
     "serial_bytes": os.path.getsize(log) if os.path.exists(log) else 0,
     "screenshot": shot if screenshot == "1" and os.path.exists(shot) else None,
+    "sent_lines": int(json_sent or 0),
 }
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(record, fh, indent=2, sort_keys=True)
