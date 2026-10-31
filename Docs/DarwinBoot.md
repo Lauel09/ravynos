@@ -315,3 +315,31 @@ instruction the DEVELOPER_DIR/XCRUN handling in Kernel/Makefile is the
 user's to own. My Makefile:99-107 in-tree-toolchain preference (b1ae45e94)
 stays.
 Cites: Kernel/Makefile:35-42,65,93 (b6ac3a8d8); commit b6ac3a8d8.
+
+### 2026-11-01 — D1 gate run 3: xcrun fixed; SDK header compile errors
+Output (verbatim):
+```
+854:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:104:44: error: expected ';' after top level declarator
+857:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:107:50: error: expected ';' after top level declarator
+860:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:108:49: error: expected ';' after top level declarator
+863:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:111:48: error: expected ';' after top level declarator
+866:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:112:49: error: expected ';' after top level declarator
+871:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:561:30: error: a parameter list without types is only allowed in a function definition
+874:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:561:42: error: expected ';' at end of declaration list
+877:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:565:30: error: a parameter list without types is only allowed in a function definition
+```
+Reading: the xcrun/DEVELOPER_DIR failure is gone (user's b6ac3a8d8 + this
+branch's toolchain preference); SETUP tools built, installhdrs ran, and the
+kernel compile now fails on the INSTALLED SDK headers. The in-repo sources
+do not line up with the built-SDK line numbers (Kernel/xnu/osfmk/mach/arm/
+vm_types.h:104 is a plain `typedef uint64_t mach_vm_address_t;`; xnu's
+header install transforms headers, so the installed copies differ). Both
+error classes look like a declaration whose trailing macro/parameters did
+not expand as expected -- not guessing further until the clang source-echo
+lines are seen. Compiler is the in-tree LLVM 17.0.6
+(Developer/Default.xctoolchain/llvm/llvm/CMakeLists.txt LLVM_VERSION_*).
+Next: two greps of the existing build-xnu.log (no rebuild) to capture the
+echoed source line + caret + compile unit for vm_types.h:104 and
+socket.h:561.
+Cites: Kernel/xnu/osfmk/mach/arm/vm_types.h:100-112; Kernel/xnu/bsd/sys/socket.h:555-565;
+Kernel/xnu/makedefs/MakeInc.cmd:164-174; MakeInc.rule:121.
