@@ -1,22 +1,23 @@
 # RavynOS Fork — Progress Log
 
-**Last updated:** 2026-10-30 (rev 15 — UEFI loader builds; El Torito load size fixed; PE32+ validation; CI job boots the loader under OVMF)
+**Last updated:** 2026-10-31 (rev 17 — loader → kernel → prompt built and verified in-image; CI boots three media under OVMF; the remaining failure is firmware never *starting* the image)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.
 
-> **Status (rev 15):** Phase 1's toolchain milestone is done (`bmake Developer`
-> exits 0 on macOS) and the loop is tooled: `tools/macbuild.sh` (preflight,
-> logging, per-stage resume, `--audit`) and `tools/macbuild-audit.py` (static
-> host-hazard scan, clean at high severity). Next is SDK → kernel → userland.
-> Phase 2 is complete except for real-image *content*: `tools/mkimage.sh` has
-> real staging mode, ISO and `.img`, xorriso/mtools or dependency-free Python
-> backends, an independent structural verifier (which now checks the boot
-> payload itself) and a test suite; the QEMU verdict is multi-milestone.
-> **The UEFI loader (Step B) now builds and has a CI job that boots it under
-> OVMF.** Phase 3's workflows are written; the pipeline matrix has run, and the
-> new `uefi` job is awaiting its first verdict. Phase 0 complete: the fork is
-> published at https://github.com/Lauel09/ravynos.
-
+> **Status (rev 17):** the *chain* exists and is verified everywhere except
+> the one place it matters — firmware. `tools/bootloader` (Step B/C/D), the
+> kernel console (`Kernel/ravynkern`) and an independent EFI shell
+> (`tools/shell`) all build, are checked as PE/ELF against the loader's own
+> contract, and are re-verified *inside* the finished ISO and ESP rather than
+> at the source. CI boots three media (ISO, GPT/ESP, bare FAT16) and then types
+> `help`/`ver`/`mem`/`exit` into the prompt over a serial socket.
+> **What still fails:** OVMF never enters the loader. Every boot ends at
+> `X64 Exception Type - 06 (#UD)`, `RIP 0xB0000`, `!!!! Can't find image
+> information !!!!` — a garbage jump in firmware, not our code — so no boot
+> has yet printed one of our markers. Phase 1's toolchain milestone (`bmake
+> Developer` exits 0 on macOS) is done and Phase 2 is complete except real
+> image *content*; Phase 0 complete (fork published at
+> https://github.com/Lauel09/ravynos).
 ---
 
 ## 1. Repository state
@@ -232,9 +233,27 @@ that 3584-byte payload, and both artifacts pass the extended verifier.  The
 boot itself is the CI job's verdict — this host has no QEMU and no Debian
 mirror.
 
+**Rev 17 — the chain, and the one thing still wrong with it.** Since rev 15
+the loader stopped being a skeleton: it finds a kernel on the boot volume
+(`\EFI\KERNEL.ELF`, `\BOOT\KERNEL`, …), copies every `PT_LOAD` to its link
+address inside the 1 MiB–4 GiB identity map, reserves a 64 KiB boot stack,
+writes the `RVNK` bootinfo block at `0x90000`, runs `ExitBootServices` and jumps
+with `rdi = &bootinfo`. The kernel brings up the 16550 itself, prints
+`RAVYNOS-KSHELL-OK` and reads commands (`help ver mem cpus echo reboot halt`);
+`tools/shell` is a second EFI application that reaches the same console without
+the loader. `tools/image/verify.py` now parses the kernel *inside* the finished
+ISO payload and ESP, and `bootcheck --send` types a script into `COM1`, so "the
+user can run commands" is a machine-checkable claim. `Docs/Shell.md` is new.
+
+Three defects were fixed by inspection because nothing could reach them yet
+(rev 17 changelog): `EFI_SERIAL_IO_PROTOCOL` was missing its `Revision`
+member, so every method pointer was one field out of place; the kernel range
+was reserved with a non-page-aligned address, which `AllocateAddress` rejects;
+and the bootinfo page was written without being reserved.
+
 **Remaining for the M2 exit criterion:** a real staged sysroot from the Phase 1
-build (`mkimage.sh --root` has only ever been fed toy trees), and a loader that
-emits those markers from real code rather than a stub.
+build (`mkimage.sh --root` has only ever been fed toy trees), and firmware that
+actually starts our image — see §6.
 
 **CI:** `.github/workflows/pipeline.yml` (tests, per-backend structure,
 reproducibility, QEMU boots on Ubuntu + macOS), `build.yml`
@@ -272,17 +291,53 @@ first real gap Phases 1–2 produce. See `work/README.md`.
    longer selects mtools, and the reproducibility job now prints the byte
    offsets and a hexdump window around the first difference so the cause can
    be identified without another guessing round.
-3. **[Phase 2, in flight]** UEFI/ESP boot probe now exists (CI job `uefi`,
-   rev 15) and awaits its first run; its verdict is the first real evidence for
-   Step B.
+3. **[BLOCKER, Phase 2]** OVMF never starts `BOOTX64.EFI`. Three media (El
+   Torito ISO, GPT/ESP, bare FAT16) all end at `#UD` with `RIP 0xB0000` and
+   `!!!! Can't find image information !!!!`, i.e. the CPU is in `vga-lowmem`
+   (`0xA0000-0xBFFFF`), not in any loaded image — a garbage branch inside
+   firmware, before anything of ours runs. BDS's name for the boot option
+   ("UEFI Non-Block Boot Device" / "UEFI QEMU DVD-ROM") says it has a device
+   path but no file node. Next probes, all now instrumented: the loader prints
+   `RAVYNOS-ENTRY` as the very first instruction-level action (so silence
+   proves the image was never entered), `bootcheck --postmortem` dumps the
+   guest's registers plus the owner of `RIP` from QEMU's monitor, the CI job
+   records the firmware build/hashes and boots the same bare volume twice
+   (q35/virtio and pc/ide), and both the ISO and GPT boots are now attached to
+   the exported log.
 4. **[Phase 1]** SDK → kernel → userland. Keep every patch `uname`/`.MAKE.OS`-guarded and log failure→fix pairs here.
-5. Loader Step C (read `BOOT/KERNEL` off the boot volume), then Step D (Mach-O
-   load + `boot_args` handoff) — now the next loader work, no longer gated on
-   tooling.
+5. Loader Step D for the *real* kernel: the ELF path (Step C) works, but XNU
+   is Mach-O, so `boot_args` handoff and a Mach-O image loader are the next
+   code after the boot blocker above. The 64-bit Mach-O path needs cctools,
+   which no host here has yet.
 
 ---
 
 ## Changelog
+
+- **2026-10-31 (rev 17) — the chain exists; firmware still won't start it.**
+  (1) *Chain*: loader → kernel console → prompt, plus an independent shell, all
+  built and verified, with `verify.py` parsing the kernel *inside* the finished
+  ISO and ESP (`entry 0x100140, 1 PT_LOAD`), and CI driving the prompt with
+  `bootcheck --send` (`help ver mem exit`). New `Docs/Shell.md`. (2) *Three
+  media*: the `uefi` job now boots the El Torito ISO, the GPT/ESP image and a
+  bare GPT-less FAT16 volume. All three produce the *same* `#UD` at `RIP
+  0xB0000`, which rules out both FAT writers and the GPT writer: the fault is
+  before our payload. (3) *Diagnosis tooling*, because three rounds of guessing
+  is enough: the loader prints `RAVYNOS-ENTRY` from its entry point with the
+  UART as its first action; `bootcheck` keeps a failed guest alive and
+  `tools/bootcheck-postmortem.py` reads its registers and the memory region
+  owning `RIP` from the QEMU monitor (for this crash: `0xA0000-0xBFFFF is
+  vga-lowmem — not code`); `--disk-interface` A/Bs virtio against IDE; the CI
+  job records the qemu/OVMF versions and firmware hashes. (4) *Three latent
+  loader bugs* fixed by inspection, since nothing could reach them yet:
+  `EFI_SERIAL_IO_PROTOCOL` lacked `Revision` (so `Reset()` called `0x10000`),
+  the kernel range was reserved at a non-page-aligned address
+  (`AllocateAddress` rejects it), and the bootinfo page at `0x90000` was
+  written without being reserved. (5) *A self-inflicted CI failure*, recorded
+  because it cost a run: a shell line continuation written as `\\` in the new
+  firmware-inventory step made bash run `/usr/share/edk2/ovmf` as a command, so
+  the step failed and every boot was skipped. Tests: 36 (images) + 21 (PE) + 13
+  (ELF) + 7 (kernel) + 4 (post-mortem), `ALL TESTS PASSED`.
 
 - **2026-10-30 (rev 16) — CI ran the new UEFI job three times and taught us
   what the host could not.**  (1) lld-link rejects the numeric subsystem
