@@ -3,8 +3,8 @@
 #
 # Layers:
 #   1. shell syntax      sh -n on every script under tools/
-#   2. unit tests        python unittest over the image backends, verifier and
-#                        the UEFI PE32+ validator
+#   2. unit tests        python unittest over the image backends, verifier,
+#                        the UEFI PE32+ validator and the post-mortem helper
 #   3. CLI contract      argument handling, --help, root refusal, missing tools,
 #                        symlinked staging roots
 #   4. loader build      build tools/bootloader and check the PE it emits,
@@ -74,7 +74,8 @@ done
 
 # --------------------------------------------------------------------------
 banner "2. python unit tests"
-for suite in test_images.py test_pe.py test_stub_kernel.py; do
+for suite in test_images.py test_pe.py test_elf.py test_stub_kernel.py \
+             test_postmortem.py; do
     log="$TMP/unit-$suite.log"
     if [ "$VERBOSE" = 1 ]; then
         if "$PYTHON" "$HERE/$suite" -v; then ok "$suite"; else bad "$suite"; fi
@@ -141,6 +142,168 @@ else
         ok "bootcheck honours --timeout ($took s)"
     else
         bad "bootcheck ignored --timeout (took ${took}s)"
+    fi
+fi
+
+# The serial driver (--send) is what lets CI type into a shell prompt: a
+# file-backed -serial is output-only, so the prompt could never be answered.
+# Exercise it against a fake QEMU that speaks the socket protocol, records
+# what was typed and answers with a marker that exists only if that happened.
+cat > "$FAKEBIN/qemu-system-x86_64" <<'FAKEQEMU'
+#!/usr/bin/env python3
+"""Fake QEMU for the --send test: listens on the -serial socket, records
+everything typed into it, answers with FAKE-GUEST-REPLY, then exits."""
+import os
+import socket
+import sys
+import time
+
+args = sys.argv[1:]
+sock_path = None
+for i, arg in enumerate(args):
+    if arg == "-serial" and args[i + 1].startswith("unix:"):
+        sock_path = args[i + 1][len("unix:"):].split(",")[0]
+if not sock_path:
+    time.sleep(600)
+    sys.exit(0)
+
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(sock_path)
+srv.listen(1)
+conn, _ = srv.accept()
+conn.settimeout(0.2)
+seen = b""
+deadline = time.time() + 20
+while time.time() < deadline and seen.count(b"\r") < 2:
+    try:
+        chunk = conn.recv(4096)
+    except socket.timeout:
+        continue
+    if not chunk:
+        break
+    seen += chunk
+path = os.environ.get("FAKE_QEMU_SEEN")
+if path:
+    with open(path, "wb") as fh:
+        fh.write(seen)
+conn.sendall(b"FAKE-GUEST-REPLY\r\n")
+time.sleep(0.5)
+conn.close()
+srv.close()
+FAKEQEMU
+chmod +x "$FAKEBIN/qemu-system-x86_64"
+
+printf 'help\nver\n' > "$TMP/send.txt"
+if PATH="$FAKEBIN:$PATH" BOOTCHECK_ACCEL=tcg FAKE_QEMU_SEEN="$TMP/send.seen" \
+        "$TOOLS/bootcheck.sh" "$TMP/quiet.iso" --expect FAKE-GUEST-REPLY \
+        --send "$TMP/send.txt" --send-delay 0 --send-interval 0 \
+        --timeout 30 --outdir "$TMP/boot-send" -q >"$TMP/send.log" 2>&1; then
+    ok "bootcheck --send drives a guest console over the serial socket"
+    if grep -q 'help' "$TMP/send.seen" 2>/dev/null &&
+       grep -q 'ver' "$TMP/send.seen" 2>/dev/null; then
+        ok "--send typed both script lines into the guest"
+    else
+        bad "--send did not deliver the script lines"
+        head -3 "$TMP/send.seen" 2>/dev/null | sed 's/^/        /'
+    fi
+    if grep -q 'FAKE-GUEST-REPLY' "$TMP/boot-send/serial.log" 2>/dev/null; then
+        ok "--send writes guest output to serial.log"
+    else
+        bad "--send lost the guest's output"
+    fi
+else
+    bad "bootcheck --send did not complete against a socket-serial guest"
+    tail -15 "$TMP/send.log" | sed 's/^/        /'
+fi
+
+# A failed boot must leave a post-mortem: the firmware's exception dump says
+# where the CPU was, not what it was executing, and a bare "RIP 0xB0000" is not
+# a diagnosis.  QEMU is faked here too -- it serves the HMP monitor socket that
+# bootcheck opens with `-monitor unix:...,server,nowait`, reports the address
+# the real OVMF run reported, and stays alive so the dump has something to ask.
+cat > "$FAKEBIN/qemu-system-x86_64" <<'FAKEQEMU'
+#!/usr/bin/env python3
+"""Fake QEMU for the post-mortem test: answers HMP, then idles."""
+import socket
+import sys
+import threading
+import time
+
+args = sys.argv[1:]
+mon_path = serial_path = None
+for i, arg in enumerate(args):
+    if arg == "-monitor" and args[i + 1].startswith("unix:"):
+        mon_path = args[i + 1][len("unix:"):].split(",")[0]
+    if arg == "-serial" and args[i + 1].startswith("file:"):
+        serial_path = args[i + 1][len("file:"):]
+
+if serial_path:
+    with open(serial_path, "ab") as fh:
+        fh.write(b"BdsDxe: starting Boot0001\r\n"
+                 b"!!!! X64 Exception Type - 06(#UD - Invalid Opcode) !!!!\r\n"
+                 b"RIP  - 00000000000B0000, CS  - 0000000000000038\r\n")
+
+REGISTERS = "RAX=0000000000000000 RIP=00000000000b0000 RFLAGS=0000000000000246\n"
+MTREE = ("address-space: memory\n"
+         "  0000000000000000-00000000ffffffff (prio 0, i/o): system\n"
+         "    00000000000a0000-00000000000bffff (prio 0, i/o): vga-lowmem\n")
+ANSWERS = {"info registers": REGISTERS, "info mtree": MTREE,
+           "info status": "VM status: running",
+           "xp": "00000000000b0000: 0xff 0xff 0xff 0xff",
+           "x": "invalid"}
+
+
+def serve():
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(mon_path)
+    srv.listen(1)
+    srv.settimeout(30)
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        return
+    conn.settimeout(5)
+    conn.sendall(b"QEMU fake monitor\r\n(qemu) ")
+    buf = b""
+    while True:
+        try:
+            chunk = conn.recv(4096)
+        except OSError:
+            return
+        if not chunk:
+            return
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            cmd = line.decode().strip()
+            body = ANSWERS.get(cmd)
+            if body is None:
+                body = ANSWERS.get(cmd.split()[0], "unknown command")
+            conn.sendall((cmd + "\r\n" + body + "\r\n(qemu) ").encode())
+
+
+if mon_path:
+    threading.Thread(target=serve, daemon=True).start()
+time.sleep(60)
+FAKEQEMU
+chmod +x "$FAKEBIN/qemu-system-x86_64"
+
+if PATH="$FAKEBIN:$PATH" BOOTCHECK_ACCEL=tcg \
+        "$TOOLS/bootcheck.sh" "$TMP/quiet.iso" --expect NEVER-PRINTED \
+        --timeout 3 --outdir "$TMP/boot-post" -q >"$TMP/post.log" 2>&1; then
+    bad "bootcheck passed an image that only crashed"
+else
+    if [ -f "$TMP/boot-post/postmortem.log" ]; then
+        ok "bootcheck writes a post-mortem on a failed boot"
+        if grep -q 'vga-lowmem' "$TMP/boot-post/postmortem.log"; then
+            ok "the post-mortem names the owner of the faulting address"
+        else
+            bad "the post-mortem did not identify the memory region at RIP"
+            sed -n '1,20p' "$TMP/boot-post/postmortem.log" | sed 's/^/        /'
+        fi
+    else
+        bad "no post-mortem was written for a failed boot"
+        tail -20 "$TMP/post.log" | sed 's/^/        /'
     fi
 fi
 
@@ -241,6 +404,32 @@ else bad "absolute symlink leaked into the image"
 fi
 
 # --------------------------------------------------------------------------
+banner "3b. kernel build"
+#
+# The stub kernel used to ship as a checked-in KERNEL.ELF, so the image
+# pipeline could package a kernel nobody had built from the current source.
+# It is built here with whatever toolchain exists (clang + ld.lld, or gcc +
+# ld) and validated with tools/image/elf.py, which is the same contract the
+# loader enforces before it jumps.
+KOUT="$TMP/KERNEL.ELF"
+if OUT="$KOUT" "$ROOT_UNDER_TEST/Kernel/ravynkern/build.sh" -q 2>"$TMP/kernel.err"; then
+    if "$PYTHON" "$TOOLS/image/elf.py" "$KOUT" --require-load \
+            --min-vaddr 0x100000 --max-end 0x100000000 -q; then
+        ok "kernel builds into a loadable ELF64 ($(file_size "$KOUT") bytes)"
+    else
+        bad "kernel ELF layout is not loadable by the loader"
+    fi
+    if grep -qa RAVYNOS-KERNEL-OK "$KOUT"; then
+        ok "kernel image carries the RAVYNOS-KERNEL-OK marker"
+    else
+        bad "kernel image has no RAVYNOS-KERNEL-OK string"
+    fi
+else
+    printf '   skip kernel build (no clang+ld.lld or gcc+ld)\n'
+    sed 's/^/        /' "$TMP/kernel.err" 2>/dev/null | head -5
+fi
+
+# --------------------------------------------------------------------------
 banner "4. UEFI loader"
 # Built with clang+lld-link when the host has them, zig otherwise.  A host with
 # neither skips rather than failing: the loader is not a pipeline dependency,
@@ -291,6 +480,22 @@ elif grep -q 'no PE toolchain found' "$TMP/loader.err" 2>/dev/null; then
 else
     bad "loader build"
     tail -20 "$TMP/loader.err" | sed 's/^/        /'
+fi
+
+# The shell is what the loader chain-loads when there is nothing to boot, and
+# it is the prompt a user types into; it has to build wherever the loader does.
+SHELLOUT="$TMP/SHELL.EFI"
+if OUT="$SHELLOUT" "$TOOLS/shell/build.sh" -q 2>"$TMP/shell.err"; then
+    if "$PYTHON" "$TOOLS/image/pe.py" "$SHELLOUT" --require-subsystem 10 -q; then
+        ok "shell builds as a PE32+ EFI application ($(file_size "$SHELLOUT") bytes)"
+    else
+        bad "shell output is not a PE32+ EFI application"
+    fi
+elif grep -q 'no PE toolchain found' "$TMP/shell.err" 2>/dev/null; then
+    printf '   skip shell build (no clang+lld-link and no zig on this host)\n'
+else
+    bad "shell build"
+    tail -20 "$TMP/shell.err" | sed 's/^/        /'
 fi
 
 # --------------------------------------------------------------------------
