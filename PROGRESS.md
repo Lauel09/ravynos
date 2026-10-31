@@ -1,5 +1,10 @@
 # RavynOS Fork — Progress Log
 
+> **⚠ ACTIVE PLAN (2026-10-31): `Docs/DarwinBoot.md` — goal: XNU prints
+> `Darwin Kernel Version` via our loader. Work only its milestones D1→D6, log
+> there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
+> not reproduce locally and is deprioritised.**
+
 **Last updated:** 2026-10-31 (rev 17 — loader → kernel → prompt built and verified in-image; CI boots three media under OVMF; the remaining failure is firmware never *starting* the image)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.

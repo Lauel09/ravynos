@@ -31,8 +31,23 @@ MAKEFLAGS=
 
 PLATFORM_DIR=${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform
 
+# On a macOS host, /Library/Developer/CommandLineTools is Apple's CLT, which the
+# ravynOS xcrun cannot use: every `xcrun -sdk macosx -find nm` (NM, LIPO,
+# HOST_CC, ...) then expands to "error: unable to find sdk". Point xcrun at the
+# Developer tree we built; it looks for toolchains in $DEVELOPER_DIR/Toolchains.
+.if "${.MAKE.OS}" == "Darwin"
+XNU_DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer
+.else
+XNU_DEVELOPER_DIR=/Library/Developer/CommandLineTools
+.endif
+
+xnu_devdir: .PHONY
+.if "${.MAKE.OS}" == "Darwin"
+	ln -sfn Platforms/ravynOS.platform/Developer/Toolchains ${XNU_DEVELOPER_DIR}/Toolchains
+.endif
+
 all: ${TARGETS}
-installhdrs: .PHONY
+installhdrs: .PHONY xnu_devdir
 	mkdir -p ${ROOT_BINARY_DIR}${.CURDIR}/xnu
 	touch ${ROOT_BINARY_DIR}${.CURDIR}/xnu/.mach_kernel.timestamp
 	touch ${ROOT_BINARY_DIR}${.CURDIR}/xnu/.symbolset.timestamp
@@ -48,7 +63,7 @@ installhdrs: .PHONY
 		AVAILABILITY_PL=${AVAILABILITY_PL} SDKROOT=macosx \
 		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} XCRUN=${XCRUN} \
 		KERNEL_CONFIGS=${KERNEL_CONFIGS} ARCH_CONFIGS=${ARCH_CONFIGS} \
-		DEVELOPER_DIR=/Library/Developer/CommandLineTools HOST_FLEX=flex \
+		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} HOST_FLEX=flex \
 		SYMROOT=${ROOT_BINARY_DIR} HOST_CC=${HOST_CC} HOST_BISON=bison \
 		HOST_CXX=${HOST_CXX} HOST_LD=${HOST_LD} \
 		HOST_CODESIGN_ALLOCATE=/bin/true installhdrs
@@ -63,7 +78,7 @@ compiler_rt: .PHONY
 	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.cc_kext.a \
 	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libcc_kext.a
 
-xnu_all: installhdrs libfirehose_kernel compiler_rt
+xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt
 	PATH="${PATH}" SHELL=/bin/bash ${GMAKE} -C ${.CURDIR}/xnu LOGCOLORS=y \
 		PLATFORM=MacOSX BUILD_LTO=0 BUILD_WERROR=0 DO_CTFMERGE=0 \
 		SDKVERSION=${MACOS_VERSION_MIN} SRCROOT=${.CURDIR}/xnu \
@@ -77,7 +92,7 @@ xnu_all: installhdrs libfirehose_kernel compiler_rt
 		MACHINE=${CpuArch} XCRUN=${XCRUN} SDKROOT=macosx \
 		HOST_OS_VERSION=${MACOS_VERSION_MIN} VERBOSE=yes \
 		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} \
-		DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} \
 		LIBTOOL=${TOOLCHAIN}/usr/bin/libtool VERBOSE=yes \
 		KERNEL_CONFIGS=${KERNEL_CONFIGS} ARCH_CONFIGS=${ARCH_CONFIGS} \
 		HOST_CC=${HOST_CC} HOST_CXX=${HOST_CXX} HOST_LD=${HOST_LD} all install
