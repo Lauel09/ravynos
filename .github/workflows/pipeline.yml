@@ -12,15 +12,12 @@ name: Portable pipeline
 #              PE32+ EFI application, and booted by OVMF from both the ESP and
 #              the ISO's El Torito EFI entry
 #
-# The whole suite is cheap (seconds to a couple of minutes), so it runs on
-# every push and pull request.
+# Automatic triggers are intentionally disabled to avoid CI runs on every
+# push/PR and the daily schedule. Start it by hand from the Actions tab or
+# with `gh workflow run pipeline.yml`.
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
-  schedule:
-    - cron: "17 5 * * *"   # daily, catches host-image drift
 
 permissions:
   # write, not read: every job republishes its own failure log as a commit

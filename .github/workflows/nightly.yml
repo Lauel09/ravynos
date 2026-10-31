@@ -10,8 +10,7 @@ name: Nightly from scratch
 # the cache is the problem.
 
 on:
-  schedule:
-    - cron: "30 1 * * *"
+  # Scheduled runs are intentionally disabled; trigger it by hand when needed.
   workflow_dispatch:
 
 permissions:
