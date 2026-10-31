@@ -29,8 +29,13 @@
 #   BOOTCHECK_MEM       default for --mem
 #   BOOTCHECK_ACCEL     kvm | hvf | tcg (default: best available)
 #   BOOTCHECK_QEMU      QEMU binary (default qemu-system-x86_64)
+#   BOOTCHECK_MACHINE   -machine value (default: q35 for --uefi, QEMU's own
+#                       choice otherwise; q35 is what OVMF's 4 MiB flash
+#                       images are built and tested against)
 #   QEMU_FLAGS          extra QEMU arguments, word-split on purpose
 #   OVMF_CODE           firmware path for --uefi
+#   OVMF_VARS           matching writable variable store (auto-detected next
+#                       to a *CODE* image and copied, never modified)
 #
 # Exit status: 0 = all expectations seen, 1 = failure/timeout, 2 = usage or
 # missing-tool error.  Serial and QEMU logs are always preserved.
@@ -106,30 +111,68 @@ rm -f "$MON"
 # --------------------------------------------------------------------------
 # Acceleration: TCG is always correct; KVM/HVF are faster when available.
 # --------------------------------------------------------------------------
+#
+# `-accel help` lists what the binary was compiled with, which is not the same
+# as what this host can actually run: on Apple Silicon, qemu-system-x86_64
+# advertises hvf and then refuses it at start-up because HVF cannot virtualise
+# a foreign-architecture guest.  Selecting on `-accel help` therefore picked
+# hvf on macOS arm64 runners and failed the job before the guest ever ran.
+# The only honest test is to start the machine: paused, headless, two seconds,
+# then look at whether the process is still alive.
+try_accel() {
+    _accel=$1
+    : > "$OUTDIR/accel-$_accel.log"
+    "$QEMU" -accel "$_accel" -S -display none -monitor none -serial none \
+        -parallel none > "$OUTDIR/accel-$_accel.log" 2>&1 &
+    _pid=$!
+    sleep 2
+    if kill -0 "$_pid" 2>/dev/null; then
+        kill "$_pid" 2>/dev/null
+        wait "$_pid" 2>/dev/null
+        return 0
+    fi
+    wait "$_pid" 2>/dev/null
+    return 1
+}
+
 ACCEL=${BOOTCHECK_ACCEL:-}
 if [ -z "$ACCEL" ]; then
     case $(uname -s) in
-        Darwin)
-            if "$QEMU" -accel help 2>/dev/null | grep -qw hvf; then ACCEL=hvf; fi ;;
-        Linux)
-            if [ -r /dev/kvm ] && [ -w /dev/kvm ] &&
-                "$QEMU" -accel help 2>/dev/null | grep -qw kvm; then ACCEL=kvm; fi ;;
+        Darwin) candidates="hvf tcg" ;;
+        *)      candidates="kvm tcg" ;;
     esac
+    for cand in $candidates; do
+        # Cheap pre-checks first, so a wrong host does not pay two seconds per
+        # candidate; the probe is still authoritative.
+        case $cand in
+            kvm) [ -r /dev/kvm ] && [ -w /dev/kvm ] || continue ;;
+        esac
+        if try_accel "$cand"; then
+            ACCEL=$cand
+            log "bootcheck: acceleration '$cand' probed OK"
+            break
+        fi
+        warn "acceleration '$cand' is not usable here: $(tail -1 "$OUTDIR/accel-$cand.log" 2>/dev/null)"
+    done
+    [ -n "$ACCEL" ] || ACCEL=tcg
 fi
 
 # --------------------------------------------------------------------------
 # Firmware for .img (ESP) boots
 # --------------------------------------------------------------------------
 FW=
+FW_VARS=
 if [ "$UEFI" = 1 ]; then
     for candidate in \
         "${OVMF_CODE:-}" \
         /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
         /usr/local/share/qemu/edk2-x86_64-code.fd \
         /usr/share/OVMF/OVMF_CODE.fd \
+        /usr/share/OVMF/OVMF_CODE_4M.fd \
         /usr/share/ovmf/OVMF.fd \
         /usr/share/qemu/OVMF.fd \
-        /usr/share/edk2/ovmf/OVMF_CODE.fd; do
+        /usr/share/edk2/ovmf/OVMF_CODE.fd \
+        /usr/share/edk2/ovmf/OVMF_CODE_4M.fd; do
         if [ -n "$candidate" ] && [ -f "$candidate" ]; then FW=$candidate; break; fi
     done
     if [ -z "$FW" ]; then
@@ -137,6 +180,28 @@ if [ "$UEFI" = 1 ]; then
         printf '(set OVMF_CODE)\n' >&2
         exit 2
     fi
+
+    # A split CODE/VARS firmware needs a writable variable store.  Point QEMU
+    # at a *copy*: writing to the system file would mutate the host's firmware
+    # state, and a read-only CODE with no store makes OVMF unhappy on the
+    # second boot in a row.  Unified images (OVMF.fd, edk2-*.fd) carry their
+    # own vars and are used as-is.
+    case $FW in
+        *CODE*)
+            for vcand in "${OVMF_VARS:-}" \
+                         "$(dirname -- "$FW")/$(basename -- "$FW" | sed 's/CODE/VARS/')"; do
+                if [ -n "$vcand" ] && [ -f "$vcand" ]; then FW_VARS=$vcand; break; fi
+            done
+            if [ -n "$FW_VARS" ]; then
+                cp "$FW_VARS" "$OUTDIR/OVMF_VARS.fd" ||
+                    { printf 'bootcheck: cannot copy %s\n' "$FW_VARS" >&2; exit 2; }
+                FW_VARS=$OUTDIR/OVMF_VARS.fd
+                log "bootcheck: variable store $FW_VARS"
+            else
+                warn "firmware $FW is a split CODE image but no matching VARS file was found; booting with code only"
+            fi
+            ;;
+    esac
     log "bootcheck: firmware $FW"
 fi
 
@@ -147,6 +212,11 @@ fi
 # needed for anything except the deliberately word-split QEMU_FLAGS.
 # --------------------------------------------------------------------------
 set -- -m "$MEM"
+MACHINE=${BOOTCHECK_MACHINE:-}
+if [ -z "$MACHINE" ] && [ "$UEFI" = 1 ]; then
+    MACHINE=q35
+fi
+[ -n "$MACHINE" ] && set -- "$@" -machine "$MACHINE"
 if [ -n "$KERNEL" ]; then
     [ -f "$KERNEL" ] || { printf 'bootcheck: no such kernel: %s\n' "$KERNEL" >&2; exit 2; }
     set -- "$@" -kernel "$KERNEL"
@@ -159,6 +229,7 @@ else
 fi
 [ -n "$ACCEL" ] && set -- "$@" -accel "$ACCEL"
 [ -n "$FW" ] && set -- "$@" -drive "if=pflash,format=raw,readonly=on,file=$FW"
+[ -n "$FW_VARS" ] && set -- "$@" -drive "if=pflash,format=raw,file=$FW_VARS"
 set -- "$@" -display none -monitor "unix:$MON,server,nowait" \
     -serial "file:$LOG" -no-reboot
 
@@ -222,10 +293,22 @@ PY
 
 # --------------------------------------------------------------------------
 # Poll
+#
+# The counter used to be rebuilt from `elapsed` every iteration
+# (`elapsed=elapsed+1`, then `elapsed=(elapsed+4)/5`), which pins it at 1
+# forever: a boot that never printed its marker ignored --timeout and ran until
+# the CI job was killed.  Count ticks instead and derive seconds at the end.
 # --------------------------------------------------------------------------
-elapsed=0
+SLEEP_UNIT=1
+TICKS_PER_SECOND=1
+if sleep 0.2 2>/dev/null; then
+    SLEEP_UNIT=0.2
+    TICKS_PER_SECOND=5
+fi
+ticks=0
+limit=$((TIMEOUT * TICKS_PER_SECOND))
 lines_shown=0
-while [ "$elapsed" -lt "$TIMEOUT" ]; do
+while :; do
     total=$(wc -l < "$LOG" 2>/dev/null | tr -d ' ')
     total=${total:-0}
     if [ "$total" -gt "$lines_shown" ]; then
@@ -247,15 +330,13 @@ while [ "$elapsed" -lt "$TIMEOUT" ]; do
 
     guest_running || break
 
-    if sleep 0.2 2>/dev/null; then
-        ticks=5
-    else
-        sleep 1
-        ticks=1
+    if [ "$ticks" -ge "$limit" ]; then
+        break
     fi
-    elapsed=$((elapsed + 1))
-    [ "$ticks" = 5 ] && elapsed=$(( (elapsed + 4) / 5 ))
+    sleep "$SLEEP_UNIT" || sleep 1
+    ticks=$((ticks + 1))
 done
+elapsed=$((ticks / TICKS_PER_SECOND))
 
 running=1
 guest_running || running=0

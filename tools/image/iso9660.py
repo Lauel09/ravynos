@@ -33,7 +33,7 @@ Usage
 -----
     iso9660.py build <srcdir> -o out.iso [--volume-id ID]
                      [--boot-image REL] [--boot-load-size N]
-                     [--efi-image REL] [--efi-load-size N]
+                     [--efi-image REL] [--efi-load-size auto|N]
                      [--level 1|2] [--timestamp EPOCH]
                      [--print-manifest PATH]
 
@@ -429,19 +429,54 @@ def boot_catalog(bios: tuple[int, int] | None, efi: tuple[int, int] | None) -> b
 # --------------------------------------------------------------------------
 # Image assembly
 # --------------------------------------------------------------------------
+def resolve_efi_load_size(file: IsoFile | None, requested: int | str | None) -> int:
+    """Sectors the firmware will read for the UEFI boot image.
+
+    El Torito's "sector count" is how much of the no-emulation image the
+    firmware loads before jumping to it; it is *not* advisory.  This writer
+    used to default it to 1, and ``mkimage.sh --efi-image`` inherited that, so
+    a 3.5 KiB PE32+ application was announced as 512 bytes: firmware reads a
+    truncated image and the boot fails without a diagnostic.  The only honest
+    default is the size of the payload, rounded up to 512-byte sectors.
+
+    A caller may still pass an explicit count, but never one that truncates
+    the image -- that is a guaranteed-broken artifact, not a preference.
+    """
+    if file is None:
+        return 1
+    needed = max(1, (file.size + 511) // 512)
+    if requested is None or (isinstance(requested, str)
+                             and requested.lower() == "auto"):
+        return needed
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        raise ValueError(f"efi load size {requested!r} is neither 'auto' nor "
+                         "a whole number of 512-byte sectors") from None
+    if value < 1:
+        raise ValueError("efi load size must be at least one sector")
+    if value < needed:
+        raise ValueError(
+            f"efi load size {value} sector(s) is smaller than the "
+            f"{file.size}-byte boot image ({needed} sectors); firmware would "
+            "load a truncated image")
+    return value
+
+
 class IsoImage:
     """Deterministic ISO 9660 image assembled from a staging directory."""
 
     def __init__(self, root: IsoDir, volume_id: str, epoch: int,
                  boot_image: str | None = None, boot_load_size: int = 4,
-                 efi_image: str | None = None, efi_load_size: int = 1):
+                 efi_image: str | None = None,
+                 efi_load_size: int | str | None = "auto"):
         self.root = root
         self.volume_id = volume_id
         self.epoch = epoch
         self.boot_file = find_entry(root, boot_image) if boot_image else None
         self.efi_file = find_entry(root, efi_image) if efi_image else None
         self.boot_load_size = boot_load_size
-        self.efi_load_size = efi_load_size
+        self.efi_load_size = resolve_efi_load_size(self.efi_file, efi_load_size)
         self.manifest: list[tuple[str, int, int]] = []
         self._layout()
 
@@ -599,16 +634,17 @@ def main(argv: list[str]) -> int:
     b.add_argument("--boot-load-size", type=int, default=4,
                    help="512-byte sectors the BIOS loads (default 4)")
     b.add_argument("--efi-image", help="staged path of the UEFI boot image")
-    b.add_argument("--efi-load-size", type=int, default=1,
-                   help="512-byte sectors the firmware loads (default 1)")
+    b.add_argument("--efi-load-size", default="auto",
+                   help="512-byte sectors the firmware loads for the UEFI "
+                        "image; 'auto' (default) covers the whole file")
     b.add_argument("--level", type=int, choices=(1, 2), default=2)
     b.add_argument("--timestamp",
                    help="fixed epoch seconds or the literal SOURCE_DATE_EPOCH")
     b.add_argument("--print-manifest", metavar="PATH")
     b.set_defaults(func=cmd_build)
     args = ap.parse_args(argv)
-    if args.cmd == "build" and min(args.boot_load_size, args.efi_load_size) < 1:
-        ap.error("load sizes are counted in 512-byte sectors and must be >= 1")
+    if args.cmd == "build" and args.boot_load_size < 1:
+        ap.error("--boot-load-size is counted in 512-byte sectors and must be >= 1")
     return args.func(args)
 
 

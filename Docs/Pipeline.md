@@ -96,12 +96,25 @@ tools/mkimage.sh --root ../build/stage \
     --boot-image BOOT/LOADER --efi-image EFI/BOOT/BOOTX64.EFI \
     --format both -o out/ravynos-0.7.1 --verify
 
+# The UEFI loader on its own (Step B of Docs/BootLoader.md)
+tools/bootloader/build.sh -o stage/EFI/BOOT/BOOTX64.EFI
+tools/mkimage.sh --root stage --format both \
+    --efi-image EFI/BOOT/BOOTX64.EFI -o out/uefi --verify
+tools/bootcheck.sh out/uefi.img --uefi --expect RAVYNOS-LOADER-OK
+
 # What would happen, without doing it
 tools/mkimage.sh --root ../build/stage --print-plan
 
 # Which host tools are available
 tools/mkimage.sh --list-tools
 ```
+
+`--efi-image` is validated before anything is written: the file must be a
+PE32+ EFI application (`tools/image/pe.py`), and the El Torito sector count that
+the firmware reads is taken from its size (`--efi-load-size auto`, the default;
+a smaller explicit count is refused).  `--verify` re-checks the payload inside
+the finished artifact, so a non-PE or truncated boot image is caught here rather
+than as a QEMU timeout.
 
 Artifacts, all beside the requested output path:
 

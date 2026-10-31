@@ -33,9 +33,18 @@ on:
     - cron: "0 3 * * *"
   push:
     branches: [fork/darwin-dev]
+  pull_request:
+    # Pull requests are the only trigger that can be reached without the
+    # `workflow` token scope that `gh workflow run` needs, so this is how a
+    # build gets started from an agent environment: open the PR, read the
+    # verdict the job publishes as a commit comment.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
-  contents: read
+  # write: each job republishes its own log as a commit comment, because the
+  # Actions log-blob host is not reachable from every client (see
+  # .github/actions/ci-log-export).
+  contents: write
   packages: read
 
 concurrency:
@@ -44,6 +53,10 @@ concurrency:
 
 env:
   TARGET_ARCH: ${{ inputs.target_arch || 'x86_64' }}
+  # world by default; set the repository variable MACBUILD_STAGE to run a
+  # single stage (version|Developer|Kernel|Libraries|BSD) instead, which is
+  # the cheaper way to find out where a full build stops.
+  MACBUILD_STAGE: ${{ vars.MACBUILD_STAGE || 'world' }}
 
 jobs:
   build:
@@ -105,17 +118,61 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -o pipefail
-          tools/macbuild.sh --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
+          tools/macbuild.sh --stage "$MACBUILD_STAGE" \
+            --target-arch "$TARGET_ARCH" --log "$TMPDIR/build-world.log" \
             2>&1 | tee "$TMPDIR/build-world.console.log"
+
+      - name: Announce the build in the commit (so a long run is watchable)
+        # A build that takes hours is otherwise invisible until it ends: the
+        # run log lives on a host some clients cannot reach.  This posts the
+        # parameters, the cache state and the bmake verdict up front, and the
+        # courier below replaces the same comment with the log on failure.
+        if: always() && !cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: build start (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          logs: >-
+            ${{ runner.temp }}/build-world.console.log
+          note: "stage=${{ env.MACBUILD_STAGE }} arch=${{ env.TARGET_ARCH }} host=${{ matrix.os }}"
+
+      - name: Export this job's log to the commit
+        if: failure() || cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: build world (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          # Named explicitly: macbuild.sh redirects the interesting output into
+          # its own --log file, and on the first build run that file did not
+          # reach the comment -- so the failure text, the whole point of this
+          # step, was the one thing missing.
+          logs: >-
+            ${{ runner.temp }}/build-world.log
+            ${{ runner.temp }}/build-world.console.log
+          note: "bmake ${{ env.MACBUILD_STAGE }} on ${{ matrix.os }} (TARGET_ARCH=${{ env.TARGET_ARCH }})"
 
       - name: Locate staged output
         id: staged
         if: always()
         run: |
-          for candidate in ../build/stage ../build/root ../build/world; do
+          # ../build/sysroot is the one this tree actually populates: the leaf
+          # Makefiles do not implement DESTDIR/install, they copy into
+          # ${SYSROOT_DIR} = ${ROOT_BINARY_DIR}/sysroot via a to-sysroot
+          # target (see Makefile:130 and BSD/bin/ls/Makefile).  The old list
+          # did not include it, so a fully built userland would have been
+          # reported as "no staged sysroot" and the stub packaged instead.
+          for candidate in ../build/sysroot ../build/stage ../build/root ../build/world; do
             if [ -d "$candidate" ] && [ -n "$(ls -A "$candidate" 2>/dev/null)" ]; then
               echo "dir=$candidate" >> "$GITHUB_OUTPUT"
               echo "staged sysroot found: $candidate"
+              # Inventory, so the log says what the image will contain rather
+              # than only that something exists.
+              echo "--- inventory ---"
+              find "$candidate" -type f | wc -l | sed 's/^/  files: /'
+              find "$candidate" -maxdepth 2 | head -40
+              { find "$candidate" -type l | wc -l | sed 's/^/  symlinks: /'
+                du -sh "$candidate" 2>/dev/null | sed 's/^/  size: /'
+              } 2>/dev/null
               break
             fi
           done
@@ -198,11 +255,21 @@ jobs:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC2086
-          tools/mkimage.sh ${{ steps.source.outputs.mode }} --format both \
-            -o "$TMPDIR/out/ravynos" --verify \
-            --json "$TMPDIR/out/ravynos.json"
-          ls -l "$TMPDIR/out"
+          {
+            echo "mkimage mode: ${{ steps.source.outputs.mode }}"
+            # shellcheck disable=SC2086
+            tools/mkimage.sh ${{ steps.source.outputs.mode }} --format both \
+              -o "$TMPDIR/out/ravynos" --verify \
+              --json "$TMPDIR/out/ravynos.json" 2>&1
+            ls -l "$TMPDIR/out"
+          } | tee "$TMPDIR/image.log"
+
+      - name: Export this job's log to the commit
+        if: failure() || cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: mkimage (${{ matrix.label }})
+          dir: ${{ runner.temp }}
 
       - name: Summarise
         run: |
@@ -270,6 +337,14 @@ jobs:
             --expect RAVYNOS-USERSPACE-OK \
             --screenshot \
             --outdir "$TMPDIR/boot" --json "$TMPDIR/boot/verdict.json"
+
+      - name: Export the boot verdict to the commit
+        if: always() && !cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: boot verdict (${{ matrix.label }})
+          dir: ${{ runner.temp }}
+          logs: ${{ runner.temp }}/boot/serial.log ${{ runner.temp }}/boot/verdict.json
 
       - name: Attach the verdict to the run summary
         if: always()

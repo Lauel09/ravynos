@@ -1,8 +1,10 @@
 # The boot path: what boots the kernel, and how
 
-**Status:** decision document + staged plan. No bootloader source exists in the
-tree today. Everything below is constrained by two facts that can be checked in
-this repository:
+**Status:** decision document + staged plan. Step A (milestone stub) is done;
+Step B (UEFI application) is in tree, builds with clang+lld-link *or* zig, and
+has a CI job that boots it under OVMF from both the ESP and the ISO — see §3.
+Steps C and D are not started. Everything below is constrained by two facts
+that can be checked in this repository:
 
 1. The kernel build produces a **Mach-O** executable (`Kernel/xnu` links with
    the in-tree cctools `ld`), not ELF and not multiboot.
@@ -88,19 +90,43 @@ milestone chain.
 
 ### Step B — UEFI "hello" application
 
-A ~200-line freestanding PE32+ application, built with clang
+A ~350-line freestanding PE32+ application, built with clang
 (`-target x86_64-unknown-windows -ffreestanding -fshort-wchar -mno-red-zone`),
 that prints `RAVYNOS-LOADER-OK` over `SerialIo`, then `EFI_SUCCESS`.
 
-Deliverables (in tree, not yet built on this host): `tools/bootloader/uefi_stub.c`,
-`tools/bootloader/Makefile` and `tools/bootloader/README.md`.  The skeleton
-declares the UEFI tables it uses inline — no gnu-efi, no EDK2 checkout — prints
-`RAVYNOS-LOADER-OK` over the serial protocol with a `ConOut` mirror, and returns.
-Package it with `mkimage.sh --efi-image EFI/BOOT/BOOTX64.EFI`.
+In tree: `tools/bootloader/uefi_stub.c`, `build.sh`, a Makefile that works under
+both GNU make and bmake, and `README.md`.  The skeleton declares the UEFI tables
+it uses inline — no gnu-efi, no EDK2 checkout — prints `RAVYNOS-LOADER-OK` over
+the serial protocol with a `ConOut` mirror, and returns.  Package it with
+`mkimage.sh --efi-image EFI/BOOT/BOOTX64.EFI`.
 
-**Exit:** `tools/bootcheck.sh out/uefi.iso --uefi --expect RAVYNOS-LOADER-OK`
-passes under OVMF. This validates the ISO's UEFI catalog entry, the ESP
-construction, and the firmware handoff in one shot — before any kernel work.
+Three things had to be true before this step could be judged, and the first two
+turned out to be broken:
+
+1. **The loader had to build.**  The Makefile used bmake-only automatic
+   variables (`.TARGET`, `.ALLSRC`), so the documented `make` failed on every
+   Linux host — the loader had never been compiled anywhere.  `build.sh` now
+   owns the flags and toolchain detection (clang+lld-link, or a zig binary as
+   a fallback), and the entry symbol is the conventional `EfiMain`, which both
+   linkers accept.
+2. **The payload had to be loadable.**  `--efi-image` was never checked, and
+   `--efi-load-size` defaulted to **1 sector**: the El Torito catalog announced
+   a 3.5 KiB EFI application as 512 bytes, so firmware would have loaded a
+   truncated image and the boot would have hung with no diagnostic.  The sector
+   count is now derived from the file (`auto`), an explicit count smaller than
+   the file is refused, and `tools/image/pe.py` validates the PE32+ / EFI
+   subsystem headers at image-build time and again inside the finished ISO/ESP.
+3. **The firmware path had to be exercised.**  `bootcheck.sh --uefi` handles
+   split `OVMF_CODE`/`OVMF_VARS` firmware (copying the variable store instead
+   of writing to the system one), and the `uefi` job in `pipeline.yml` builds
+   the loader with clang+lld-link, verifies the PE headers, stages an ESP,
+   builds both images, and boots each under OVMF.
+
+**Exit:** `tools/bootcheck.sh out/uefi.img --uefi --expect RAVYNOS-LOADER-OK`
+passes under OVMF, for the disk image *and* for the ISO's UEFI El Torito entry.
+That validates the ESP construction and the catalog entry in one shot — before
+any kernel work.  The CI job is the arbiter; a local host with QEMU and OVMF
+can run the same two commands.
 
 ### Step C — load a payload from the image
 

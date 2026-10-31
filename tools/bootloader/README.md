@@ -20,29 +20,50 @@ failure in Step D (Mach-O loading) cannot be confused with a failure in Step B.
 
 ```sh
 cd tools/bootloader
-make                      # produces BOOTX64.EFI
-make clean
+./build.sh                # produces BOOTX64.EFI
+./build.sh --clean
+make                      # same thing, under GNU make or bmake
 ```
 
-Requirements: clang and `lld-link` (both ship with the ravynOS toolchain and
-with LLVM/Homebrew).  `IMAGE_SUBSYSTEM_EFI_APPLICATION` is subsystem 10, which
-is what `-Wl,-subsystem:10` selects.
+Requirements: clang and `lld-link` (they ship with the ravynOS toolchain, Xcode
+and LLVM/Homebrew), **or** a `zig` binary — `pip install ziglang` provides one —
+whose bundled clang and COFF linker build the same PE32+ image.  `build.sh`
+picks whichever exists, builds, and then runs `tools/image/pe.py` on the output
+so a wrong subsystem or a non-PE result fails here rather than as a boot
+timeout.  `IMAGE_SUBSYSTEM_EFI_APPLICATION` is subsystem 10.
+
+The entry symbol is `EfiMain`: that is lld-link's default entry for a PE image,
+and zig's linker accepts no `/entry:` override, so one source file links with
+both.  The Makefile exists only as a thin wrapper — it works under GNU make and
+bmake alike because all the flags live in `build.sh`.
 
 ## Package and boot
 
 ```sh
-tools/mkimage.sh --stub --format both -o out/uefi \
-    --efi-image EFI/BOOT/BOOTX64.EFI ...       # after staging the .efi
+stage=$(mktemp -d)
+mkdir -p "$stage/EFI/BOOT"
+./build.sh -o "$stage/EFI/BOOT/BOOTX64.EFI"
+tools/mkimage.sh --root "$stage" --format both \
+    --efi-image EFI/BOOT/BOOTX64.EFI -o out/uefi --verify
 tools/bootcheck.sh out/uefi.img --uefi --expect RAVYNOS-LOADER-OK
 ```
 
+`mkimage.sh` refuses an `--efi-image` that is not a PE32+ EFI application, and
+sizes the El Torito entry from the file (`--efi-load-size auto`); firmware reads
+exactly that many sectors, so a smaller count would boot a truncated image.
+
 `bootcheck.sh --uefi` needs OVMF firmware; it searches the usual Homebrew,
-Debian and Fedora paths, and honours `OVMF_CODE`.
+Debian and Fedora paths, honours `OVMF_CODE`, and — for split `CODE`/`VARS`
+firmware — copies the matching variable store instead of writing to the
+system's.  The `uefi` job in `.github/workflows/pipeline.yml` runs this whole
+sequence on every push and boots both the `.img` and the `.iso`.
 
 ## Status
 
 | Piece | State |
 |---|---|
+| builds into a PE32+ EFI application | verified (`tools/image/pe.py`, CI) |
+| OVMF boots the ESP image and the ISO | CI job `uefi` |
 | entry point, console discovery, markers | implemented |
 | `ExitBootServices` sequence | implemented |
 | reading a file from the boot volume | **TODO** (Step C) |

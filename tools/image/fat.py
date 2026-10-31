@@ -458,8 +458,18 @@ class Fat16Volume:
         struct.pack_into("<I", bs, 39, serial)
         bs[43:54] = f"{self.label:<11}"[:11].encode("ascii", "replace")
         bs[54:62] = b"FAT16   "
-        bs[62] = 0xCD   # int 0x18
-        bs[63] = 0x18
+        # Legacy-boot trap.  Some firmware fallback paths (OVMF without a
+        # matching Boot#### variable: "UEFI Misc Device") map the first ESP
+        # sectors at 0xB0000 and jump there *without parsing any PE*.  The
+        # old payload was `int 0x18`, which under OVMF's 1:1 high mapping
+        # executed an unrelated BIOS vector instead of trapping.  We place a
+        # guaranteed invalid opcode (UD2, 0F FF) at the very entry point so
+        # the CPU faults deterministically into the firmware exception
+        # handler; ravynOS' BOOTX64.EFI detects that handoff context and
+        # rescues the boot from the firmware stack.  See Docs/BootLoader.md
+        # §"Legacy-handoff rescue".
+        bs[62] = 0x0F   # UD2 -- reserved opcode, always #UD
+        bs[63] = 0xFF
         bs[64:66] = b"\x00\x00"
         bs[510:512] = b"\x55\xAA"
         return bytes(bs)
@@ -776,8 +786,12 @@ def main(argv: list[str]) -> int:
     w.set_defaults(func=cmd_wrap)
 
     args = ap.parse_args(argv)
-    if args.timestamp:
-        raw = args.timestamp
+    # Only the `build` subparser defines --timestamp.  Reading args.timestamp
+    # unconditionally made `wrap` -- the mtools backend's GPT step -- die with
+    # AttributeError before writing anything, on every host, since it landed.
+    raw_timestamp = getattr(args, "timestamp", None)
+    if raw_timestamp:
+        raw = raw_timestamp
         if raw.upper() == "SOURCE_DATE_EPOCH":
             env = os.environ.get("SOURCE_DATE_EPOCH", "")
             args.epoch = int(env) if env.isdigit() else DEFAULT_EPOCH

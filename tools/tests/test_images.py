@@ -30,6 +30,7 @@ sys.path.insert(0, IMAGE)
 import fat as fatmod          # noqa: E402
 import iso9660                # noqa: E402
 import verify                 # noqa: E402
+from test_pe import minimal_pe  # noqa: E402  (synthetic but well-formed PE)
 
 EPOCH = 315532800
 
@@ -57,6 +58,20 @@ class TempDirTest(unittest.TestCase):
 # ISO 9660 + El Torito
 # --------------------------------------------------------------------------
 class IsoWriterTests(TempDirTest):
+    def efi_volume(self, payload: bytes | None = None) -> bytes:
+        """A FAT16 volume with EFI/BOOT/BOOTX64.EFI: the El Torito UEFI shape.
+
+        Firmware treats the entry as a partition and mounts it, so a bare PE
+        is not bootable (the first OVMF run of the uefi job proved it).
+        """
+        stage = self.path("efi-volume")
+        os.makedirs(stage, exist_ok=True)
+        write_tree(stage, {"EFI/BOOT/BOOTX64.EFI": payload or minimal_pe()})
+        data, _ = fatmod.build_disk_image(fatmod.scan_tree(stage), epoch=EPOCH,
+                                          label="EFIBOOT", gpt=False,
+                                          size_mb=4)
+        return data
+
     def build(self, files: dict[str, bytes], out: str = "out.iso", **kwargs) -> str:
         stage = self.path("stage")
         os.makedirs(stage, exist_ok=True)
@@ -103,11 +118,50 @@ class IsoWriterTests(TempDirTest):
         self.assertEqual(blob[start:start + len(payload)], payload)
 
     def test_efi_entry_is_emitted(self) -> None:
-        out = self.build({"BOOT/BOOTX64.EFI": b"MZ" + b"\x00" * 510},
-                         efi_image="BOOT/BOOTX64.EFI", efi_load_size=1)
+        volume = self.efi_volume()
+        out = self.build({"BOOT/EFIBOOT.IMG": volume},
+                         efi_image="BOOT/EFIBOOT.IMG")
         info = verify.verify_iso(out)
-        kinds = {e["kind"] for e in info["boot"]["entries"]}
-        self.assertIn("uefi", kinds)
+        entries = [e for e in info["boot"]["entries"] if e["kind"] == "uefi"]
+        self.assertEqual(len(entries), 1)
+        # 'auto' covers the payload: El Torito's sector count is what the
+        # firmware loads, and it used to default to a single 512-byte sector.
+        self.assertEqual(entries[0]["load_sectors"],
+                         (len(volume) + 511) // 512)
+        payload = entries[0]["payload"]
+        self.assertEqual(payload["format"], "fat16")
+        self.assertEqual(payload["boot"], "EFI/BOOT/BOOTX64.EFI")
+        self.assertEqual(payload["subsystem"], "efi_application")
+        self.assertEqual(payload["machine"], "x86_64")
+
+    def test_bare_pe_efi_entry_is_rejected_by_the_verifier(self) -> None:
+        # Exactly what OVMF reported as "failed to load ... Not Found": the
+        # entry is mounted as a partition, and a PE has no file system.
+        out = self.build({"BOOT/BOOTX64.EFI": minimal_pe()},
+                         efi_image="BOOT/BOOTX64.EFI")
+        with self.assertRaisesRegex(verify.VerifierError, "bare PE32"):
+            verify.verify_iso(out)
+
+    def test_efi_load_size_smaller_than_the_payload_is_rejected(self) -> None:
+        volume = self.efi_volume()
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            self.build({"BOOT/EFIBOOT.IMG": volume},
+                       efi_image="BOOT/EFIBOOT.IMG", efi_load_size=1)
+
+    def test_non_pe_efi_payload_is_caught_by_the_verifier(self) -> None:
+        out = self.build({"BOOT/BOOTX64.EFI": b"MZ" + b"\x00" * 1000},
+                         efi_image="BOOT/BOOTX64.EFI")
+        with self.assertRaises(verify.VerifierError):
+            verify.verify_iso(out)
+
+    def test_efi_boot_volume_verifier(self) -> None:
+        volume = self.efi_volume()
+        target = self.path("efiboot.img")
+        with open(target, "wb") as fh:
+            fh.write(volume)
+        info = verify.verify_efiboot(target)
+        self.assertEqual(info["boot"]["path"], "EFI/BOOT/BOOTX64.EFI")
+        self.assertEqual(info["boot"]["subsystem"], "efi_application")
 
     def test_long_names_and_collisions(self) -> None:
         files = {
@@ -190,7 +244,7 @@ class FatWriterTests(TempDirTest):
         return target, meta
 
     def test_minimal_image_verifies(self) -> None:
-        out, meta = self.build({"EFI/BOOT/BOOTX64.EFI": b"MZ" + b"\x00" * 100})
+        out, meta = self.build({"EFI/BOOT/BOOTX64.EFI": minimal_pe()})
         info = verify.verify_img(out)
         self.assertTrue(info["partitions"][0]["is_esp"])
         self.assertEqual({f["path"] for f in info["esp"]["files"]},
@@ -426,7 +480,7 @@ class CommandLineTests(TempDirTest):
     def test_fat_cli_build_and_verify(self) -> None:
         stage = self.path("stage")
         os.makedirs(stage)
-        write_tree(stage, {"EFI/BOOT/BOOTX64.EFI": b"MZ"})
+        write_tree(stage, {"EFI/BOOT/BOOTX64.EFI": minimal_pe()})
         out = self.path("cli.img")
         result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
                                "build", stage, "-o", out, "--size-mb", "16",
@@ -435,6 +489,45 @@ class CommandLineTests(TempDirTest):
         result = self.run_tool(sys.executable, os.path.join(IMAGE, "verify.py"),
                                "img", out)
         self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_fat_cli_wrap_in_gpt(self) -> None:
+        # `fat.py wrap` is the mtools backend's GPT step.  It used to crash
+        # with AttributeError before writing anything, because main() read
+        # args.timestamp, which only the `build` subparser defines -- so
+        # --backend mtools could not have worked on any host.  Nothing tested
+        # the subcommand, which is why it shipped.
+        stage = self.path("stage")
+        os.makedirs(stage)
+        write_tree(stage, {"EFI/BOOT/BOOTX64.EFI": minimal_pe()})
+        fat = self.path("bare.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "build", stage, "-o", fat, "--size-mb", "16",
+                               "--no-gpt", "--timestamp", str(EPOCH))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        out = self.path("wrapped.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "wrap", "--fat", fat, "-o", out,
+                               "--offset-sectors", "2048", "--label", "RAVYNOS")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "verify.py"),
+                               "img", out)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("VERIFY OK", result.stdout)
+
+    def test_wrap_rejects_a_misaligned_fat(self) -> None:
+        bad = self.path("odd.img")
+        with open(bad, "wb") as fh:
+            fh.write(b"x" * 1000)
+        out = self.path("out.img")
+        result = self.run_tool(sys.executable, os.path.join(IMAGE, "fat.py"),
+                               "wrap", "--fat", bad, "-o", out)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("multiple of", result.stderr)
+        self.assertFalse(os.path.exists(out))
 
     def test_verify_rejects_a_text_file(self) -> None:
         path = self.path("not-an-image.iso")

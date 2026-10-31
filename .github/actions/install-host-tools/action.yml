@@ -23,6 +23,14 @@ inputs:
     description: Install nasm (boot stub assembler)
     required: false
     default: "true"
+  ovmf:
+    description: Install OVMF firmware (Linux; needed for --uefi boots)
+    required: false
+    default: "false"
+  clang:
+    description: Install clang and lld (Linux; builds tools/bootloader)
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -38,10 +46,16 @@ runs:
         [ "${{ inputs.mtools }}" = "true" ] && pkgs="$pkgs mtools"
         [ "${{ inputs.nasm }}" = "true" ] && pkgs="$pkgs nasm"
         [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu-system-x86"
+        [ "${{ inputs.ovmf }}" = "true" ] && pkgs="$pkgs ovmf"
+        [ "${{ inputs.clang }}" = "true" ] && pkgs="$pkgs clang lld"
         # file(1) and dosfstools are useful when diagnosing artifacts.
         pkgs="$pkgs file dosfstools"
-        echo "installing:$pkgs"
-        sudo apt-get install -y -qq $pkgs
+        if [ -z "${pkgs# }" ]; then
+          echo "nothing to install (all inputs false)"
+        else
+          echo "installing:$pkgs"
+          sudo apt-get install -y -qq $pkgs
+        fi
 
     - name: Install tools (macOS)
       if: runner.os == 'macOS'
@@ -53,9 +67,18 @@ runs:
         [ "${{ inputs.mtools }}" = "true" ] && pkgs="$pkgs mtools"
         [ "${{ inputs.nasm }}" = "true" ] && pkgs="$pkgs nasm"
         [ "${{ inputs.qemu }}" = "true" ] && pkgs="$pkgs qemu"
-        echo "installing:$pkgs"
-        # Homebrew on macOS runners is preinstalled; avoid a full auto-update.
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install $pkgs
+        # macOS ships clang in the Xcode command line tools, and qemu brings
+        # edk2-*-code.fd, so the ovmf/clang inputs need nothing extra here.
+        if [ -z "${pkgs# }" ]; then
+          # `brew install` with no formula is an error, so a job that asked
+          # for nothing (the reproducibility job) used to fail while setting
+          # up its toolchain -- before it had run a single test.
+          echo "nothing to install (all inputs false)"
+        else
+          echo "installing:$pkgs"
+          # Homebrew on macOS runners is preinstalled; no full auto-update.
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install $pkgs
+        fi
 
     - name: Report tool versions
       shell: bash

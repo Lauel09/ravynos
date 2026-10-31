@@ -93,3 +93,9 @@ work/**/*.rep
 # Python bytecode from the pipeline's test runs
 __pycache__/
 *.pyc
+
+# Kernel/UEFI build outputs (KERNEL.ELF is a checked-in test fixture)
+*.o
+*.obj
+/tools/bootloader/BOOTX64.EFI
+/tools/shell/SHELL.EFI

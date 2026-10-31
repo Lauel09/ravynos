@@ -2,12 +2,15 @@ name: Portable pipeline
 
 # Proves that tools/mkimage.sh + tools/bootcheck.sh stay host-neutral.
 #
-# Four jobs, deliberately overlapping:
+# Five jobs, deliberately overlapping:
 #   tests      unit tests + CLI contract + shell syntax (no host tools at all)
 #   structure  stub ISO/IMG built and structurally verified on both OSes,
 #              including one build per backend (xorriso / python / mtools)
 #   reproduce  byte-for-byte reproducibility across two independent runs
 #   boot       QEMU verdict on Ubuntu and macOS, with the ISO and logs kept
+#   uefi       the real UEFI loader, built with clang/lld-link, verified as a
+#              PE32+ EFI application, and booted by OVMF from both the ESP and
+#              the ISO's El Torito EFI entry
 #
 # The whole suite is cheap (seconds to a couple of minutes), so it runs on
 # every push and pull request.
@@ -20,7 +23,10 @@ on:
     - cron: "17 5 * * *"   # daily, catches host-image drift
 
 permissions:
-  contents: read
+  # write, not read: every job republishes its own failure log as a commit
+  # comment (see .github/actions/ci-log-export).  On fork PRs the token is
+  # downgraded to read-only by GitHub and the export degrades to a warning.
+  contents: write
 
 concurrency:
   group: pipeline-${{ github.ref }}
@@ -42,7 +48,15 @@ jobs:
         run: python3 --version
 
       - name: Shell syntax, unit tests, CLI contract
-        run: tools/tests/run-tests.sh --no-pipeline -v
+        run: tools/tests/run-tests.sh --no-pipeline -v 2>&1 | tee "$RUNNER_TEMP/tests.log"
+
+      - name: Export this job's log to the commit
+        if: failure() || cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: tests (${{ matrix.os }})
+          dir: ${{ runner.temp }}
+          note: "Step: shell syntax / unit tests / CLI contract"
 
   structure:
     name: structure (${{ matrix.os }}, ${{ matrix.backend }})
@@ -78,7 +92,8 @@ jobs:
             fmt=iso
           fi
           tools/mkimage.sh --stub --format "$fmt" --backend "${{ matrix.backend }}" \
-            -o "$TMPDIR/build/stub" --verify --json "$TMPDIR/build/stub.json"
+            -o "$TMPDIR/build/stub" --verify --json "$TMPDIR/build/stub.json" \
+            2>&1 | tee "$TMPDIR/structure-build.log"
           python3 tools/image/verify.py "$fmt" "$TMPDIR/build/stub.$fmt" --json \
             > "$TMPDIR/build/verify.json"
           cat "$TMPDIR/build/stub.json"
@@ -86,7 +101,14 @@ jobs:
       - name: End-to-end self-test (no QEMU)
         env:
           TMPDIR: ${{ runner.temp }}
-        run: tools/pipeline-selftest.sh --no-qemu
+        run: tools/pipeline-selftest.sh --no-qemu 2>&1 | tee "$RUNNER_TEMP/selftest-nq.log"
+
+      - name: Export this job's log to the commit
+        if: failure() || cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: structure (${{ matrix.os }}, ${{ matrix.backend }})
+          dir: ${{ runner.temp }}
 
       - name: Upload build record
         if: always()
@@ -114,33 +136,91 @@ jobs:
       - uses: ./.github/actions/install-host-tools
         with:
           qemu: "false"
-          xorriso: "false"
-          mtools: "false"
+          # Every backend, not just the Python fallback: this job used to
+          # install nothing, so it only ever proved that the backend a bare
+          # runner has is reproducible.  The boot job uses xorriso where it
+          # exists, and that is the one that turned out not to be.
+          xorriso: "true"
+          mtools: "true"
           nasm: "false"
 
-      - name: Two independent builds must be byte-identical
+      - name: Two independent builds must be byte-identical, per backend
         env:
           TMPDIR: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-            -o "$TMPDIR/a/img" -q
-          SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub --format both \
-            -o "$TMPDIR/b/img" -q
-          cmp "$TMPDIR/a/img.iso" "$TMPDIR/b/img.iso"
-          cmp "$TMPDIR/a/img.img" "$TMPDIR/b/img.img"
-          echo "both formats are byte-for-byte reproducible"
+          {
+            for pair in python:iso:iso xorriso:iso:iso mtools:img:img; do
+              backend=${pair%%:*}
+              rest=${pair#*:}
+              fmt=${rest%%:*}
+              ext=${rest##*:}
+              tool=xorriso
+              [ "$backend" = mtools ] && tool=mformat
+              if ! command -v "$tool" >/dev/null 2>&1; then
+                echo "  SKIP $backend/$fmt: $tool is not installed"
+                continue
+              fi
+              base="$TMPDIR/$backend-$fmt"
+              SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub \
+                --format "$fmt" --backend "$backend" -o "$base-a" -q
+              sleep 2   # force the two builds across a second boundary
+              SOURCE_DATE_EPOCH=1600000000 tools/mkimage.sh --stub \
+                --format "$fmt" --backend "$backend" -o "$base-b" -q
+              if ! cmp -s "$base-a.$ext" "$base-b.$ext"; then
+                # Print enough to identify the culprit next time: the byte
+                # offsets are useless on their own.
+                echo "  $backend/$fmt: DIFFERS"
+                cmp -l "$base-a.$ext" "$base-b.$ext" 2>&1 | head -8 || true
+                # `|| true`: cmp exits 1 when the files differ, and under
+                # `set -euo pipefail` that killed the step before it could
+                # print the window -- which is exactly what happened on the
+                # run that first detected the mtools difference.
+                first=$(cmp -l "$base-a.$ext" "$base-b.$ext" 2>/dev/null |
+                        head -1 | awk '{print $1}' || true)
+                if [ -n "${first:-}" ]; then
+                  start=$((first > 33 ? first - 33 : 0))
+                  echo "  --- a around byte $first (offset $start) ---"
+                  od -A d -t x1 -j "$start" -N 96 "$base-a.$ext" 2>/dev/null || true
+                  echo "  --- b ---"
+                  od -A d -t x1 -j "$start" -N 96 "$base-b.$ext" 2>/dev/null || true
+                fi
+                # mtools is a known-open defect, not a mystery: the bytes
+                # that differ are 64-bit stack addresses at the end of the FAT
+                # volume (e.g. 20 e9 bc de ff 7f 00 00), i.e. mtools writing
+                # uninitialised memory into free space.  That is upstream and
+                # unfixable from here, so it warns loudly instead of failing
+                # the job; every other backend still fails hard.  When this
+                # stops warning, delete the special case.
+                case $backend in
+                  mtools)
+                    echo "::warning title=Known defect::mtools .img is not reproducible (uninitialised bytes at the end of the FAT volume; see PROGRESS.md rev 14)"
+                    echo "  mtools/$fmt: NOT reproducible -- known upstream defect, not a failure"
+                    ;;
+                  *) cmp "$base-a.$ext" "$base-b.$ext" ;;
+                esac
+              fi
+              echo "  $backend/$fmt: byte-for-byte reproducible ($(shasum -a 256 "$base-a.$ext" 2>/dev/null | cut -c1-16 || sha256sum "$base-a.$ext" | cut -c1-16))"
+            done
+          } 2>&1 | tee "$RUNNER_TEMP/reproduce.log"
 
       - name: Cross-host comparison
         # Each runner records its hashes; a maintainer can diff the two
         # artifacts to check that macOS and Linux agree too.
         if: always()
         run: |
-          for f in "$TMPDIR"/a/*.iso "$TMPDIR"/a/*.img; do
+          for f in "$TMPDIR"/*-a.iso "$TMPDIR"/*-a.img; do
             [ -f "$f" ] && { shasum -a 256 "$f" 2>/dev/null || sha256sum "$f"; }
           done | tee "$TMPDIR/hashes.txt" || true
         env:
           TMPDIR: ${{ runner.temp }}
+
+      - name: Export this job's log to the commit
+        if: failure() || cancelled()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: reproducibility (${{ matrix.os }})
+          dir: ${{ runner.temp }}
 
       - name: Upload hashes
         if: always()
@@ -170,18 +250,61 @@ jobs:
           BOOTCHECK_TIMEOUT: "120"
         run: |
           set -euo pipefail
-          tools/pipeline-selftest.sh --keep | tee "$TMPDIR/selftest.log"
+          tools/pipeline-selftest.sh --keep 2>&1 | tee "$TMPDIR/selftest.log"
           work=$(sed -n 's/^  work  //p' "$TMPDIR/selftest.log" | tail -1)
           echo "WORK=$work" >> "$GITHUB_ENV"
 
-      - name: Publish the boot verdict as a check annotation
+      - name: Publish the boot verdict to the job summary
+        # This used to echo into the step stdout, where GitHub renders
+        # nothing.  The summary file is the surface that survives the run.
         if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
-          for f in "$TMPDIR"/ravynos-bootcheck.*/serial.log; do
+          set -u
+          found=0
+          for f in "$TMPDIR"/ravynos-bootcheck.*/serial.log \
+                   "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*/serial.log; do
             [ -f "$f" ] || continue
-            echo "## serial log: $f"
-            tail -40 "$f"
+            found=1
+            {
+              echo "### serial: $(basename "$(dirname "$f")")"
+              echo '```'
+              tail -40 "$f"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           done
+          for f in "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*.json \
+                   "$TMPDIR"/ravynos-bootcheck.*/verdict.json; do
+            [ -f "$f" ] || continue
+            echo "### verdict: $f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [ "$found" = 0 ]; then
+            echo "no serial logs were produced (the run failed before QEMU started)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Same content as a commit comment, which also survives the run.
+          logs="$(ls -t "$TMPDIR"/ravynos-bootcheck.*/serial.log \
+                        "$TMPDIR"/ravynos-pipeline-selftest.*/boot-*/serial.log \
+                        2>/dev/null | head -6 | tr '\n' ' ')"
+          echo "CI_BOOT_LOGS=$logs" >> "$GITHUB_ENV"
+
+      - name: Publish the boot evidence (pass or fail)
+        # `always()`, not `failure()`: a green boot is the one verdict that
+        # cannot be reconstructed from an artifact bundle alone -- artifacts
+        # are served from the same blocked host as the logs -- so the raw
+        # serial output and QEMU's own version/accel line go into a commit
+        # comment either way.
+        if: always()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: boot verdict (${{ matrix.os }})
+          dir: ${{ runner.temp }}
+          logs: ${{ env.CI_BOOT_LOGS }}
+          note: ${{ job.status }} — serial markers, accel probe, verdict JSON
 
       - name: Upload images, logs and verdicts
         if: always()
@@ -194,8 +317,192 @@ jobs:
             ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.json
             ${{ runner.temp }}/ravynos-pipeline-selftest.*/*.manifest.txt
             ${{ runner.temp }}/ravynos-bootcheck.*/serial.log
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/stub.json
+            ${{ runner.temp }}/ravynos-pipeline-selftest.*/stub.manifest.txt
             ${{ runner.temp }}/ravynos-bootcheck.*/qemu.log
             ${{ runner.temp }}/ravynos-bootcheck.*/screenshot.ppm
             ${{ runner.temp }}/selftest.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+  uefi:
+    # Step B of Docs/BootLoader.md had never run: the loader was never
+    # compiled anywhere, and bootcheck.sh --uefi had never been exercised, so
+    # "the ISO carries a UEFI catalog entry" was an unverified claim about a
+    # payload nobody had built.  This job closes that: clang + lld-link build
+    # the loader, the PE32+ headers are checked, mkimage stages a real ESP and
+    # ISO, and OVMF boots both and has to print the loader's marker on COM1.
+    name: UEFI loader (OVMF)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/install-host-tools
+        with:
+          qemu: "true"
+          xorriso: "true"
+          mtools: "false"
+          nasm: "false"
+          ovmf: "true"
+          clang: "true"
+
+      - name: Build the loader (clang + lld-link)
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$TMPDIR/uefi"
+          tools/bootloader/build.sh -o "$TMPDIR/uefi/BOOTX64.EFI" \
+            2>&1 | tee "$TMPDIR/uefi/loader-build.log"
+          python3 tools/image/pe.py "$TMPDIR/uefi/BOOTX64.EFI" \
+            --require-subsystem 10 --json "$TMPDIR/uefi/pe.json" \
+            2>&1 | tee -a "$TMPDIR/uefi/loader-build.log"
+
+      - name: Inspect the loader image
+        # A crash inside the image is only diagnosable with the headers and
+        # the first instructions, and the artifact host is not reachable from
+        # every client -- so put both in a log that is exported to the commit.
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -u
+          efi="$TMPDIR/uefi/BOOTX64.EFI"
+          {
+            echo "== file =="; ls -l "$efi"
+            echo "== readobj =="
+            llvm-readobj-18 --file-headers --sections --coff-basereloc "$efi" 2>/dev/null ||
+              llvm-readobj --file-headers --sections --coff-basereloc "$efi" 2>&1 ||
+              true
+            echo "== disassembly =="
+            llvm-objdump-18 -d --no-show-raw-insn "$efi" 2>/dev/null ||
+              llvm-objdump -d --no-show-raw-insn "$efi" 2>&1 || true
+          } > "$TMPDIR/uefi/inspect.log" 2>&1
+          sed -n '1,80p' "$TMPDIR/uefi/inspect.log"
+
+      - name: Stage an ESP and build the ISO and disk image
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SOURCE_DATE_EPOCH: "1600000000"
+        run: |
+          set -euo pipefail
+          stage="$TMPDIR/uefi/stage"
+          mkdir -p "$stage/EFI/BOOT" "$stage/BOOT"
+          cp "$TMPDIR/uefi/BOOTX64.EFI" "$stage/EFI/BOOT/BOOTX64.EFI"
+          # A valid default El Torito entry as well: spec-compliant media
+          # carries one even when the firmware will pick the 0xEF section.
+          python3 tools/image/bootstub.py -o "$stage/BOOT/BOOTSTUB.BIN" \
+            --marker RAVYNOS-BOOTCHECK-STUB-OK
+          printf 'ravynOS UEFI loader probe\n' > "$stage/README.TXT"
+          tools/mkimage.sh --root "$stage" --format both \
+            --boot-image BOOT/BOOTSTUB.BIN \
+            --efi-payload EFI/BOOT/BOOTX64.EFI \
+            -o "$TMPDIR/uefi/loader" --verify \
+            --json "$TMPDIR/uefi/loader.build.json" \
+            2>&1 | tee "$TMPDIR/uefi/image.log"
+
+      - name: Boot the GPT/ESP image under OVMF
+        id: boot_img
+        # A hung boot used to burn the whole job: bootcheck's timeout counter
+        # was pinned at 1 (fixed in the same commit as this job), and a step
+        # has no second line of defence.  Both boots now run with their own
+        # budget and `continue-on-error`, so the ISO path is exercised even
+        # when the ESP path fails, and the "Check both verdicts" step below
+        # turns the outcomes into the job verdict.
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$TMPDIR/uefi"
+          tools/bootcheck.sh "$TMPDIR/uefi/loader.img" --uefi \
+            --expect RAVYNOS-LOADER-OK --timeout 180 \
+            --outdir "$TMPDIR/uefi/boot-img" \
+            --json "$TMPDIR/uefi/verdict-img.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-img.log"
+
+      - name: Boot the ISO under OVMF (El Torito EFI entry)
+        id: boot_iso
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$TMPDIR/uefi"
+          tools/bootcheck.sh "$TMPDIR/uefi/loader.iso" --uefi \
+            --expect RAVYNOS-LOADER-OK --timeout 180 \
+            --outdir "$TMPDIR/uefi/boot-iso" \
+            --json "$TMPDIR/uefi/verdict-iso.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-iso.log"
+
+      - name: Check both verdicts
+        if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
+          IMG_OUTCOME: ${{ steps.boot_img.outcome }}
+          ISO_OUTCOME: ${{ steps.boot_iso.outcome }}
+        run: |
+          set -u
+          rc=0
+          echo "ESP image boot: $IMG_OUTCOME"
+          echo "ISO (El Torito) boot: $ISO_OUTCOME"
+          for f in "$TMPDIR"/uefi/boot-*/serial.log; do
+            [ -f "$f" ] || continue
+            echo "---- $f ($(wc -c < "$f") bytes) ----"
+            tail -40 "$f"
+          done
+          [ "$IMG_OUTCOME" = success ] || rc=1
+          [ "$ISO_OUTCOME" = success ] || rc=1
+          exit "$rc"
+
+      - name: Publish the UEFI verdict to the job summary
+        if: always()
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -u
+          for f in "$TMPDIR"/uefi/boot-*/serial.log; do
+            [ -f "$f" ] || continue
+            {
+              echo "### serial: $(basename "$(dirname "$f")")"
+              echo '```'
+              tail -40 "$f"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          for f in "$TMPDIR"/uefi/verdict-*.json "$TMPDIR"/uefi/pe.json; do
+            [ -f "$f" ] || continue
+            { echo "### $f"; echo '```json'; cat "$f"; echo '```'; } \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Export this job's log to the commit
+        if: always()
+        uses: ./.github/actions/ci-log-export
+        with:
+          title: UEFI loader (OVMF)
+          dir: ${{ runner.temp }}/uefi
+          logs: |
+            ${{ runner.temp }}/uefi/loader-build.log
+            ${{ runner.temp }}/uefi/inspect.log
+            ${{ runner.temp }}/uefi/image.log
+          note: ${{ job.status }} — loader build, PE32+ headers, image layout, OVMF serial markers
+
+      - name: Upload the loader, images and verdicts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-loader
+          path: |
+            ${{ runner.temp }}/uefi/BOOTX64.EFI
+            ${{ runner.temp }}/uefi/pe.json
+            ${{ runner.temp }}/uefi/loader.iso
+            ${{ runner.temp }}/uefi/loader.img
+            ${{ runner.temp }}/uefi/loader.build.json
+            ${{ runner.temp }}/uefi/verdict-*.json
+            ${{ runner.temp }}/uefi/boot-*/serial.log
+            ${{ runner.temp }}/uefi/boot-*/qemu.log
           if-no-files-found: ignore
           retention-days: 30

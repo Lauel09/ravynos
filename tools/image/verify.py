@@ -9,7 +9,11 @@ attributed to image assembly rather than to the guest.
 
 It parses the ISO 9660 / El Torito and GPT / FAT16 structures from scratch --
 deliberately *not* by importing the writers in this directory, so a bug in a
-writer cannot hide behind the same bug in its verifier.
+writer cannot hide behind the same bug in its verifier.  ``pe.py`` is imported
+only to read the *payload*: the UEFI boot image inside the ISO or the ESP is
+checked to be a PE32+ EFI application whose El Torito sector count covers the
+whole file, because either mistake produces a boot timeout rather than an
+error.
 
 Usage
 -----
@@ -28,6 +32,8 @@ import json
 import struct
 import sys
 import zlib
+
+import pe as pemod
 
 SECTOR = 2048
 FAT_SECTOR = 512
@@ -272,7 +278,68 @@ def verify_iso(path: str) -> dict:
     }
     if catalog_lba is not None:
         result["boot"] = parse_el_torito(image, catalog_lba, total_sectors)
+        check_uefi_payload(image, result["boot"], files)
     return result
+
+
+
+
+def check_uefi_payload(image: bytes, boot: dict, files: list[dict]) -> None:
+    """The EFI boot entry must point at a whole PE32+ EFI application.
+
+    El Torito's sector count is how much firmware loads; a count smaller than
+    the file truncates the image and the boot hangs with no diagnostic.  The
+    default was 1 sector, so every ``--efi-image`` ISO would have done it.
+    """
+    for entry in boot["entries"]:
+        if entry["kind"] != "uefi" or not entry["bootable"]:
+            continue
+        record = next((f for f in files if f["lba"] == entry["load_lba"]), None)
+        if record is None:
+            fail(f"UEFI boot entry points at LBA {entry['load_lba']}, which is "
+                 "not the extent of any file in the directory tree")
+        loaded = entry["load_sectors"] * 512
+        if loaded < record["size"]:
+            fail(f"UEFI boot image {record['path']}: El Torito entry claims "
+                 f"{entry['load_sectors']} sector(s) = {loaded} bytes but the "
+                 f"file is {record['size']} bytes; firmware would load a "
+                 "truncated image")
+        start = entry["load_lba"] * SECTOR
+        payload = image[start:start + record["size"]]
+        # A bare PE32+ file here is the mistake the old docs invited: firmware
+        # mounts the entry as a partition, so it needs a FAT volume with an
+        # application inside, not the application itself.
+        try:
+            pemod.validate(payload, require_subsystem=10)
+        except pemod.PEError:
+            pass
+        else:
+            fail(f"UEFI boot image {record['path']} is a bare PE32+ "
+                 "application, but firmware mounts an El Torito UEFI entry as "
+                 "a partition and needs a FAT volume containing "
+                 "EFI/BOOT/BOOTX64.EFI (mkimage --efi-payload wraps one)")
+        fat = verify_fat16(payload, f"El Torito UEFI entry {record['path']}")
+        fat["files"].sort(key=lambda f: f["path"])
+        images = check_efi_files(fat, "El Torito UEFI entry")
+        boot_paths = ("EFI/BOOT/BOOTX64.EFI", "EFI/BOOT/BOOTAA64.EFI")
+        by_path = {f["path"].upper(): f for f in fat["files"]}
+        if not any(p in by_path for p in boot_paths):
+            fail(f"UEFI boot image {record['path']} has no "
+                 "EFI/BOOT/BOOTX64.EFI (or BOOTAA64.EFI)")
+        boot = next(i for p in boot_paths for i in images
+                    if i["path"].upper() == p)
+        if boot["subsystem"] != "efi_application":
+            fail(f"{boot['path']} in {record['path']} is a "
+                 f"{boot['subsystem']}, not an EFI application")
+        entry["payload"] = {
+            "path": record["path"],
+            "size": record["size"],
+            "format": "fat16",
+            "boot": boot["path"],
+            "machine": boot["machine"],
+            "subsystem": boot["subsystem"],
+            "entry_rva": boot["entry_rva"],
+        }
 
 
 # --------------------------------------------------------------------------
@@ -448,8 +515,11 @@ def verify_fat16(part: bytes, label: str) -> dict:
                     files.append({"path": full, "size": 0, "clusters": []})
                     continue
                 chain = cluster_chain(cluster, size, full)
-                files.append({"path": full, "size": size, "clusters": chain})
-                read_clusters(chain, size)  # bounds-check the data as well
+                # Keep the bytes: verify_img has to look inside the ESP's
+                # EFI/BOOT image, and re-reading the FAT here would duplicate
+                # the cluster logic that was just checked.
+                files.append({"path": full, "size": size, "clusters": chain,
+                              "data": read_clusters(chain, size)})
 
     parse_entries(root_data, "", 0, follow_dirs=True)
     return {
@@ -549,8 +619,7 @@ def verify_img(path: str) -> dict:
     part = image[esp["start_lba"] * FAT_SECTOR:(esp["end_lba"] + 1) * FAT_SECTOR]
     fat = verify_fat16(part, "ESP")
     fat["files"].sort(key=lambda f: f["path"])
-    for f in fat["files"]:
-        f.pop("clusters", None)
+    fat["efi_images"] = check_efi_files(fat, "ESP")
     return {
         "format": "gpt-fat16",
         "path": path,
@@ -562,10 +631,86 @@ def verify_img(path: str) -> dict:
     }
 
 
+
+def check_efi_files(fat: dict, where: str) -> list[dict]:
+    """Validate every ``EFI/**.EFI`` in a FAT volume and drop per-file data.
+
+    The removable-media fallback paths are mandatory if present: firmware will
+    jump straight into them, so a non-PE file there is a boot failure.
+    """
+    images = []
+    for f in fat["files"]:
+        data = f.pop("data", b"")
+        f.pop("clusters", None)
+        upper = f["path"].upper()
+        if not upper.endswith(".EFI") or not upper.startswith("EFI/"):
+            continue
+        try:
+            info = pemod.parse(data)
+        except pemod.PEError as exc:
+            if upper in ("EFI/BOOT/BOOTX64.EFI", "EFI/BOOT/BOOTAA64.EFI"):
+                fail(f"{f['path']} on the {where} is not a PE image: {exc}")
+            continue
+        images.append({
+            "path": f["path"],
+            "machine": info["machine_name"],
+            "subsystem": info["subsystem_name"],
+            "entry_rva": info["entry_rva"],
+            "size": f["size"],
+        })
+    return images
+
+
+def verify_efiboot(path: str) -> dict:
+    """Validate a UEFI El Torito boot image: a FAT volume with EFI/BOOT.
+
+    This is the shape firmware requires.  EDK2's PartitionDxe turns an El
+    Torito UEFI entry into a *partition*; BDS then looks for a file system on
+    it and loads ``\\EFI\\BOOT\\BOOTX64.EFI``.  A bare PE32+ file has no file
+    system, so an ISO built that way fails with ``BdsDxe: failed to load ...
+    Not Found`` -- observed on the first OVMF run of the uefi CI job.
+    """
+    with open(path, "rb") as fh:
+        part = fh.read()
+    fat = verify_fat16(part, "EFI boot image")
+    fat["files"].sort(key=lambda f: f["path"])
+    images = check_efi_files(fat, "EFI boot image")
+    boot_paths = ("EFI/BOOT/BOOTX64.EFI", "EFI/BOOT/BOOTAA64.EFI")
+    by_path = {f["path"].upper(): f for f in fat["files"]}
+    boot = next((by_path[p] for p in boot_paths if p in by_path), None)
+    if boot is None:
+        fail("EFI boot image has no EFI/BOOT/BOOTX64.EFI (or BOOTAA64.EFI), "
+             "so firmware would find nothing to load")
+    info = next((i for i in images if i["path"].upper() == boot["path"].upper()),
+                None)
+    if info is None or info["subsystem"] != "efi_application":
+        fail(f"{boot['path']} in the EFI boot image is not a PE32+ EFI "
+             "application")
+    return {
+        "format": "fat16-efiboot",
+        "path": path,
+        "bytes": len(part),
+        "files": fat["files"],
+        "efi_images": images,
+        "boot": info,
+        "problems": [],
+    }
+
+
 # --------------------------------------------------------------------------
 # CLI
 # --------------------------------------------------------------------------
 def summarise(info: dict) -> None:
+    if info["format"] == "fat16-efiboot":
+        print(f"efiboot: {info['path']}")
+        print(f"  size          {info['bytes']} bytes")
+        print(f"  files         {len(info['files'])}")
+        for f in info["files"][:20]:
+            print(f"    {f['size']:>10}  /{f['path']}")
+        b = info["boot"]
+        print(f"  boot          /{b['path']} ({b['size']} B, {b['machine']} "
+              f"{b['subsystem']}, entry {b['entry_rva']:#x})")
+        return
     if info["format"] == "iso9660":
         print(f"iso: {info['path']}")
         print(f"  volume id     {info['volume_id']}")
@@ -587,6 +732,12 @@ def summarise(info: dict) -> None:
                       f"bootable={'yes' if e['bootable'] else 'no'}")
                 if "warning" in e:
                     print(f"          warning: {e['warning']}")
+                if "payload" in e:
+                    p = e["payload"]
+                    print(f"          payload: {p['path']} ({p['size']} B, "
+                          f"{p['format']}) -> {p['boot']} "
+                          f"({p['machine']} {p['subsystem']}, "
+                          f"entry {p['entry_rva']:#x})")
     else:
         print(f"img: {info['path']}")
         print(f"  size          {info['bytes']} bytes ({info['sectors']} sectors)")
@@ -603,20 +754,30 @@ def summarise(info: dict) -> None:
             print(f"    {f['size']:>10}  /{f['path']}")
         if len(esp["files"]) > 20:
             print(f"    ... {len(esp['files']) - 20} more")
+        for e in esp.get("efi_images", []):
+            print(f"  EFI image     /{e['path']} ({e['machine']} "
+                  f"{e['subsystem']}, entry {e['entry_rva']:#x})")
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="Verify pipeline image structure")
-    ap.add_argument("kind", choices=("iso", "img", "auto"))
+    ap.add_argument("kind", choices=("iso", "img", "auto", "efiboot"))
     ap.add_argument("image")
     ap.add_argument("--json", action="store_true", help="emit the report as JSON")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="print nothing on success (exit status only)")
     args = ap.parse_args(argv)
 
     kind = args.kind
     if kind == "auto":
         kind = "img" if args.image.lower().endswith(".img") else "iso"
     try:
-        info = verify_iso(args.image) if kind == "iso" else verify_img(args.image)
+        if kind == "iso":
+            info = verify_iso(args.image)
+        elif kind == "efiboot":
+            info = verify_efiboot(args.image)
+        else:
+            info = verify_img(args.image)
     except (VerifierError, OSError, struct.error) as exc:
         if args.json:
             print(json.dumps({"path": args.image, "valid": False,
@@ -626,7 +787,7 @@ def main(argv: list[str]) -> int:
         return 1
     if args.json:
         print(json.dumps({"valid": True, **info}, indent=2))
-    else:
+    elif not args.quiet:
         summarise(info)
         print("VERIFY OK")
     return 0

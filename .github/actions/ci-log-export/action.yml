@@ -1,0 +1,52 @@
+name: Export CI log
+description: >-
+  Attach this job's logs to the commit as a comment, so a failure is readable
+  from any host that can reach api.github.com alone.  GitHub serves raw run
+  logs from results-receiver.actions.githubusercontent.com via a signed URL;
+  environments that cannot reach that host (Arena sandboxes, locked-down
+  networks) get an opaque `gh run view --log` error even though api.github.com
+  works.  A commit comment is plain API data, so it always reads.
+  The Actions run stays authoritative; this is a courier, and it is called
+  with `if: failure()` + `continue-on-error: true` so it can never change a
+  job's verdict.
+
+inputs:
+  title:
+    description: Heading and dedup key (a re-run updates the same comment)
+    required: true
+  dir:
+    description: Directory to scan for *.log files (jobs tee into runner.temp)
+    required: false
+    default: ""
+  logs:
+    description: Newline-separated extra files or globs to attach
+    required: false
+    default: ""
+  note:
+    description: One-line context (which step, which host)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Post logs as a commit comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CI_LOG_TITLE: ${{ inputs.title }}
+        CI_LOG_DIR: ${{ inputs.dir }}
+        CI_LOG_LOGS: ${{ inputs.logs }}
+        CI_LOG_NOTE: ${{ inputs.note }}
+      run: |
+        set -u
+        # Unquoted on purpose below: the input is a newline list that the
+        # script splits word-wise, and the globs are meant to expand here.
+        set --
+        while IFS= read -r p; do
+          [ -n "$p" ] || continue
+          for f in $p; do set -- "$@" --log "$f"; done
+        done <<< "$CI_LOG_LOGS"
+        [ -n "$CI_LOG_DIR" ] && set -- "$@" --dir "$CI_LOG_DIR"
+        [ -n "$CI_LOG_NOTE" ] && set -- "$@" --note "$CI_LOG_NOTE"
+        "$GITHUB_WORKSPACE/tools/ci-log-export.sh" --title "$CI_LOG_TITLE" "$@"

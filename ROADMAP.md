@@ -1,6 +1,6 @@
 # RavynOS Fork — Roadmap
 
-**Last updated:** 2026-10-30 (rev 4: portable pipeline complete through real staging + .img; CI matrix; macOS build driver and portability audit)
+**Last updated:** 2026-10-30 (rev 5: UEFI loader builds; El Torito load size fixed; PE32+ payload validation; OVMF boot job)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**
@@ -63,7 +63,7 @@ Conventions: one fix per commit, prefix `macbuild:`, log every failure→fix pai
 
 **Goal:** `tools/mkimage.sh` + `tools/bootcheck.sh` run **unchanged on macOS and Linux**, no root, producing `ravynos-<version>-<git-short>.iso` (+ `.img`) and a pass/fail boot verdict. Work starts in parallel with Phase 1 — the pipeline can be scaffolded and validated with stub content (loader-only image, even a foreign kernel) before the full OS build is green, so QEMU-verdict plumbing is proven early.
 
-**Status (2026-10-30, rev 4): done except real-image content.** Every deliverable
+**Status (2026-10-30, rev 5): done except real-image content.** Every deliverable
 below exists and is tested:
 
 * `tools/mkimage.sh` — stub, milestone-stub and **real staging (`--root`)** modes;
@@ -86,9 +86,18 @@ below exists and is tested:
   a CLI contract, shell-syntax and self-test layer; runs with no host tools.
 * Reproducibility — images are a function of (tree, volume id, commit epoch);
   asserted by a CI job on both host families.
+* `tools/image/pe.py` (rev 5) — validates that a UEFI boot image is a PE32+
+  EFI application; `mkimage --efi-image` refuses anything else, and `verify.py`
+  re-checks the payload inside the finished ISO's El Torito entry and inside the
+  ESP.  The El Torito sector count is now derived from the file (it defaulted to
+  one 512-byte sector, which would have booted a truncated loader).
+* `tools/bootloader/build.sh` (rev 5) — builds the UEFI loader with
+  clang+lld-link or a zig fallback; the `uefi` CI job boots the resulting ESP
+  image and ISO under OVMF and requires `RAVYNOS-LOADER-OK`.
 
 Remaining for the exit criterion: a real staged sysroot to package (Phase 1) and
-a loader that emits the milestone markers (`Docs/BootLoader.md`).
+a loader that reads the kernel rather than only announcing itself
+(`Docs/BootLoader.md` Steps C–D).
 
 The current `ISO/build.sh` is FreeBSD-host-only and requires root: `mdconfig`, `zpool`/`gpart`, `mkuzip`, `makefs`, `mkimg`, `newfs_msdos`, `mount msdosfs`, `chroot`, `etdump`. We do **not** port that script — we replace it with a portable pipeline built on tools that exist via brew *and* standard Linux package managers:
 
@@ -115,7 +124,9 @@ Deliverables:
 
 **Goal:** every push gets built and boot-verdicted automatically — on both host families, which Phase 2's portability makes cheap.
 
-**Status (2026-10-30, rev 4): three workflows written, pending first CI run.**
+**Status (2026-10-30, rev 5): four workflows; the pipeline matrix has run green
+on Ubuntu and macOS, and a fifth job (`uefi`, rev 5) boots the real UEFI loader
+under OVMF.  The `build.yml` toolchain build is still the open item.**
 `pipeline.yml` runs unit tests, per-backend structure checks (python/xorriso/
 mtools), cross-host reproducibility and real QEMU boots on Ubuntu + macOS;
 `build.yml` chains `bmake world` → `mkimage` → `bootcheck` with a toolchain cache
@@ -171,7 +182,7 @@ Standing rules: only analyze software we own/are entitled to inspect; open-sourc
 |---|---|---|
 | M0 | Fork + Mac env ready | push to fork works; `bmake -n` parses; `rea doctor` green; xorriso/mtools/qemu present |
 | M1 | Builds on macOS | `bmake world` (or `tools/macbuild.sh`) exit 0 |
-| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux — **stub proven; real-image content pending M1 + loader** |
+| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux — **stub and UEFI-loader verdicts; real-image content pending M1** |
 | M3 | CI | PRs auto-built on mac+linux; ISO artifact + boot verdict on every push |
 | M4 | RE loop live | one gap → probe → note → merged fix, full evidence trail |
 | M5 | Parity demos | a real Mac app runs under ravynOS (QEMU or hardware) |
@@ -208,4 +219,11 @@ tools/mkimage.sh --root ../build/stage --format both \
 tools/bootcheck.sh out/stub.iso --expect RAVYNOS-BOOTCHECK-STUB-OK
 tools/pipeline-selftest.sh                               # whole loop
 tools/tests/run-tests.sh                                 # unit + CLI tests
+
+# Phase 2, Step B — the real UEFI loader (build + PE check + OVMF boot)
+tools/bootloader/build.sh -o stage/EFI/BOOT/BOOTX64.EFI
+python3 tools/image/pe.py stage/EFI/BOOT/BOOTX64.EFI --require-subsystem 10
+tools/mkimage.sh --root stage --format both \
+    --efi-image EFI/BOOT/BOOTX64.EFI -o out/uefi --verify
+tools/bootcheck.sh out/uefi.img --uefi --expect RAVYNOS-LOADER-OK
 ```

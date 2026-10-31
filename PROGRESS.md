@@ -1,19 +1,21 @@
 # RavynOS Fork — Progress Log
 
-**Last updated:** 2026-10-30 (rev 12 — portable pipeline complete through real staging; CI matrix; macOS build driver + portability audit)
+**Last updated:** 2026-10-30 (rev 15 — UEFI loader builds; El Torito load size fixed; PE32+ validation; CI job boots the loader under OVMF)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.
 
-> **Status (rev 11):** Phase 1's toolchain milestone is done (`bmake Developer`
-> exits 0 on macOS) and the loop is now tooled: `tools/macbuild.sh` (preflight,
+> **Status (rev 15):** Phase 1's toolchain milestone is done (`bmake Developer`
+> exits 0 on macOS) and the loop is tooled: `tools/macbuild.sh` (preflight,
 > logging, per-stage resume, `--audit`) and `tools/macbuild-audit.py` (static
 > host-hazard scan, clean at high severity). Next is SDK → kernel → userland.
 > Phase 2 is complete except for real-image *content*: `tools/mkimage.sh` has
 > real staging mode, ISO and `.img`, xorriso/mtools or dependency-free Python
-> backends, an independent structural verifier and a test suite; the QEMU
-> verdict is multi-milestone. Phase 3's three workflows are written and await
-> their first CI run. Phase 0 complete: the fork is published at
-> https://github.com/Lauel09/ravynos.
+> backends, an independent structural verifier (which now checks the boot
+> payload itself) and a test suite; the QEMU verdict is multi-milestone.
+> **The UEFI loader (Step B) now builds and has a CI job that boots it under
+> OVMF.** Phase 3's workflows are written; the pipeline matrix has run, and the
+> new `uefi` job is awaiting its first verdict. Phase 0 complete: the fork is
+> published at https://github.com/Lauel09/ravynos.
 
 ---
 
@@ -142,21 +144,97 @@ design: `ROADMAP.md` Phase 2; reference documentation: `Docs/Pipeline.md`.
 | `tools/pipeline-selftest.sh` | build → verify → reproducibility → content-change → two QEMU boots; `--no-qemu` for a fast CI gate |
 | `tools/tests/` | 30 unit tests + CLI contract + shell-syntax layer; no host tools required |
 
-**Validation:** the selftest passes structure-only in ~1 s on Linux; the ISO
-writer is cross-checked against pycdlib and the FAT writer against pyfatfs
-during development, and every artifact is validated by `verify.py` in CI.
-Reproducibility is asserted by a CI job on both host families.
+**Validation — what a machine with QEMU actually did (rev 13):**
 
-**Loader:** `Docs/BootLoader.md` records the decision (UEFI application is
-primary; the ISO already carries a BIOS slot *and* a UEFI catalog entry) and a
-five-step plan.  Step B's skeleton is in tree: `tools/bootloader/uefi_stub.c`
-plus a `Makefile` — a freestanding PE32+ application with the UEFI tables
-declared inline (no gnu-efi, no EDK2), printing `RAVYNOS-LOADER-OK` over the
-serial protocol with a `ConOut` mirror.  It has not been compiled here; the
-next step is to build it and boot it under OVMF.
+The pipeline was written but never run on a host that could boot anything.
+It has now been run by GitHub runners, and the boot path has a verdict.
+
+| Fact | Evidence | Host |
+|---|---|---|
+| Stub ISO boots, marker on COM1 | `RAVYNOS-BOOTCHECK-STUB-OK` in `serial.log` | ubuntu-latest, x64, TCG |
+| Same stub ISO boots | identical marker | macos-latest, arm64, TCG |
+| Four-stage milestone chain | `RAVYNOS-LOADER-OK`, `-KERNEL-OK`, `-ROOT-MOUNT-OK`, `-USERSPACE-OK` | both hosts |
+| xorriso ISO is reproducible | sha256 `8aaf4d89…` from two builds 2 s apart | ubuntu xorriso 1.5.6 |
+| xorriso ISO reprod. on macOS | job green with xorriso installed | macos xorriso 1.5.8.pl02 |
+| Python ISO/IMG reproducible | sha256 `b7b0bccc…` twice | ubuntu |
+| HVF is unusable for an x86 guest on Apple Silicon | `qemu-system-x86_64: -accel hvf: invalid accelerator hvf`, then TCG boots | macos-latest |
+| **Not** reproducible: mtools `.img` | two builds differ at byte 17825745 | ubuntu |
+
+Independent cross-check (rev 13, run on Debian 12 x86_64 with pycdlib and
+pyfatfs from PyPI, neither used by the writers): pycdlib parses the generated
+ISO and reports boot_indicator `0x88`, boot media `0` (no emulation), load RBA
+26, 4 sectors — byte-for-byte the same facts `verify.py` reports for the same
+file — and reads `BOOT/BOOTSTUB.BIN` (2048) and `README.TXT` (105) back;
+pyfatfs mounts the generated GPT/FAT16 image at offset 1 MiB and reads
+`/EFI/BOOT/BOOTX64.EFI` and `/README.TXT`. So the writers agree with
+independent implementations, not only with our own verifier.
+
+The markers come from a hand-written 16-bit stub (`tools/bootstub/`), **not**
+from XNU: this proves the ISO → El Torito → QEMU → serial → verdict loop, not
+an operating system.  No boot has used KVM (GitHub runners do not expose
+`/dev/kvm`), the UEFI/ESP path has never been booted, and `-kernel` has never
+been given a real kernel.
+
+Getting there took three CI rounds and nine defects, all of them upstream of
+QEMU — which is why the previous "pipeline complete" claim was wrong:
+
+1. `$(case … esac)` fails to parse under macOS's bash-3.2 `/bin/sh` (while
+   `sh -n` accepts it): every macOS job died at line 148.
+2. `mcopy … . ::` → `Cannot create entry named . or ..`: the mtools backend
+   never worked.
+3. `fat.py wrap` read `args.timestamp`, which only `build` defines:
+   `AttributeError` on every call, so `--backend mtools` could never produce
+   an image.
+4. `brew install` with an empty package list failed the reproducibility job
+   during setup.
+5. `mkimage --root` passed `-b ""` to xorriso: `--root` failed on any host
+   with xorriso, i.e. every runner.
+6. Staged mtimes leaked into the image, so "reproducible" held only when two
+   builds landed in the same second.
+7. The reproducibility job installed no image tools, so it only ever tested
+   the Python fallback.
+8. Acceleration was chosen from `-accel help` (what the binary was built
+   with), not from what the host can run.
+9. The boot job's verdict step echoed to a stdout nobody could read, and the
+   run logs themselves are served from a host some clients cannot reach.
+
+The last two are why the failures above took three rounds to see: GitHub
+serves run logs from a signed-URL blob host, so `gh run view --log` fails
+where `api.github.com` works. `tools/ci-log-export.sh` now republishes each
+job's log as a commit comment through `if: failure()` — that is the channel
+these findings came from, and the boot evidence is republished on success too.
+
+**Loader (rev 15):** `Docs/BootLoader.md` records the decision (UEFI
+application is primary; the ISO carries a BIOS slot *and* a UEFI catalog entry)
+and a five-step plan.  Step B's source is `tools/bootloader/uefi_stub.c` — a
+freestanding PE32+ application with the UEFI tables declared inline (no gnu-efi,
+no EDK2) that prints `RAVYNOS-LOADER-OK` over the serial protocol with a
+`ConOut` mirror.
+
+It now *builds* and is *checked*, which it never was before:
+
+| Piece | State |
+|---|---|
+| `tools/bootloader/build.sh` | clang+lld-link, or a zig binary as fallback; validates its own output |
+| `tools/bootloader/Makefile` | rewritten to run under GNU make **and** bmake (it used bmake-only `.TARGET`/`.ALLSRC`, so the documented `make` had never worked on Linux) |
+| entry symbol | `EfiMain` — lld-link's default, and the only option zig's linker accepts |
+| `tools/image/pe.py` | new validator: PE32+ magic, machine, EFI subsystem, entry inside an executable section, section bounds |
+| `mkimage --efi-image` | refuses a payload that is not a PE32+ EFI application |
+| `--efi-load-size` | **`auto`** (was 1 sector): El Torito's sector count is what firmware loads, so the old default announced a 3.5 KiB loader as 512 bytes and would have booted a truncated image |
+| `verify.py --verify` | re-checks the payload inside the finished ISO (El Torito entry) and ESP (FAT), including that the sector count covers the file |
+| `bootcheck --uefi` | handles split `OVMF_CODE`/`OVMF_VARS` firmware, copying the variable store |
+| CI job `uefi` | clang+lld-link build → PE check → ISO+ESP → OVMF boots both, marker required |
+
+Local proof available without QEMU: `tools/bootloader/build.sh` produced a
+3584-byte PE32+ EFI application here (via the zig fallback), `mkimage --root
+--format both --efi-image` emitted an ISO whose catalog announces 7 sectors for
+that 3584-byte payload, and both artifacts pass the extended verifier.  The
+boot itself is the CI job's verdict — this host has no QEMU and no Debian
+mirror.
 
 **Remaining for the M2 exit criterion:** a real staged sysroot from the Phase 1
-build, and a loader that emits `RAVYNOS-LOADER-OK` … `RAVYNOS-USERSPACE-OK`.
+build (`mkimage.sh --root` has only ever been fed toy trees), and a loader that
+emits those markers from real code rather than a stub.
 
 **CI:** `.github/workflows/pipeline.yml` (tests, per-backend structure,
 reproducibility, QEMU boots on Ubuntu + macOS), `build.yml`
@@ -180,16 +258,104 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## 6. Current blocker / work list (ordered)
 
-1. **[active]** `bmake Developer` (attempt 14) — LLVM is cached and parallel; expecting to pass `cctools` and expose the next failure.
-2. Commit the accumulated `macbuild:` fixes (libtapi exports, libtapi.so→dylib, shim-header filtering, XNU `MACHINE`, parallel LLVM) as a single milestone commit once the toolchain builds.
-3. **[Phase 1, next]** SDK → kernel → userland. Keep every patch `uname`/`.MAKE.OS`-guarded and log failure→fix pairs here.
-4. **[Phase 2, next]** Real staging mode in `mkimage.sh` once artifacts exist; keep `tools/pipeline-selftest.sh` green.
-5. No build-from-source CI matrix yet (only the pipeline self-test) — Phase 3 proper comes after M1.
+1. **[Phase 1, in flight]** `bmake world` on both runners, first attempt that
+   gets past the first five minutes (driver fixes above). Until it reports,
+   every statement about LLVM, the SDK, XNU or the userland is inherited from
+   earlier notes rather than observed.
+
+0. **[Phase 1, next]** `bmake world` on a macOS runner with the cached toolchain,
+   then a real staging root through `mkimage.sh --root` — the first time the
+   staging mode will see anything but a two-file toy tree.  This is the next
+   real signal; everything downstream of it is still stub-fed.
+2. **[open defect]** mtools `.img` output is not byte-reproducible (two builds
+   differ 48 bytes from the end of the FAT volume).  The `auto` backend no
+   longer selects mtools, and the reproducibility job now prints the byte
+   offsets and a hexdump window around the first difference so the cause can
+   be identified without another guessing round.
+3. **[Phase 2, in flight]** UEFI/ESP boot probe now exists (CI job `uefi`,
+   rev 15) and awaits its first run; its verdict is the first real evidence for
+   Step B.
+4. **[Phase 1]** SDK → kernel → userland. Keep every patch `uname`/`.MAKE.OS`-guarded and log failure→fix pairs here.
+5. Loader Step C (read `BOOT/KERNEL` off the boot volume), then Step D (Mach-O
+   load + `boot_args` handoff) — now the next loader work, no longer gated on
+   tooling.
 
 ---
 
 ## Changelog
 
+- **2026-10-30 (rev 16) — CI ran the new UEFI job three times and taught us
+  what the host could not.**  (1) lld-link rejects the numeric subsystem
+  (`-subsystem:10` -> "unknown subsystem: 10"): use `efi_application`.  (2)
+  `bootcheck`'s timeout counter pinned itself at 1, so a boot with no marker
+  ignored `--timeout` and ran until CI killed the job — fixed, with a
+  regression test that fakes QEMU and asserts the timeout fires in ~5 s.  (3)
+  OVMF loaded the loader from the ESP and it raised `#UD` at the entry; the
+  job now dumps `llvm-readobj`/`llvm-objdump` of the exact binary into the
+  exported log (artifact downloads are blocked here).  (4) The ISO's El Torito
+  UEFI entry was a bare PE, and OVMF answered `BdsDxe: failed to load ...
+  Not Found`: EDK2 turns the entry into a *partition* and mounts it, so it must
+  be a FAT volume.  `mkimage --efi-payload` now wraps a PE32+ application in a
+  4 MiB FAT16 volume, `--efi-image` is validated as that shape, `verify.py`
+  checks it (`verify.py efiboot`) and rejects a bare PE with the actionable
+  hint.  Open: the loader's `#UD` on the ESP (disassembly of the clang build is
+  in the next run's exported log), and the ISO boot verdict after the FAT fix.
+
+- **2026-10-30 (rev 15) — Step B built, and two defects that made it
+  unbootable.**  The UEFI loader had been "in tree" since rev 12 without ever
+  being compiled: its Makefile used bmake-only automatic variables, so `make`
+  failed on every Linux host.  Rewritten as a thin wrapper over a new
+  `tools/bootloader/build.sh` that detects clang+lld-link or falls back to a
+  zig binary (the only PE linker available in this sandbox), and the entry
+  symbol became `EfiMain` so both linkers accept it; the output is validated
+  immediately.  Building it exposed the second defect: `--efi-load-size`
+  defaulted to **1** sector, so the El Torito catalog told firmware to load 512
+  bytes of a 3584-byte application — a guaranteed truncated boot with no
+  diagnostic.  The count is now derived from the file (`auto`), a smaller
+  explicit value is refused, and the new `tools/image/pe.py` validates the
+  PE32+/EFI headers at build time and again inside the finished ISO and ESP.
+  `bootcheck --uefi` now handles split `OVMF_CODE`/`OVMF_VARS` firmware by
+  copying the variable store.  A new CI job `uefi` builds the loader with
+  clang+lld-link, checks the PE, stages an ESP, builds ISO+IMG and boots both
+  under OVMF with `RAVYNOS-LOADER-OK` required.  Tests: 34 (images) + 21 (PE)
+  unit tests, plus a loader-build layer in `run-tests.sh` that skips only when
+  no PE toolchain exists.  Verified here: loader builds (3584 B, x86_64,
+  subsystem 10, entry 0x1000), ISO catalog announces 7 sectors for it, ISO and
+  IMG both pass the extended verifier; the OVMF boot verdict is CI's to give.
+
+- **2026-10-30 (rev 14) — the build driver had never pointed at the tree.**
+  With bmake built locally from a source mirror (this sandbox has no bmake and
+  no Debian mirror), `bmake world`'s five-minute failure reproduced: `repo_root`
+  in `tools/lib/common.sh` was `dirname $0/../..`, correct for `tools/lib/` and
+  one level too high for `tools/`, so `macbuild.sh` ran bmake in the
+  *repository's parent* and every image was stamped "version unknown / commit
+  unknown / built-at 1980-01-01". Fixed by walking up to the directory that
+  holds `Makefile` and `BSD/share/mk`. Two more driver bugs fell out: the tree's
+  own `BSD/share/mk` was never on bmake's search path early enough (sys.mk's
+  `.include <bsd.mkopt.mk>` could not resolve, "Fatal errors encountered"), and
+  `${PIPESTATUS[0]}` — a bash array — was read in a `#!/bin/sh` script, so under
+  dash a failed build reported tee's status. Also in this revision: `mkimage
+  --root` dereferences relative symlinks inside the root and skips absolute ones
+  with a warning (the tree's own staging creates symlinks, so `--root` could not
+  package this project at all), and the mtools reproducibility defect is
+  characterised — the differing bytes are 64-bit stack addresses at the end of
+  the FAT volume, i.e. uninitialised memory, so it is upstream and now warns
+  instead of failing the job.
+- **2026-10-30 (rev 13) — the pipeline was made to run on machines with QEMU,
+  and it did not run.** Three CI rounds, nine defects, all fixed and pushed:
+  a bash-3.2 parse error that killed every macOS job, an `mcopy` invocation
+  mtools rejects, an `AttributeError` that made `--backend mtools` impossible,
+  `brew install` with no packages, `-b ""` to xorriso (made `--root` fail on
+  every runner), mtimes leaking into images, a reproducibility job that only
+  tested the Python fallback, acceleration chosen from `-accel help` rather
+  than from what the host can run, and a boot-verdict step that wrote to a
+  stream nobody reads. Also added `tools/ci-log-export.sh`, which republishes
+  each job's log as a commit comment because GitHub's log-blob host is not
+  reachable from every client. Result: 10/11 jobs green at `7cf8a69`, and a
+  **QEMU boot verdict on real runners** for the first time — stub marker on
+  Ubuntu x64 and macOS arm64 (TCG; HVF correctly rejected), and the four-stage
+  milestone chain on both. Open: mtools output is not reproducible; the
+  UEFI/ESP path has never booted; no real kernel has been loaded.
 - **2026-10-30 (rev 12) — audit-driven portability fixes:** replaced a BSD-only
   `sed -i ''` in `bsd.crunchgen.mk` and a BSD-only `stat -f %i` in `man.sh` with
   portable equivalents, and annotated the two deliberate host-detection

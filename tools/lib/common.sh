@@ -72,10 +72,27 @@ tool_version() {
 # Repository facts
 # --------------------------------------------------------------------------
 # repo_root  absolute path of the checkout containing this script.
+#
+# This used to be `dirname $0 /../..`, which is right for a script in
+# tools/lib/ and wrong by one level for a script in tools/ itself.  Every
+# tools/*.sh caller therefore got the directory *above* the checkout:
+# macbuild.sh ran `bmake world` in the repository's parent, where there is no
+# Makefile, and VERSION/git-sha lookups silently produced "unknown".  Walk up
+# to the top level instead, identified by the two things only the root has.
 repo_root() {
     [ -n "${RAVYNOS_ROOT:-}" ] && { printf '%s\n' "$RAVYNOS_ROOT"; return 0; }
-    _dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-    # tools/lib -> repo root
+    case $0 in
+        */*) _dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) ;;
+        *)   _dir=$(pwd) ;;
+    esac
+    _p=$_dir
+    while [ -n "$_p" ] && [ "$_p" != "/" ]; do
+        if [ -f "$_p/Makefile" ] && [ -d "$_p/BSD/share/mk" ]; then
+            printf '%s\n' "$_p"
+            return 0
+        fi
+        _p=$(CDPATH= cd -- "$_p/.." && pwd)
+    done
     CDPATH= cd -- "$_dir/../.." && pwd
 }
 

@@ -41,8 +41,9 @@ SIZE_MB=
 BACKEND=auto
 BOOT_IMAGE=
 EFI_IMAGE=
+EFI_PAYLOAD=
 BOOT_LOAD_SIZE=4
-EFI_LOAD_SIZE=1
+EFI_LOAD_SIZE=auto
 KERNEL=
 VOLUME_ID=RAVYNOS
 FAT_LABEL=RAVYNOS
@@ -65,9 +66,14 @@ Options:
   --size-mb N            .img size in MiB (default: computed, minimum 16)
   --backend auto|xorriso|python|mtools
   --boot-image REL       staged path of the BIOS El Torito boot image
-  --efi-image REL        staged path of the UEFI boot image
+  --efi-image REL        staged path of a UEFI *boot image* (a FAT volume with
+                         EFI/BOOT/BOOTX64.EFI inside, as firmware expects)
+  --efi-payload REL      staged path of a PE32+ EFI application; wrapped into
+                         such a FAT image automatically (use this unless the
+                         tree already ships one)
   --boot-load-size N     BIOS load size in 512-byte sectors (default 4)
-  --efi-load-size N      UEFI load size in 512-byte sectors (default 1)
+  --efi-load-size N      UEFI load size in 512-byte sectors (default: auto,
+                         i.e. the whole .efi file; a smaller value is refused)
   --kernel PATH          copy PATH into the image as BOOT/KERNEL
   --volume-id ID         ISO volume identifier (default RAVYNOS)
   --label ID             FAT volume label (default RAVYNOS)
@@ -94,6 +100,7 @@ while [ $# -gt 0 ]; do
         --backend)         BACKEND=$2; shift ;;
         --boot-image)      BOOT_IMAGE=$2; shift ;;
         --efi-image)       EFI_IMAGE=$2; shift ;;
+        --efi-payload)     EFI_PAYLOAD=$2; shift ;;
         --boot-load-size)  BOOT_LOAD_SIZE=$2; shift ;;
         --efi-load-size)   EFI_LOAD_SIZE=$2; shift ;;
         --kernel)          KERNEL=$2; shift ;;
@@ -133,6 +140,10 @@ if [ "$MODE" = list-tools ]; then
 fi
 
 [ -n "$MODE" ] || die "pick a mode: --stub, --stub-milestones or --root DIR" 2
+[ -z "$EFI_PAYLOAD" ] || [ -z "$EFI_IMAGE" ] ||
+    die "--efi-payload and --efi-image are different things; pass one" 2
+[ -z "$EFI_PAYLOAD" ] || [ "$MODE" = root ] ||
+    die "--efi-payload needs --root DIR (the payload is a staged file)" 2
 
 # Root-free by construction: running as root hides permission bugs and would
 # let a stray mount succeed, which the portable pipeline must never need.
@@ -145,11 +156,16 @@ if { [ "$BACKEND" = python ] || [ "$BACKEND" = auto ] || [ "$VERIFY" = 1 ]; } &&
     die "python3 is required for the selected backend/verification (or pass --backend xorriso)"
 fi
 
-EPOCH=$(case $TIMESTAMP_SPEC in
-    git|"") default_epoch ;;
-    SOURCE_DATE_EPOCH|source-date-epoch) default_epoch ;;
-    *) printf '%s\n' "$TIMESTAMP_SPEC" ;;
-esac)
+# Plain case, not `$(case ... esac)`: the nested form parses under dash and
+# bash 5 but not under the bash 3.2 that macOS ships as /bin/sh, where it
+# fails at parse time with "syntax error near unexpected token `;;'".  That
+# single line is why every macOS job in run 41058908780 died before doing any
+# work.  `sh -n` on the same host accepts it, which is why the syntax layer
+# did not catch it.
+case $TIMESTAMP_SPEC in
+    git|""|SOURCE_DATE_EPOCH|source-date-epoch) EPOCH=$(default_epoch) ;;
+    *)                                          EPOCH=$TIMESTAMP_SPEC ;;
+esac
 case $EPOCH in ''|*[!0-9]*) die "--timestamp must be epoch seconds, 'git' or SOURCE_DATE_EPOCH" 2 ;; esac
 
 VERSION=$(prod_version); [ -n "$VERSION" ] || VERSION=unknown
@@ -199,6 +215,68 @@ image pipeline (tools/mkimage.sh -> tools/bootcheck.sh) end to end.
 EOF
 }
 
+# Symlinks in a staged root
+#
+# ISO 9660 as written here has no symlink type, and the FAT writer rejects
+# them, but a real sysroot is full of them: this tree's own staging creates
+# them itself (BSD/lib/bzip2/Makefile:53 `ln -sf bzdiff .../usr/bin/bzcmp`,
+# BSD/lib/ncurses/Makefile:25 and friends).  So `mkimage --root` used to die
+# on the first link, with "refusing to stage symlink".
+#
+# Policy, in order of safety:
+#   * a relative link that resolves inside the staged root is replaced by a
+#     copy of its target -- that is what the image should contain, and it is
+#     the case the tree actually produces;
+#   * anything else (absolute, escaping the root, dangling) is skipped with a
+#     warning.  Following an absolute link would copy *host* files into the
+#     image, which is a much worse failure than a missing convenience name.
+dereference_symlinks() {
+    _root=$1
+    [ -d "$_root" ] || return 0
+    _list="$_root/../.symlinks"
+    find "$_root" -type l -print > "$_list" 2>/dev/null || return 0
+    _rootreal=$(cd "$_root" && pwd -P) || return 0
+    _deref=0
+    _skipped=0
+    while IFS= read -r _link; do
+        [ -L "$_link" ] || continue
+        _target=$(readlink "$_link" 2>/dev/null) || continue
+        _ok=1
+        case $_target in
+            /*) _ok=0 ;;
+        esac
+        if [ "$_ok" = 1 ]; then
+            _dir=$(dirname "$_link")
+            _resolved=$(cd "$_dir" 2>/dev/null && cd "$(dirname "$_target")" 2>/dev/null &&
+                printf '%s/%s' "$(pwd -P)" "$(basename "$_target")") || _ok=0
+            if [ "$_ok" = 1 ]; then
+                case $_resolved in
+                    "$_rootreal"/*) ;;
+                    *) _ok=0 ;;
+                esac
+            fi
+            if [ "$_ok" = 1 ] && [ ! -e "$_resolved" ]; then _ok=0; fi
+        fi
+        if [ "$_ok" = 1 ]; then
+            rm -f "$_link"
+            if cp -RL "$_resolved" "$_link" 2>/dev/null; then
+                _deref=$((_deref + 1))
+                continue
+            fi
+            rm -rf "$_link"
+            warn "could not dereference $_link (target $_target); skipping it"
+            _skipped=$((_skipped + 1))
+        else
+            rm -f "$_link"
+            warn "skipping symlink $_link -> $_target (absolute, dangling or outside the root)"
+            _skipped=$((_skipped + 1))
+        fi
+    done < "$_list"
+    rm -f "$_list"
+    [ "$_deref" = 0 ] || log "dereferenced $_deref symlink(s); ISO/FAT have no symlink type"
+    [ "$_skipped" = 0 ] || log "skipped $_skipped symlink(s) that pointed outside the staged root"
+}
+
 stage_root() {
     [ -d "$ROOT_DIR" ] || die "staging root is not a directory: $ROOT_DIR"
     [ -n "$(ls -A "$ROOT_DIR" 2>/dev/null)" ] || die "staging root is empty: $ROOT_DIR"
@@ -219,6 +297,38 @@ stage_root() {
             if [ -f "$STAGE/root/$candidate" ]; then BOOT_IMAGE=$candidate; break; fi
         done
     fi
+    if [ -n "$EFI_PAYLOAD" ]; then
+        # El Torito's UEFI entry is a *partition image*, not a program: EDK2's
+        # PartitionDxe exposes it as a block device and BDS then looks for a
+        # file system on it.  A bare PE has none, which is exactly how the
+        # first OVMF ISO boot failed ("failed to load ... Not Found").  So
+        # wrap the application in the FAT volume every UEFI ISO ships.
+        [ -f "$STAGE/root/$EFI_PAYLOAD" ] ||
+            die "--efi-payload $EFI_PAYLOAD is not present in the staged root"
+        [ -n "${PYTHON:-}" ] || die "--efi-payload needs python3"
+        if ! "$PYTHON" "$SCRIPT_DIR/image/pe.py" "$STAGE/root/$EFI_PAYLOAD" \
+                --require-subsystem 10 -q; then
+            die "--efi-payload $EFI_PAYLOAD is not a PE32+ EFI application (see above)"
+        fi
+        wrap="$STAGE/efiboot"
+        rm -rf "$wrap"
+        mkdir -p "$wrap/EFI/BOOT" || die "cannot create the EFI boot staging dir"
+        case $EFI_PAYLOAD in
+            *BOOTAA64.EFI) efifile=BOOTAA64.EFI ;;
+            *)             efifile=BOOTX64.EFI ;;
+        esac
+        cp "$STAGE/root/$EFI_PAYLOAD" "$wrap/EFI/BOOT/$efifile" ||
+            die "cannot stage $EFI_PAYLOAD"
+        # Smallest legal FAT16 volume: FAT16 needs 4085 clusters, so 4 MiB at
+        # 512-byte clusters is about as small as this writer can go.
+        EFI_IMAGE=BOOT/EFIBOOT.IMG
+        mkdir -p "$STAGE/root/BOOT"
+        "$PYTHON" "$SCRIPT_DIR/image/fat.py" build "$wrap" \
+            -o "$STAGE/root/$EFI_IMAGE" --no-gpt --size-mb 4 \
+            --label EFIBOOT --timestamp "$EPOCH" >/dev/null ||
+            die "could not build the FAT boot image for --efi-payload"
+        log "  efi payload: $EFI_PAYLOAD -> $EFI_IMAGE ($(human_size "$(file_size "$STAGE/root/$EFI_IMAGE")"), FAT16)"
+    fi
     if [ -z "$EFI_IMAGE" ]; then
         for candidate in EFI/BOOT/BOOTX64.EFI BOOT/BOOTX64.EFI EFI/BOOT/BOOTAA64.EFI; do
             if [ -f "$STAGE/root/$candidate" ]; then EFI_IMAGE=$candidate; break; fi
@@ -230,6 +340,25 @@ stage_root() {
     if [ -n "$EFI_IMAGE" ] && [ ! -f "$STAGE/root/$EFI_IMAGE" ]; then
         die "--efi-image $EFI_IMAGE is not present in the staged root"
     fi
+    # An El Torito UEFI entry must be a FAT volume containing an EFI
+    # application; firmware mounts it as a partition.  A bare PE32+ file (the
+    # old instruction) is caught here with an actionable message instead of
+    # being discovered as a timeout.
+    if [ -n "$EFI_IMAGE" ] && [ -z "$EFI_PAYLOAD" ]; then
+        [ -n "${PYTHON:-}" ] || die "validating --efi-image needs python3"
+        if ! "$PYTHON" "$SCRIPT_DIR/image/verify.py" efiboot \
+                "$STAGE/root/$EFI_IMAGE" -q 2>/dev/null; then
+            if "$PYTHON" "$SCRIPT_DIR/image/pe.py" "$STAGE/root/$EFI_IMAGE" \
+                    --require-subsystem 10 -q 2>/dev/null; then
+                die "--efi-image $EFI_IMAGE is a bare PE file.  Firmware mounts \
+the El Torito UEFI entry as a partition and needs a file system on it: pass \
+--efi-payload $EFI_IMAGE instead, or a FAT image with EFI/BOOT/BOOTX64.EFI"
+            fi
+            die "--efi-image $EFI_IMAGE is not a FAT volume with an EFI application"
+        fi
+        log "  efi image: $EFI_IMAGE is a FAT volume with an EFI application"
+    fi
+    dereference_symlinks "$STAGE/root"
 }
 
 step "staging ($MODE)"
@@ -270,7 +399,15 @@ if [ "$want_iso" = 1 ]; then
 fi
 if [ "$want_img" = 1 ]; then
     case $BACKEND in
-        auto)      if have mformat && have mcopy; then IMG_BACKEND=mtools; else IMG_BACKEND=python; fi ;;
+        # auto prefers the Python writer for .img.  It is dependency-free and
+        # byte-reproducible (proven in CI); mtools is not reproducible, and
+        # two builds of the same tree differ inside the FAT volume, so making
+        # it the default would put a non-reproducible artifact on the default
+        # path.  Ask for --backend mtools explicitly when you want it; CI does,
+        # in the structure and reproducibility jobs.
+        auto)      if [ -n "${PYTHON:-}" ]; then IMG_BACKEND=python
+                   elif have mformat && have mcopy; then IMG_BACKEND=mtools
+                   else IMG_BACKEND=python; fi ;;
         mtools)    need mformat mcopy; IMG_BACKEND=mtools ;;
         python)    IMG_BACKEND=python ;;
         xorriso)   die "--backend xorriso cannot write .img; use mtools or python" 2 ;;
@@ -312,13 +449,44 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # --------------------------------------------------------------------------
+# Timestamps
+#
+# Stage files are created seconds apart, and both writers record file
+# modification times in directory entries, so two builds of the *same* content
+# produced different bytes whenever they straddled a second boundary.  On
+# macOS with xorriso 1.5.8 the pipeline self-test caught it (two ISOs, same
+# size, different sha256); on Linux xorriso 1.5.6 it only passed because the
+# two runs happened to land inside one second.  Normalise the staging tree to
+# the build epoch in UTC -- both backends then see identical inputs.
+# --------------------------------------------------------------------------
+normalize_mtimes() {
+    [ -d "$STAGE/root" ] || return 0
+    stamp=$("$PYTHON" -c 'import sys,time
+print(time.strftime("%Y%m%d%H%M.%S", time.gmtime(int(sys.argv[1]))))' "$EPOCH") ||
+        { warn "could not format the build timestamp; leaving mtimes alone"
+          return 0; }
+    # TZ=UTC0 keeps both touch and the formatter on UTC on every host.
+    find "$STAGE/root" -exec env TZ=UTC0 touch -t "$stamp" {} + 2>/dev/null ||
+        find "$STAGE/root" -exec env TZ=UTC0 touch -t "$stamp" {} \; 2>/dev/null ||
+        warn "could not normalise staged mtimes; output may not be reproducible"
+}
+
+# --------------------------------------------------------------------------
 # Writers
 # --------------------------------------------------------------------------
 write_iso() {
     out=$1
     if [ "$ISO_BACKEND" = xorriso ]; then
-        set -- -as mkisofs -quiet -V "$VOLUME_ID" -o "$out" \
-            -b "$BOOT_IMAGE" -no-emul-boot -boot-load-size "$BOOT_LOAD_SIZE"
+        set -- -as mkisofs -quiet -V "$VOLUME_ID" -o "$out"
+        # Only claim a boot image when there is one.  `-b ""` made libisofs
+        # answer "Trying to use an invalid file as boot image" and abort, so
+        # `mkimage --root` failed outright on any host with xorriso -- i.e. on
+        # every CI runner -- while the Python backend, which guards the same
+        # option, sailed through.  A --root tree need not be bootable.
+        if [ -n "$BOOT_IMAGE" ]; then
+            set -- "$@" -b "$BOOT_IMAGE" -no-emul-boot \
+                -boot-load-size "$BOOT_LOAD_SIZE"
+        fi
         if [ -n "$EFI_IMAGE" ]; then
             set -- "$@" -eltorito-alt-boot -e "$EFI_IMAGE" -no-emul-boot
         fi
@@ -347,7 +515,16 @@ write_img() {
         sectors=$(( ${SIZE_MB:-16} * 1024 * 1024 / 512 ))
         mformat -i "$fat_img" -C -T "$sectors" -h 64 -s 32 -v "$FAT_LABEL" -N 0 :: ||
             die "mformat failed"
-        ( cd "$STAGE/root" && mcopy -i "$fat_img" -s -Q -m . :: ) || die "mcopy failed"
+        # mtools rejects a literal "." as a source path ("Cannot create entry
+        # named . or .."), which is how `--backend mtools` failed on every
+        # runner that had mtools installed.  Copy the top-level entries by
+        # name instead, dotfiles included.  -m keeps the source mtime, so the
+        # result is deterministic for as long as the staged tree is.
+        ( cd "$STAGE/root" || exit 1
+          for entry in .[!.]* *; do
+              [ -e "$entry" ] || continue
+              mcopy -i "$fat_img" -s -Q -m "$entry" :: || exit 1
+          done ) || die "mcopy failed"
         size_opt=
         [ -n "$SIZE_MB" ] && size_opt="--size-mb $SIZE_MB"
         # shellcheck disable=SC2086
@@ -364,6 +541,8 @@ write_img() {
 
 # The python ISO writer needs a boot image to be bootable; warn rather than
 # quietly shipping a non-bootable artifact, since that is the whole point.
+normalize_mtimes
+
 if [ "$want_iso" = 1 ] && [ -z "$BOOT_IMAGE" ]; then
     warn "no boot image selected; the ISO will be valid but not bootable"
 fi

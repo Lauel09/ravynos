@@ -79,6 +79,21 @@ BUILD_DIR=$ROOT/../build
 STATE=$BUILD_DIR/.macbuild-state
 [ -n "$LOG" ] || LOG="$(dirname "$ROOT")/build-$STAGE.log"
 
+# The tree ships its own BSD make framework in BSD/share/mk (101 files, the
+# full FreeBSD set).  The top-level Makefile adds it via `.SYSPATH:`, which is
+# too late for sys.mk itself: without an explicit search path bmake reads a
+# host sys.mk (or none) and then dies with
+#     "Could not find bsd.mkopt.mk" / "bsd.opts.mk" / "bsd.init.mk"
+#     "Fatal errors encountered -- cannot continue"
+# which is exactly what `bmake world` did on both CI runners -- in five
+# minutes, before it could build anything.  Setting MAKESYSPATH here also
+# gives the preflight its answer, so a broken tree is reported as broken
+# instead of as a host problem.
+if [ -d "$ROOT/BSD/share/mk" ]; then
+    MAKESYSPATH=$ROOT/BSD/share/mk
+    export MAKESYSPATH
+fi
+
 # --------------------------------------------------------------------------
 # Preflight
 # --------------------------------------------------------------------------
@@ -88,8 +103,20 @@ preflight() {
     note() { printf '  %-34s %s\n' "$1" "$2"; }
     problem() { printf '  %-34s %s\n' "$1" "$2"; failures=$((failures + 1)); }
 
-    if have bmake; then note "bmake" "$(bmake -V MAKE_VERSION 2>/dev/null || echo present)"
-    else problem "bmake" "MISSING -- brew install bmake"; fi
+    if have bmake; then
+        # 2>&1, not 2>/dev/null: "bmake: stopped in ..." with the reason
+        # discarded is how a fatal makefile error looked like a missing tool.
+        if bmake_version=$(bmake -V MAKE_VERSION 2>&1); then
+            # Keep only the version number: the host's linker probe can emit
+            # warnings on the same stream.
+            note "bmake" "$(printf '%s\n' "$bmake_version" | tail -1)"
+        else
+            note "bmake" "present but cannot read this tree:"
+            printf '%s\n' "$bmake_version" | head -6 | sed 's/^/        /'
+            failures=$((failures + 1))
+        fi
+    fi
+    if ! have bmake; then problem "bmake" "MISSING -- brew install bmake"; fi
 
     if have gmake; then note "gmake (GNU make)" "$(gmake --version 2>/dev/null | head -1)"
     else note "gmake (GNU make)" "missing (needed by the LLVM configure step)"; fi
@@ -211,10 +238,20 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 record_stage "start-$STAGE"
-# tee in a pipeline: capture bmake's status, not tee's, while still logging.
-set -o pipefail 2>/dev/null || true
-( cd "$ROOT" && bmake "$@" ) 2>&1 | tee "$LOG"
-rc=${PIPESTATUS[0]:-$?}
+# Capture bmake's exit status, not tee's, while still logging.  The old line
+# read ${PIPESTATUS[0]:-$?}, a bash array in a #!/bin/sh script: under dash
+# (Linux /bin/sh) it silently evaluated to tee's status, so a failed build
+# could be reported as a success.  Use pipefail where it exists, otherwise
+# redirect and replay.
+if ( set -o pipefail ) 2>/dev/null; then
+    set -o pipefail
+    ( cd "$ROOT" && bmake "$@" ) 2>&1 | tee "$LOG"
+    rc=$?
+else
+    ( cd "$ROOT" && bmake "$@" ) > "$LOG" 2>&1
+    rc=$?
+    tail -n +1 "$LOG"
+fi
 
 elapsed=$(( $(date +%s) - start ))
 if [ "$rc" = 0 ]; then
@@ -226,6 +263,13 @@ fi
 
 record_stage "failed-$STAGE"
 step "bmake $STAGE failed after ${elapsed}s"
+# The first error, not just the tail: a build that fails in several places
+# ends with "stopped in" noise, and the message that explains it scrolls out
+# of the last twenty lines.  This is also what the CI log courier copies, so
+# the useful line survives even when the full log does not.
+printf '\nFirst errors in %s:\n' "$LOG"
+grep -n -m 8 -E 'error:|Error code [0-9]|stop(ped)? in .*|No such file|Fatal errors|cannot find' "$LOG" 2>/dev/null |
+    head -10 | cut -c1-240 | sed 's/^/  /' || true
 printf '\nLast 20 lines of %s:\n' "$LOG"
 tail -20 "$LOG" | sed 's/^/  /'
 cat <<EOF

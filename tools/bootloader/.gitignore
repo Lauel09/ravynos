@@ -1,0 +1,4 @@
+# Build outputs of tools/bootloader/build.sh
+BOOTX64.EFI
+BOOTX64.pdb
+*.o

@@ -99,3 +99,14 @@ xorriso mtools nasm openssl@3 libxml2 zlib`. See
 
 This fork inherits the licensing of upstream ravynOS and its components. See
 the per-component license files in the tree (for example `ISO/LICENSE`).
+
+---
+
+## About this slim snapshot
+
+This is a single-commit snapshot derived from the [ravynOS](https://github.com/ravynsoft/ravynos) project (including the macOS host-build and boot-pipeline work from the `arena/*` branches of Lauel09/ravynos, tip `cb9dce7a36`), trimmed to fit small repository size limits. Left out:
+
+- `Developer/Default.xctoolchain/llvm/` — vendored LLVM source. **It must be fetched from upstream before building the toolchain** — see [`Docs/SLIM-SNAPSHOT.md`](Docs/SLIM-SNAPSHOT.md).
+- `BSD/lib/ncurses/obj_s/` — ~2.9 GB of GCC RTL debug dumps (`*.ce1`, `*.reload`, ...) that upstream committed by accident; not source and not needed.
+
+Full history and the complete tree live upstream.
