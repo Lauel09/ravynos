@@ -386,15 +386,57 @@ jobs:
           efi="$TMPDIR/uefi/BOOTX64.EFI"
           {
             echo "== file =="; ls -l "$efi"
+          } > "$TMPDIR/uefi/inspect-headers.log" 2>&1
+          {
             echo "== readobj =="
             llvm-readobj-18 --file-headers --sections --coff-basereloc "$efi" 2>/dev/null ||
               llvm-readobj --file-headers --sections --coff-basereloc "$efi" 2>&1 ||
               true
+          } >> "$TMPDIR/uefi/inspect-headers.log" 2>&1
+          # The headers and the code are separate logs on purpose: the log
+          # exporter trims the *head* of an oversized file, and a 40 KB
+          # disassembly used to swallow the PE header fields that matter.
+          {
             echo "== disassembly =="
             llvm-objdump-18 -d --no-show-raw-insn "$efi" 2>/dev/null ||
               llvm-objdump -d --no-show-raw-insn "$efi" 2>&1 || true
-          } > "$TMPDIR/uefi/inspect.log" 2>&1
-          sed -n '1,40p' "$TMPDIR/uefi/inspect.log"
+          } > "$TMPDIR/uefi/inspect-code.log" 2>&1
+          cat "$TMPDIR/uefi/inspect-headers.log"
+
+      - name: Record the firmware and the tools we boot with
+        # A firmware quirk that only exists on one host is invisible unless the
+        # host's firmware is in the log.  This also settles which OVMF build
+        # the run used, and whether a DEBUG build (serial diagnostics) exists
+        # at all -- the release builds shipped by every distribution print the
+        # exception dump but none of the reasoning behind it.
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -u
+          {
+            echo "== qemu =="
+            qemu-system-x86_64 --version | head -2
+            qemu-system-x86_64 -accel help 2>&1 | head -5
+            echo "== firmware =="
+            for d in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2 \\
+                     /usr/share/edk2/ovmf /usr/share/qemu; do
+              [ -d "$d" ] || continue
+              echo "-- $d"
+              ls -l "$d" 2>/dev/null | sed 's/^/   /'
+            done
+            echo "== firmware hashes =="
+            for f in /usr/share/OVMF/*.fd; do
+              [ -f "$f" ] || continue
+              sum=$(sha256sum "$f" 2>/dev/null || shasum -a 256 "$f")
+              echo "  $sum"
+            done
+            echo "== debug builds =="
+            ls /usr/share/OVMF/*debug* /usr/share/ovmf/*debug* 2>/dev/null ||
+              echo "  none: release firmware only, so no EDK2 DEBUG trace"
+            echo "== dpkg =="
+            dpkg -l 2>/dev/null | grep -Ei 'qemu-system|ovmf|edk2' || true
+          } > "$TMPDIR/uefi/firmware.log" 2>&1
+          cat "$TMPDIR/uefi/firmware.log"
 
       - name: Stage an ESP and build the ISO and disk image
         env:
@@ -488,6 +530,31 @@ jobs:
             --json "$TMPDIR/uefi/verdict-bare.json" \
             2>&1 | tee "$TMPDIR/uefi/boot-bare.log"
 
+      - name: Boot the bare FAT volume again on the classic pc/IDE stack
+        # Same image, same firmware, same bootcheck flags -- only the block
+        # device changes.  If firmware mounts it here and not on q35/virtio,
+        # the fault is in the virtio/ahci driver or our GPT, and the media is
+        # not to blame; if both fail identically, the payload path is.
+        id: boot_bare_ide
+        timeout-minutes: 8
+        continue-on-error: true
+        env:
+          TMPDIR: ${{ runner.temp }}
+          BOOTCHECK_MACHINE: pc
+        run: |
+          set -uo pipefail
+          tools/bootcheck.sh "$TMPDIR/uefi/bare.img" --uefi \
+            --disk-interface ide \
+            --expect-any \
+            --expect RAVYNOS-LOADER-OK \
+            --expect RAVYNOS-KERNEL-OK \
+            --expect RAVYNOS-KSHELL-OK \
+            --expect RAVYNOS-SHELL-OK \
+            --timeout 180 \
+            --outdir "$TMPDIR/uefi/boot-bare-ide" \
+            --json "$TMPDIR/uefi/verdict-bare-ide.json" \
+            2>&1 | tee "$TMPDIR/uefi/boot-bare-ide.log"
+
       - name: Drive the prompt over serial
         # The kernel console and the shell both read COM1.  Type into them and
         # require an answer, which is what "the user can run commands" means.
@@ -521,12 +588,14 @@ jobs:
           ISO_OUTCOME: ${{ steps.boot_iso.outcome }}
           IMG_OUTCOME: ${{ steps.boot_img.outcome }}
           BARE_OUTCOME: ${{ steps.boot_bare.outcome }}
+          BARE_IDE_OUTCOME: ${{ steps.boot_bare_ide.outcome }}
           SHELL_OUTCOME: ${{ steps.shell.outcome }}
         run: |
           set -u
           echo "ISO (El Torito) boot:  $ISO_OUTCOME"
           echo "GPT/ESP image boot:     $IMG_OUTCOME"
           echo "bare FAT volume boot:   $BARE_OUTCOME"
+          echo "bare FAT, pc/IDE boot:  $BARE_IDE_OUTCOME"
           echo "serial prompt session:  $SHELL_OUTCOME"
           marker=0
           for f in "$TMPDIR"/uefi/boot-*/serial.log; do
@@ -573,10 +642,20 @@ jobs:
         with:
           title: UEFI loader (OVMF)
           dir: ${{ runner.temp }}/uefi
+          # Listed explicitly, not left to the directory scan: that keeps the
+          # newest six and dropped the ISO and GPT/ESP boot logs entirely on the
+          # run that first produced three media -- the two that mattered most.
           logs: |
             ${{ runner.temp }}/uefi/payloads.log
-            ${{ runner.temp }}/uefi/inspect.log
+            ${{ runner.temp }}/uefi/firmware.log
+            ${{ runner.temp }}/uefi/inspect-headers.log
             ${{ runner.temp }}/uefi/image.log
+            ${{ runner.temp }}/uefi/boot-iso.log
+            ${{ runner.temp }}/uefi/boot-img.log
+            ${{ runner.temp }}/uefi/boot-bare.log
+            ${{ runner.temp }}/uefi/boot-bare-ide.log
+            ${{ runner.temp }}/uefi/boot-shell.log
+            ${{ runner.temp }}/uefi/boot-*/postmortem.log
           note: ${{ job.status }} — payloads, PE32+ headers, image layout, OVMF serial markers
 
       - name: Upload the payloads, images and verdicts
@@ -595,5 +674,7 @@ jobs:
             ${{ runner.temp }}/uefi/commands.txt
             ${{ runner.temp }}/uefi/boot-*/serial.log
             ${{ runner.temp }}/uefi/boot-*/qemu.log
+            ${{ runner.temp }}/uefi/boot-*/postmortem.log
+            ${{ runner.temp }}/uefi/*.log
           if-no-files-found: ignore
           retention-days: 30
