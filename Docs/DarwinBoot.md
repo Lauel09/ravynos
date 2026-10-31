@@ -217,3 +217,40 @@ from `bmake -C Kernel xnu_all` to top-level `bmake Kernel` so the top-level
 exports (GMAKE, XCRUN, TOOLCHAIN …, Makefile:155-163) reach Kernel/Makefile.
 D4: DONE (stub + ELF paths both verified by user's run).
 Cites: tools/bootloader/uefi_stub.c load_macho_kernel_image; tools/darwin-gate.sh; Makefile:153,155.
+
+### 2026-10-31 — full gate re-run after \n fix (user Mac)
+Output (verbatim):
+```
+      cmd LC_SEGMENT_64
+  cmdsize 152
+  segname __TEXT
+   vmaddr 0xffffff8000200000
+--
+      cmd LC_SEGMENT_64
+  cmdsize 72
+  segname __LINKEDIT
+   vmaddr 0xffffff8000201000
+--
+        cmd LC_UNIXTHREAD
+    cmdsize 184
+     flavor x86_THREAD_STATE64
+      count x86_THREAD_STATE64_COUNT
+qemu-system-x86_64: terminating on signal 15 from pid 28059 (<unknown process>)
+RAVYNOS-ENTRY
+RAVYNOS-LOADER-OK
+loader: found \System\Library\Kernels\kernel (4224 bytes)
+RAVYNOS-KERNEL-LOAD (macho) entry 0x0000000000200238
+handoff: ExitBootServices...
+RAVYNOS-MACHO-OK
+qemu-system-x86_64: terminating on signal 15 from pid 28059 (<unknown process>)
+RAVYNOS-ENTRY
+RAVYNOS-LOADER-OK
+loader: found \EFI\KERNEL.ELF (10064 bytes)
+RAVYNOS-KERNEL-LOAD 10064 bytes, image 0x00000000001000b0-0x00000000001123c8, entry 0x0000000000100560
+handoff: ExitBootServices...
+RAVYNOS-KERNEL-OK
+RAVYNOS-KSHELL-OK
+```
+Reading: macho path now prints a clean line then the stub's COM1 marker; ELF
+regression intact. No fixes needed. D4 remains DONE; \n fix verified.
+Next: D1 -- user to run `./tools/darwin-gate.sh xnu` and paste its output.
