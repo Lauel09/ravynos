@@ -343,3 +343,48 @@ echoed source line + caret + compile unit for vm_types.h:104 and
 socket.h:561.
 Cites: Kernel/xnu/osfmk/mach/arm/vm_types.h:100-112; Kernel/xnu/bsd/sys/socket.h:555-565;
 Kernel/xnu/makedefs/MakeInc.cmd:164-174; MakeInc.rule:121.
+
+### 2026-11-01 — D1 run 3 diagnosis: stale foreign headers in the build SDK
+User-pasted context (verbatim):
+```
+848-In file included from .../ravynOS.sdk/usr/include/sys/mount.h:76:
+849-In file included from .../ravynOS.sdk/usr/include/sys/attr.h:42:
+850-In file included from .../ravynOS.sdk/usr/include/sys/ucred.h:76:
+851-In file included from .../ravynOS.sdk/usr/include/bsm/audit.h:420:
+852-In file included from .../ravynOS.sdk/usr/include/mach/port.h:92:
+853-In file included from .../ravynOS.sdk/usr/include/mach/machine/vm_types.h:35:
+854-.../ravynOS.sdk/usr/include/mach/arm/vm_types.h:104:44: error: expected ';' after top level declarator
+855-  104 | typedef uintptr_t               vm_offset_t __kernel_ptr_semantics;
+869-In file included from .../ravynos/Kernel/xnu/SETUP/decomment/decomment.c:34:
+870-In file included from .../ravynOS.sdk/usr/include/libc.h:54:
+871-.../ravynOS.sdk/usr/include/sys/socket.h:561:30: error: a parameter list without types is only allowed in a function definition
+872-  561 |         void            *__sized_by(msg_namelen) msg_name; /* [XSI] optional address */
+```
+Diagnosis (output + source):
+* The installed SDK copies contain macOS-14/15-era attribute syntax
+  (`__kernel_ptr_semantics`, `__sized_by(msg_namelen)`). Both tokens exist
+  NOWHERE in this repository or its git history (repo-wide grep + `git log
+  -S` over Developer/ravynOS.sdk, Kernel/xnu: no matches). They are not
+  produced by any current build step: Developer/ravynOS.sdk/Makefile:30
+  copies the repo's usr/ + System/, and xnu's own bsd/sys/socket.h
+  (Kernel/xnu/bsd/sys/Makefile:90 installs socket.h) and
+  osfmk/mach/arm/vm_types.h have plain typedefs/prototypes at those
+  constructs. The build tree at ../build predates this repo state
+  (§1 noted its old baked-in paths) and still carries these foreign
+  headers; xnu's header install evidently did not overwrite the newer
+  foreign copies (install-if-older skip).
+* The first failing TU is a SETUP host tool (decomment.c:34 includes
+  libc.h) compiled with -isysroot at that stale SDK; the second chain is
+  a kernel TU via bsm/audit.h -> mach/machine/vm_types.h.
+Fix (machine-side, no repo change): wipe the stale SDK and repopulate it
+from this repo, then rerun the gate (xnu_all reinstalls xnu's headers):
+```
+rm -rf ../build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk
+env SUBDIR=Developer/ravynOS.sdk bmake all
+./tools/darwin-gate.sh xnu
+```
+(`SUBDIR` via env so only the top level's recursion is narrowed; the SDK
+Makefile's own rpcsvc recursion is unaffected because its plain
+`SUBDIR = rpcsvc` overrides the inherited env value.)
+Cites: Developer/ravynOS.sdk/Makefile:5-30; Developer/ravynOS.sdk/usr/include/libc.h:54;
+Kernel/xnu/bsd/sys/Makefile:90; Kernel/xnu/SETUP/decomment/decomment.c:34.
