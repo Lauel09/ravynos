@@ -291,3 +291,27 @@ xcbuild xcrun that §1 verified against DEVELOPER_DIR=build/Developer.
 Cites: Makefile:99-107 (MK_TOOLCHAIN), sys.mk:113,152,287;
 Kernel/Makefile:35-38,54-56,84; Kernel/xnu/makedefs/MakeInc.cmd:42-58;
 Kernel/xnu/SETUP/installfile/Makefile:33-35; xcrun.cpp:276-279.
+
+### 2026-11-01 — D1 gate run 2: same xcrun error; fixed by user (b6ac3a8d8)
+Output (verbatim):
+```
+834:xcrun: error: invalid DEVELOPER_DIR path (/Users/solus/Documents/test-ravyn-os/build/Developer), missing xcrun at: /Users/solus/Documents/test-ravyn-os/build/Developer/usr/bin/xcrun
+835:xcrun: error: invalid DEVELOPER_DIR path (/Users/solus/Documents/test-ravyn-os/build/Developer), missing xcrun at: /Users/solus/Documents/test-ravyn-os/build/Developer/usr/bin/xcrun
+836:gmake[7]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/SETUP/decomment/Makefile:28: decomment.o] Error 1
+838:gmake[7]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/SETUP/setsegname/Makefile:30: setsegname.o] Error 1
+840:gmake[6]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/makedefs/MakeInc.dir:59: build_setup] Error 2
+842:xcrun: error: invalid DEVELOPER_DIR path (/Users/solus/Documents/test-ravyn-os/build/Developer), missing xcrun at: /Users/solus/Documents/test-ravyn-os/build/Developer/usr/bin/xcrun
+844:gmake[7]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/SETUP/installfile/Makefile:35: installfile.o] Error 1
+846:gmake[5]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/makedefs/MakeInc.dir:60: build_setup_recurse_into_decomment] Error 2
+```
+Correction to run-1 diagnosis: the Apple shim that rejects the non-CLT
+DEVELOPER_DIR is the host /usr/bin/clang (xcrun shim), not only a
+/Library/Developer/Toolchains xcrun. Fixed by the user in fork/darwin-dev
+b6ac3a8d8: Kernel/Makefile keeps XNU_DEVELOPER_DIR on the CLT and passes
+XCRUN="env DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer ${XCRUN}" so only the
+ravynOS xcrun sees the built Developer tree (xnu_devdir still links
+$DEVELOPER_DIR/Toolchains). Merged b6ac3a8d8 into this branch; per user
+instruction the DEVELOPER_DIR/XCRUN handling in Kernel/Makefile is the
+user's to own. My Makefile:99-107 in-tree-toolchain preference (b1ae45e94)
+stays.
+Cites: Kernel/Makefile:35-42,65,93 (b6ac3a8d8); commit b6ac3a8d8.
