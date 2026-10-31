@@ -7,13 +7,15 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
 if [ "${1:-}" = "xnu" ]; then
-    # D1: kernel-only build; smallest target that rebuilds xnu is
-    # `xnu_all` in Kernel/Makefile:81 (world lists Developer Kernel, …).
+    # D1: kernel-only build. The right target is the top-level `Kernel`
+    # subdir (world lists `Developer .WAIT Kernel …`, Makefile:153) so the
+    # top-level exports (GMAKE, XCRUN, TOOLCHAIN …, Makefile:155) reach
+    # Kernel/Makefile; running `-C Kernel` directly would miss them.
     : > "$ROOT/build-xnu.log"
     if command -v bmake >/dev/null 2>&1; then
-        bmake -C Kernel xnu_all >"$ROOT/build-xnu.log" 2>&1 || true
+        bmake Kernel >"$ROOT/build-xnu.log" 2>&1 || true
     else
-        make -C Kernel xnu_all >"$ROOT/build-xnu.log" 2>&1 || true
+        make Kernel >"$ROOT/build-xnu.log" 2>&1 || true
     fi
     # Show only the first real errors; do not dump the whole log.
     grep -n -m8 -E "error:|\*\*\* |No rule|unable to find sdk" \

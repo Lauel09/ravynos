@@ -953,16 +953,16 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
 
     if (size < sizeof(mach_header_64_t) || mh->magic != MH_MAGIC_64 ||
         mh->cputype != CPU_TYPE_X86_64) {
-        say("kernel: not a Mach-O 64 x86_64 image\\n");
+        say("kernel: not a Mach-O 64 x86_64 image\n");
         return 0;
     }
     if (mh->filetype != MH_EXECUTE && mh->filetype != MH_FILESET) {
-        say("kernel: Mach-O filetype not executable/fileset\\n");
+        say("kernel: Mach-O filetype not executable/fileset\n");
         return 0;
     }
     ncmds = mh->ncmds;
     if (sizeof(mach_header_64_t) + mh->sizeofcmds > size) {
-        say("kernel: Mach-O load commands out of bounds\\n");
+        say("kernel: Mach-O load commands out of bounds\n");
         return 0;
     }
 
@@ -979,7 +979,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
             UINTN s;
 
             if (lc + sizeof(segment_command_64_t) > base + size) {
-                say("kernel: truncated LC_SEGMENT_64\\n");
+                say("kernel: truncated LC_SEGMENT_64\n");
                 return 0;
             }
             vmaddr = seg->vmaddr;
@@ -992,21 +992,21 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
                 continue;
             }
             if (vmaddr < VM_MIN_KERNEL_ADDRESS) {
-                say("kernel: Mach-O segment below kernel base, refusing\\n");
+                say("kernel: Mach-O segment below kernel base, refusing\n");
                 return 0;
             }
             if (fileoff + filesize > size) {
-                say("kernel: Mach-O segment file extent past EOF\\n");
+                say("kernel: Mach-O segment file extent past EOF\n");
                 return 0;
             }
             if (filesize > vmsize) {
-                say("kernel: Mach-O segment FileSiz > MemSiz\\n");
+                say("kernel: Mach-O segment FileSiz > MemSiz\n");
                 return 0;
             }
 
             phys = vmaddr - VM_MIN_KERNEL_ADDRESS;
             if (phys + vmsize < phys) {
-                say("kernel: Mach-O segment overflow\\n");
+                say("kernel: Mach-O segment overflow\n");
                 return 0;
             }
             if (phys < min_phys) { min_phys = phys; }
@@ -1025,7 +1025,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
                     if (EFI_ERROR(stt) || addr != lo_page) {
                         say("kernel: cannot reserve Mach-O segment 0x");
                         say_hex(lo_page, 16);
-                        say("\\n");
+                        say("\n");
                         return 0;
                     }
                 }
@@ -1075,11 +1075,11 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
 
     if (!have_entry) {
         /* Fall back: try any LC_MAIN entryoff as absolute vm? Skip. */
-        say("kernel: no LC_UNIXTHREAD entry found\\n");
+        say("kernel: no LC_UNIXTHREAD entry found\n");
         return 0;
     }
     if (entry_vm < VM_MIN_KERNEL_ADDRESS) {
-        say("kernel: Mach-O entry below kernel base\\n");
+        say("kernel: Mach-O entry below kernel base\n");
         return 0;
     }
 
@@ -1088,7 +1088,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
         UINT64 stk = 0;
         if (EFI_ERROR(bs->AllocatePages(AllocateAnyPages, EfiLoaderData,
                                         BOOTKSTACK_SIZE / EFI_PAGE_SIZE, &stk))) {
-            say("kernel: boot stack allocation failed\\n");
+            say("kernel: boot stack allocation failed\n");
             return 0;
         }
         *rsp_out = stk + BOOTKSTACK_SIZE;
@@ -1100,7 +1100,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
 
     say("RAVYNOS-KERNEL-LOAD (macho) entry 0x");
     say_hex(*entry_out, 16);
-    say("\\n");
+    say("\n");
     return 1;
 }
 

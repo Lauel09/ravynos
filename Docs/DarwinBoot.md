@@ -199,3 +199,21 @@ greps build-xnu.log for the D1 error patterns).
 Evidence: none yet -- gate not run; awaiting user's `./tools/darwin-gate.sh`
 output pasted here.
 Cites: tools/darwin-gate.sh; tools/bootloader/test/stub_macho.S; Kernel/Makefile:81 (xnu_all).
+
+### 2026-10-31 — D4 GATE PASSED (user-run on Mac)
+Gate output (verbatim):
+```
+RAVYNOS-KERNEL-LOAD (macho) entry 0x0000000000200238
+
+RAVYNOS-MACHO-OK
+
+(ELF regression: RAVYNOS-KERNEL-OK, RAVYNOS-KSHELL-OK)
+```
+Did after: fixed the literal `\n` printed after the macho entry address in
+tools/bootloader/uefi_stub.c (the whole load_macho_kernel_image() had been
+written with `\\n` strings; all 13 converted to real newlines). Loader
+rebuilt locally (build.sh -q ok). Also switched darwin-gate.sh xnu mode
+from `bmake -C Kernel xnu_all` to top-level `bmake Kernel` so the top-level
+exports (GMAKE, XCRUN, TOOLCHAIN …, Makefile:155-163) reach Kernel/Makefile.
+D4: DONE (stub + ELF paths both verified by user's run).
+Cites: tools/bootloader/uefi_stub.c load_macho_kernel_image; tools/darwin-gate.sh; Makefile:153,155.
