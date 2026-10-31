@@ -33,17 +33,21 @@ PLATFORM_DIR=${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform
 
 # On a macOS host, /Library/Developer/CommandLineTools is Apple's CLT, which the
 # ravynOS xcrun cannot use: every `xcrun -sdk macosx -find nm` (NM, LIPO,
-# HOST_CC, ...) then expands to "error: unable to find sdk". Point xcrun at the
-# Developer tree we built; it looks for toolchains in $DEVELOPER_DIR/Toolchains.
-.if "${.MAKE.OS}" == "Darwin"
-XNU_DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer
-.else
+# HOST_CC, ...) then expands to "error: unable to find sdk". Point only our
+# xcrun at the Developer tree we built (it looks for toolchains in
+# $DEVELOPER_DIR/Toolchains). DEVELOPER_DIR itself must stay the CLT: the host
+# /usr/bin/clang is Apple's xcrun shim and rejects any other directory.
 XNU_DEVELOPER_DIR=/Library/Developer/CommandLineTools
+.if "${.MAKE.OS}" == "Darwin"
+RAVYN_DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer
+XNU_XCRUN=env DEVELOPER_DIR=${RAVYN_DEVELOPER_DIR} ${XCRUN}
+.else
+XNU_XCRUN=${XCRUN}
 .endif
 
 xnu_devdir: .PHONY
 .if "${.MAKE.OS}" == "Darwin"
-	ln -sfn Platforms/ravynOS.platform/Developer/Toolchains ${XNU_DEVELOPER_DIR}/Toolchains
+	ln -sfn Platforms/ravynOS.platform/Developer/Toolchains ${RAVYN_DEVELOPER_DIR}/Toolchains
 .endif
 
 all: ${TARGETS}
@@ -61,7 +65,7 @@ installhdrs: .PHONY xnu_devdir
 		CTFMERGE=${CTFMERGE} CTFINSERT=${CTFINSERT} \
 		HOST_SDKROOT=${RAVYN_SDKROOT} VERBOSE=yes \
 		AVAILABILITY_PL=${AVAILABILITY_PL} SDKROOT=macosx \
-		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} XCRUN=${XCRUN} \
+		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} XCRUN="${XNU_XCRUN}" \
 		KERNEL_CONFIGS=${KERNEL_CONFIGS} ARCH_CONFIGS=${ARCH_CONFIGS} \
 		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} HOST_FLEX=flex \
 		SYMROOT=${ROOT_BINARY_DIR} HOST_CC=${HOST_CC} HOST_BISON=bison \
@@ -89,7 +93,7 @@ xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt
 		CTFMERGE=${CTFMERGE} CTFINSERT=${CTFINSERT} AR=${AR} \
 		NM=${NM} NMEDIT=${NMEDIT} DSYMUTIL=${DSYMUTIL} LIPO=${LIPO} \
 	    STRIP=${STRIPBIN} AS=${AS} AVAILABILITY_PL=${AVAILABILITY_PL} \
-		MACHINE=${CpuArch} XCRUN=${XCRUN} SDKROOT=macosx \
+		MACHINE=${CpuArch} XCRUN="${XNU_XCRUN}" SDKROOT=macosx \
 		HOST_OS_VERSION=${MACOS_VERSION_MIN} VERBOSE=yes \
 		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} \
 		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} \
