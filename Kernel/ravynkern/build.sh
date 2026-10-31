@@ -80,6 +80,13 @@ else
 fi
 
 say "build: $toolchain ($CC + $LD)"
+# clang must be told the target explicitly: on an arm64 macOS host it would
+# otherwise compile for arm64-apple-macosx, not for the freestanding x86-64
+# kernel the loader expects.  gcc is already native x86-64 on the supported
+# Linux path and rejects -target.
+if "$CC" --version 2>/dev/null | grep -qi 'clang'; then
+    CFLAGS="$CFLAGS -target x86_64-unknown-none"
+fi
 # shellcheck disable=SC2086  # deliberate word splitting of the flag list
 "$CC" $CFLAGS -c -o "$OBJ" "$SRC" ||
     { printf 'build: compilation failed\n' >&2; exit 1; }
