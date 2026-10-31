@@ -388,3 +388,39 @@ Makefile's own rpcsvc recursion is unaffected because its plain
 `SUBDIR = rpcsvc` overrides the inherited env value.)
 Cites: Developer/ravynOS.sdk/Makefile:5-30; Developer/ravynOS.sdk/usr/include/libc.h:54;
 Kernel/xnu/bsd/sys/Makefile:90; Kernel/xnu/SETUP/decomment/decomment.c:34.
+
+### 2026-11-01 — D1 run 4: _posix_availability.h missing + host-tool link failures
+Output (verbatim):
+```
+cp -f /Users/solus/Documents/test-ravyn-os/ravynos/Libraries/objc4/runtime/maptable.h .../usr/local/include/objc/
+744:.../ravynOS.sdk/usr/include/sys/cdefs.h:806:10: fatal error: 'sys/_posix_availability.h' file not found
+750:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+751:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+752:gmake[7]: *** [.../Kernel/xnu/SETUP/installfile/Makefile:29: installfile] Error 1
+754:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+755:gmake[6]: *** [.../makedefs/MakeInc.dir:59: build_setup] Error 2
+757:gmake[7]: *** [.../Kernel/xnu/SETUP/replacecontents/Makefile:24: replacecontents] Error 1
+759:gmake[5]: *** [.../makedefs/MakeInc.dir:60: build_setup_recurse_into_installfile] Error 2
+```
+Reading: SDK repopulation worked (the __sized_by/__kernel_ptr_semantics
+headers are gone; SETUP tools now compile). Two new blockers, both from
+the repo-native SDK being thinner than the old foreign snapshot:
+* A: usr/include/sys/cdefs.h:806 includes <sys/_posix_availability.h> for
+  non-KERNEL compiles. The only copies in the tree are
+  System/.../PrivateHeaders/sys/_posix_availability.h (identical to
+  BSD/include/apple/sys/_posix_availability.h) and nothing installs them
+  into usr/include/sys.
+* B: the repo SDK's usr/lib is empty (0 files); .tbd stubs are Libsystem
+  build products and world order is Developer Kernel Libraries ... BSD,
+  so at Kernel time host tools linking with -isysroot at this SDK find no
+  libSystem. (installfile.c is a hosted C program: stdio/stdlib/err.h.)
+Fix (Developer/ravynOS.sdk/Makefile only; Kernel/Makefile untouched):
+cp the PrivateHeaders _posix_availability.h into usr/include/sys, and on
+Darwin (guarded, exists-checked) seed the CLT SDK's libSystem.tbd +
+libSystem.B.tbd into usr/lib -- same CLT-path precedent as
+Kernel/Makefile:79-83 compiler_rt. Re-run `env SUBDIR=Developer/ravynOS.sdk
+bmake all` then the gate.
+Cites: Developer/ravynOS.sdk/usr/include/sys/cdefs.h:803-809;
+Developer/ravynOS.sdk/System/.../PrivateHeaders/sys/_posix_availability.h;
+BSD/include/apple/sys/Makefile:6-8; Developer/ravynOS.sdk/Makefile (this
+commit); Kernel/Makefile:66,79-83; Kernel/xnu/SETUP/installfile/installfile.c:24-30.
