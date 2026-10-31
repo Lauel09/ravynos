@@ -188,3 +188,14 @@ Did: added Mach-O 64 loader (LC_SEGMENT_64/LC_UNIXTHREAD), 32-bit protected-mode
 Evidence: `tools/bootloader/build.sh` -> "wrote .../BOOTX64.EFI (12288 bytes)"; run-tests.sh loader layer ok; no QEMU on host so RAVYNOS-MACHO-OK not yet captured.
 Cites: tools/bootloader/uefi_stub.c (load_macho_kernel_image, build_boot_args, build_device_tree); tools/bootloader/xnu_handoff.S; Kernel/xnu/pexpert/pexpert/i386/boot.h:160-210; Kernel/xnu/osfmk/x86_64/start.s:136-210; Kernel/xnu/osfmk/mach/i386/vm_param.h:197.
 Next: obtain QEMU/OVMF (macOS host) to capture RAVYNOS-MACHO-OK; D1 XNU build still blocked by missing bmake/mig on this Linux host.
+
+### 2026-10-31 — darwin-gate.sh added
+Did: added tools/bootloader/test/stub_macho.S (32-bit COM1 stub "RAVYNOS-MACHO-OK\n")
+and tools/darwin-gate.sh (builds BOOTX64.EFI + ravynkern, clang stub Mach-O
+with -e,_start and image_base 0xffffff8000200000 = VM_MIN_KERNEL_ADDRESS
+(osfmk/mach/i386/vm_param.h:196), otool dump, two fat:rw boots per §3 recipe
+25 s each, serial grep RAVYNOS|loader:|handoff|Exception|RIP; `xnu` mode
+greps build-xnu.log for the D1 error patterns).
+Evidence: none yet -- gate not run; awaiting user's `./tools/darwin-gate.sh`
+output pasted here.
+Cites: tools/darwin-gate.sh; tools/bootloader/test/stub_macho.S; Kernel/Makefile:81 (xnu_all).
