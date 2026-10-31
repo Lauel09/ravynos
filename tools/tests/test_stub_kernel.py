@@ -53,9 +53,21 @@ def parse_elf64(path):
 class StubKernelElfTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # KERNEL.ELF is a build artefact, not a checked-in fixture (a committed
+        # binary let the pipeline package a kernel nobody had built).  Build it
+        # on demand with whatever toolchain exists; skip when there is none.
         if not os.path.exists(KERNEL_ELF):
-            raise unittest.SkipTest("KERNEL.ELF not built; run make in "
-                                    "Kernel/ravynkern first")
+            build = os.path.join(REPO, "Kernel", "ravynkern", "build.sh")
+            try:
+                proc = subprocess.run([build, "-q"], capture_output=True,
+                                      text=True, timeout=300)
+            except OSError as exc:
+                raise unittest.SkipTest(f"cannot run {build}: {exc}") from exc
+            if proc.returncode != 0:
+                raise unittest.SkipTest(
+                    "KERNEL.ELF not built and build.sh failed: "
+                    + (proc.stderr or "").strip().splitlines()[-1:][0]
+                    if proc.stderr.strip() else "KERNEL.ELF not built")
         cls.ef = parse_elf64(KERNEL_ELF)
 
     def test_machine_and_type(self):

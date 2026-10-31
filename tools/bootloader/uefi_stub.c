@@ -315,16 +315,69 @@ static EFI_GUID gSerialIoGuid = {
 
 static EFI_SERIAL_IO *gSerial = 0;
 static EFI_SIMPLE_TEXT_OUTPUT *gConsole = 0;
+static int gMirrorConOut = 1;     /* cleared when ConOut *is* the serial port */
 
 /* ---------------------------------------------------------------------- */
-/* Tiny freestanding helpers (no libc in a UEFI application)               */
+/* Output: the 16550 UART first, firmware protocols second                 */
+/*                                                                         */
+/* This is the loader's most important diagnostic property.  In the first  */
+/* CI runs nothing at all appeared in serial.log before OVMF's exception   */
+/* dump, and there was no way to tell "the firmware never ran us" from     */
+/* "we ran and crashed before printing".  Firmware is not obliged to       */
+/* install the Serial I/O protocol (OVMF's own debug output goes to the    */
+/* UART through DebugLib, not through that protocol), so a loader that     */
+/* prints only through SerialIo can be silent on the very host that is     */
+/* testing it.  Writing COM1 directly needs no protocol at all.            */
+/*                                                                         */
+/* ConOut is mirrored only when the firmware has *no* Serial I/O protocol: */
+/* that is the graphical-console case, where the mirror is the only way a  */
+/* user sees anything.  When SerialIo exists the firmware console is       */
+/* already the serial port and mirroring would print every line twice.     */
 /* ---------------------------------------------------------------------- */
+#define COM1          0x3F8
+#define COM1_LSR      (COM1 + 5)
+#define LSR_RX_READY  0x01
+#define LSR_THR_EMPTY 0x20
+
+static void uart_outb(UINT16 port, UINT8 val)
+{
+    __asm__ volatile("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+
+static UINT8 uart_inb(UINT16 port)
+{
+    UINT8 v;
+    __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port));
+    return v;
+}
+
+static void uart_init(void)
+{
+    uart_outb(COM1 + 1, 0x00);   /* no interrupts               */
+    uart_outb(COM1 + 3, 0x80);   /* DLAB on                     */
+    uart_outb(COM1 + 0, 0x01);   /* divisor 1 => 115200 baud    */
+    uart_outb(COM1 + 1, 0x00);
+    uart_outb(COM1 + 3, 0x03);   /* DLAB off, 8n1               */
+    uart_outb(COM1 + 2, 0xC7);   /* FIFO enable + clear         */
+    uart_outb(COM1 + 4, 0x0B);   /* DTR/RTS/OUT2                */
+}
+
+static void uart_putc(char c)
+{
+    int spin = 200000;
+    while ((uart_inb(COM1_LSR) & LSR_THR_EMPTY) == 0 && --spin)
+        ;
+    uart_outb(COM1, (UINT8)c);
+}
+
 static void serial_putc(char c)
 {
     UINTN size = 1;
-    if (gSerial) {
-        gSerial->Write(gSerial, &size, &c);
-    }
+    uart_putc(c);
+    /* The protocol write is a no-op duplicate of the UART write above when
+     * the protocol drives the same port, so it is not used at all: the UART
+     * is the channel, the protocol only tells us whether ConOut is serial. */
+    (void)size;
 }
 
 static void serial_puts(const char *s)
@@ -337,13 +390,13 @@ static void serial_puts(const char *s)
     }
 }
 
-/* Mirror to ConOut so the same banner is visible on a graphical console. */
+/* Mirror to ConOut so a graphical console shows the same text. */
 static void console_puts(const char *s)
 {
     CHAR16 line[160];
     UINTN i = 0;
 
-    if (!gConsole) {
+    if (!gConsole || !gMirrorConOut) {
         return;
     }
     while (*s && i < 158) {
@@ -364,25 +417,60 @@ static void say(const char *s)
     console_puts(s);
 }
 
+/* Unsigned decimal, for sizes and counts (no libc). */
+static void say_dec(UINT64 v)
+{
+    char buf[21];
+    int i = 20;
+
+    buf[i] = 0;
+    if (v == 0) {
+        buf[--i] = '0';
+    }
+    while (v) {
+        buf[--i] = (char)('0' + (v % 10));
+        v /= 10;
+    }
+    say(&buf[i]);
+}
+
+static void say_hex(UINT64 v, int width)
+{
+    static const char digits[] = "0123456789abcdef";
+    char buf[17];
+    int i;
+
+    if (width > 16) {
+        width = 16;
+    }
+    for (i = width - 1; i >= 0; i--) {
+        buf[i] = digits[v & 0xF];
+        v >>= 4;
+    }
+    buf[width] = 0;
+    say(buf);
+}
+
 /* ---------------------------------------------------------------------- */
-/* Loader                                                                  */
+/* Console discovery                                                       */
 /* ---------------------------------------------------------------------- */
 static void find_console(EFI_SYSTEM_TABLE *st)
 {
     EFI_BOOT_SERVICES *bs = st->BootServices;
     EFI_SERIAL_IO *serial = 0;
 
-    /* The serial protocol is what makes a headless boot readable; ConOut is
-     * only a convenience for graphical runs. */
-    if (bs && !EFI_ERROR(bs->LocateProtocol(&gSerialIoGuid, 0, (void **)&serial)) && serial) {
+    uart_init();                 /* always: this is the primary channel */
+
+    if (bs && !EFI_ERROR(bs->LocateProtocol(&gSerialIoGuid, 0,
+                                            (void **)&serial)) && serial) {
         serial->Reset(serial);
         /* 115200 8N1: the rate tools/bootcheck.sh reads at. */
         serial->SetAttributes(serial, 115200, 0, 0, 0 /* no parity */,
                               8 /* data bits */, 1 /* stop bits */);
         gSerial = serial;
+        gMirrorConOut = 0;       /* ConOut is this same serial terminal */
     }
     if (st->ConOut) {
-        st->ConOut->Reset(st->ConOut, 0);
         gConsole = st->ConOut;
     }
 }
@@ -398,7 +486,18 @@ static void find_console(EFI_SYSTEM_TABLE *st)
 /* paging still on (firmware page tables).  rdi = &bootinfo.               */
 /* ---------------------------------------------------------------------- */
 
-#define KERNEL_PATH u"\\EFI\\KERNEL.ELF"
+/* Where a kernel may live on the boot volume, in the order they are tried.
+ * The image pipeline stages it as /EFI/KERNEL.ELF (readable by the shell's
+ * `kernel` command too); /BOOT/KERNEL is what mkimage --kernel writes, and
+ * the other two are the obvious hand-made variants.  Every candidate is
+ * tried and the winner is reported, so "not found" is never ambiguous. */
+static const CHAR16 *const gKernelPaths[] = {
+    u"\\EFI\\KERNEL.ELF",
+    u"\\BOOT\\KERNEL",
+    u"\\EFI\\KERNEL",
+    u"\\KERNEL.ELF"
+};
+#define KERNEL_PATH_COUNT (sizeof(gKernelPaths) / sizeof(gKernelPaths[0]))
 
 #define BOOTINFO_ADDR     0x90000ULL
 #define BOOTINFO_MAGIC    0x52564E4Bu   /* 'RVNK' little-endian */
@@ -442,7 +541,11 @@ typedef struct { UINT32 Type; UINT32 Pad; UINT64 Offset; UINT64 Vaddr;
 #define ET_EXEC      2
 #define EM_X86_64    62
 #define PT_LOAD      1
-#define SHT_SYMTab_DUMMY 0 /* unused */
+
+/* Where a kernel payload may be linked: above the firmware's low memory and
+ * inside the identity-mapped first 4 GiB (Docs/KernelHandoff.md risk notes). */
+#define KERNEL_MIN_ADDR 0x100000ULL
+#define KERNEL_MAX_END  0x100000000ULL
 
 typedef struct { UINT64 base; UINT64 pages; } kern_memdesc_t;
 typedef struct {
@@ -492,37 +595,63 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
         root->Close(root);
         return stt;
     }
-    /* Chunked read until EOF: OVMF's FAT driver returns BufferSize=0 once
-     * the file position reaches the end, which is the loop's exit signal.
-     * A short (<64 KiB) read also ends it defensively. */
+    /* Chunked read until EOF.  EFI_FILE_PROTOCOL.Read shrinks *BufferSize to
+     * the number of bytes actually transferred and returns 0 bytes at end of
+     * file, which is the exit condition.  The buffer grows with the file
+     * instead of being a fixed 8 MiB pool allocation: the old code silently
+     * truncated anything larger and burned 8 MiB of pool for every probe. */
     (void)file_guid;
     {
-        UINTN cap = 8u << 20; /* 8 MiB max payload */
+        UINTN cap = 0;
         UINTN total = 0;
-        if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, cap, (void **)&buf))) {
-            f->Close(f); root->Close(root);
-            return EFI_UNSUPPORTED;
-        }
         for (;;) {
-            sz = 64u * 1024;
+            if (total == cap) {
+                UINTN newcap = cap ? cap * 2 : (16u << 10);
+                UINT8 *grown;
+                if (newcap > (8u << 20)) {
+                    say("kernel: payload larger than 8 MiB, refusing\n");
+                    if (buf) {
+                        bs->FreePool(buf);
+                    }
+                    f->Close(f);
+                    root->Close(root);
+                    return EFI_UNSUPPORTED;
+                }
+                if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, newcap,
+                                               (void **)&grown))) {
+                    if (buf) {
+                        bs->FreePool(buf);
+                    }
+                    f->Close(f);
+                    root->Close(root);
+                    return EFI_UNSUPPORTED;
+                }
+                if (buf) {
+                    bs->CopyMem(grown, buf, total);
+                    bs->FreePool(buf);
+                }
+                buf = grown;
+                cap = newcap;
+            }
+            sz = cap - total;
             stt = f->Read(f, &sz, buf + total);
             if (EFI_ERROR(stt)) {
                 bs->FreePool(buf);
-                f->Close(f); root->Close(root);
+                f->Close(f);
+                root->Close(root);
                 return stt;
             }
-            if (sz == 0 || total + sz > cap) {
-                break;
+            if (sz == 0) {
+                break;                       /* end of file */
             }
             total += sz;
-            if (sz < 64u * 1024) {
-                break;
-            }
         }
         f->Close(f);
         root->Close(root);
         if (total == 0) {
-            bs->FreePool(buf);
+            if (buf) {
+                bs->FreePool(buf);
+            }
             return EFI_UNSUPPORTED;
         }
         *out_buf = buf;
@@ -561,9 +690,42 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
         if (p->Type != PT_LOAD) {
             continue;
         }
-        if (p->Offset + p->FileSiz > size || p->MemSiz < p->FileSiz) {
-            say("kernel: PT_LOAD extent invalid\n");
+        if (p->FileSiz > size || p->Offset > size - p->FileSiz) {
+            say("kernel: PT_LOAD file extent past the end of the payload\n");
             return 0;
+        }
+        if (p->MemSiz < p->FileSiz) {
+            say("kernel: PT_LOAD has MemSiz < FileSiz\n");
+            return 0;
+        }
+        /* The loader copies to the link address with the firmware's page
+         * tables still active, so the image has to live in the identity-
+         * mapped, firmware-usable window below 4 GiB and above the low
+         * 1 MiB that the firmware itself uses.  A payload linked anywhere
+         * else is a silent triple fault, so it is refused here. */
+        if (p->Vaddr < KERNEL_MIN_ADDR) {
+            say("kernel: PT_LOAD below 1 MiB (0x");
+            say_hex(p->Vaddr, 16);
+            say("), refusing\n");
+            return 0;
+        }
+        if (p->Vaddr + p->MemSiz > KERNEL_MAX_END || p->Vaddr + p->MemSiz < p->Vaddr) {
+            say("kernel: PT_LOAD above the 4 GiB identity map, refusing\n");
+            return 0;
+        }
+        {
+            UINTN j;
+            for (j = 0; j < i; j++) {
+                Elf64_Phdr *q = (Elf64_Phdr *)((UINT8 *)ph + j * eh->PhEntSize);
+                if (q->Type != PT_LOAD) {
+                    continue;
+                }
+                if (p->Vaddr < q->Vaddr + q->MemSiz &&
+                    q->Vaddr < p->Vaddr + p->MemSiz) {
+                    say("kernel: overlapping PT_LOAD segments, refusing\n");
+                    return 0;
+                }
+            }
         }
         if (p->Vaddr < lo) { lo = p->Vaddr; }
         if (p->Vaddr + p->MemSiz > hi) { hi = p->Vaddr + p->MemSiz; }
@@ -571,6 +733,25 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     if (lo == ~0ULL) {
         say("kernel: no PT_LOAD segments\n");
         return 0;
+    }
+    /* Jumping to an entry point outside the copied image is the failure mode
+     * that presents as an invalid-opcode exception somewhere unrelated. */
+    {
+        int entry_ok = 0;
+        for (i = 0; i < eh->PhNum; i++) {
+            Elf64_Phdr *p = (Elf64_Phdr *)((UINT8 *)ph + i * eh->PhEntSize);
+            if (p->Type == PT_LOAD && eh->Entry >= p->Vaddr &&
+                eh->Entry < p->Vaddr + p->MemSiz) {
+                entry_ok = 1;
+                break;
+            }
+        }
+        if (!entry_ok) {
+            say("kernel: e_entry 0x");
+            say_hex(eh->Entry, 16);
+            say(" is outside every PT_LOAD, refusing\n");
+            return 0;
+        }
     }
     /* Reserve [lo, hi) at its fixed link address.  The stub links at
      * 0x100000 which OVMF maps as conventional RAM post-EBS. */
@@ -609,23 +790,13 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     entry = eh->Entry;
     *entry_out = entry;
     say("RAVYNOS-KERNEL-LOAD ");
-    {
-        char n[24]; int j = 0; UINTN s = size;
-        if (s == 0) n[j++] = '0';
-        while (s) { n[j++] = (char)('0' + (s % 10)); s /= 10; }
-        /* reverse digits into place */
-        { char t; int a = 0, b = j - 1; while (a < b) { t = n[a]; n[a] = n[b]; n[b] = t; a++; b--; } }
-        n[j] = 0;
-        say(n);
-    }
-    say(" bytes, entry 0x");
-    {
-        static const char hx[] = "0123456789abcdef";
-        char b2[17]; int k;
-        for (k = 15; k >= 0; k--) { b2[k] = hx[entry & 0xF]; entry >>= 4; }
-        b2[16] = 0;
-        say(b2);
-    }
+    say_dec(size);
+    say(" bytes, image 0x");
+    say_hex(lo, 16);
+    say("-0x");
+    say_hex(hi, 16);
+    say(", entry 0x");
+    say_hex(entry, 16);
     say("\n");
     return 1;
 }
@@ -703,82 +874,20 @@ static void handoff_to_kernel(EFI_BOOT_SERVICES *bs, EFI_HANDLE image_handle,
 }
 
 /* ---------------------------------------------------------------------- */
-/* Legacy-handoff rescue                                                   */
+/* A note on the legacy "jump to 0xB0000" path -- removed                  */
 /*                                                                         */
-/* Verified on OVMF/QEMU (2026-10-31): when no Boot#### variable matches,  */
-/* OVMF's fallback "UEFI Misc Device" path maps the first sectors of the   */
-/* disk at 0xB0000 and jumps there -- it never parses a PE.  Our GPT/FAT   */
-/* ESP starts with a boot sector full of data bytes, so the CPU faults     */
-/* (#UD at RIP 0xB0000).  Rather than ship x86 machine code inside the FAT */
-/* boot sector, we put an unambiguous illegal instruction there: the       */
-/* faulting path traps into OVMF's exception handler, whose stack still     */
-/* holds the arguments of the very call that jumped to 0xB0000             */
-/* (PeCoffImageCtrlJumpFunc(ImageContext, SystemTable)).  We scan that     */
-/* stack for a plausible EFI system table -- signature 'IBSY' at offset 0  */
-/* plus sane header size -- and recover a real handoff.  From there the    */
-/* normal EFI path takes over: LoadImage/StartImage of /EFI/SHELL.EFI, or  */
-/* at minimum a working console so the milestone markers reach the serial  */
-/* log.                                                                    */
-/*                                                                         */
-/* This is strictly additive: when firmware boots the image normally,      */
-/* efi_main runs unchanged and this code is never reached.                 */
+/* An earlier revision carried a rescue entry here that assumed OVMF's     */
+/* UEFI Misc Device fallback maps the first disk sectors at 0xB0000 and    */
+/* jumps to them, and tried to recover an EFI_SYSTEM_TABLE by scanning the */
+/* firmware stack after the resulting #UD.  It could never have run: the   */
+/* firmware's exception handler reports the fault and parks the CPU, so no */
+/* code of ours is entered on that path -- and the CI logs show the        */
+/* firmware never loading this image at all.  The block was unreachable    */
+/* code that made the boot log harder to interpret, so it is gone.  The    */
+/* real diagnosis is in PROGRESS.md (rev 17): the boot option BDS starts   */
+/* has no file node, i.e. firmware never mounted the volume, which is an   */
+/* image-layout problem on our side, not a payload problem.                */
 /* ---------------------------------------------------------------------- */
-
-#define LEGACY_BASE   0xB0000ULL
-#define SIGNATURE_16(a, b)  ((UINT16)((a) | ((b) << 8)))
-#define EFI_SYSTEM_TABLE_SIGNATURE  SIGNATURE_16('I', 'B')   /* low half of "IBSY" */
-
-typedef struct {
-    UINT64 Signature;
-    UINT32 Revision;
-    UINT32 HeaderSize;
-    UINT32 CRC32;
-    UINT32 Reserved;
-} THDR;
-
-static int looks_like_system_table(UINT64 addr)
-{
-    THDR *h;
-    volatile UINT64 sig;
-
-    if (addr < 0x1000 || addr > 0x40000000ULL || (addr & 7) != 0) {
-        return 0;
-    }
-    h = (THDR *)(UINTN)addr;
-    sig = h->Signature;                    /* may fault further?  mapped mem
-                                            * below 4 GB is conventional memory
-                                            * or reserved RAM: reads are safe
-                                            * in long mode with paging set up
-                                            * by the firmware already. */
-    if (((UINT32)sig != 0x53595A49u) &&     /* "IZYS" little-endian of IBSY.. */
-        !((UINT16)sig == EFI_SYSTEM_TABLE_SIGNATURE)) {
-        return 0;
-    }
-    if (h->HeaderSize < sizeof(THDR) || h->HeaderSize > 0x1000) {
-        return 0;
-    }
-    return 1;
-}
-
-/* Find the SystemTable pointer left on the stack by OVMF's jump-to-0xB0000
- * call.  Scan a window above the fault-time RSP (recorded via a global the
- * stub... we cannot run code at fault time, so instead scan a generous range
- * around the firmware stack area discovered from any candidate table). */
-static EFI_SYSTEM_TABLE *scan_stack_for_systable(void)
-{
-    /* OVMF DXE stacks live high in the first 4 GB; walk plausible 8-byte
-     * slots in [0x1DE00000, 0x1FF00000) looking for a value that points at a
-     * system table, then validate that table.  ~34 MB of probes, trivial in
-     * TCG terms (one boot pass). */
-    UINT64 *p;
-    for (p = (UINT64 *)0x1DE00000ULL; p < (UINT64 *)0x1FF00000ULL; p++) {
-        UINT64 v = *p;
-        if (looks_like_system_table(v)) {
-            return (EFI_SYSTEM_TABLE *)(UINTN)v;
-        }
-    }
-    return 0;
-}
 
 /* ---------------------------------------------------------------------- */
 /* Chain-load /EFI/SHELL.EFI from the volume this image was started from   */
@@ -945,11 +1054,14 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 {
     find_console(st);
 
+    /* From here on the UART is driven directly, so these lines appear even
+     * when the firmware installs no Serial I/O protocol. */
     say("ravynOS UEFI loader\n");
     if (gSerial) {
-        say("console: EFI Serial I/O at 115200 8N1\n");
+        say("console: COM1 115200 8N1 (EFI Serial I/O present; ConOut is the "
+            "same terminal)\n");
     } else {
-        say("console: ConOut only (no serial protocol found)\n");
+        say("console: COM1 115200 8N1 (no EFI Serial I/O; ConOut mirrored)\n");
     }
     say("RAVYNOS-LOADER-OK\n");
 
@@ -964,26 +1076,51 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
         EFI_BOOT_SERVICES *bs = st->BootServices;
         static EFI_GUID lifo_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
         EFI_LOADED_IMAGE_PROTOCOL *li = 0;
-        void *data = 0;
-        UINTN size = 0;
-        UINT64 entry = 0, rsp = 0;
+        int tried = 0;
 
         if (bs &&
             !EFI_ERROR(bs->HandleProtocol(image_handle, &lifo_guid,
-                                          (void **)&li)) && li &&
-            !EFI_ERROR(esp_read_file(bs, li->DeviceHandle, KERNEL_PATH,
-                                     &data, &size))) {
-            if (load_kernel_image(bs, data, size, &entry, &rsp)) {
-                bs->FreePool(data);
-                write_bootinfo(bs);
-                handoff_to_kernel(bs, image_handle, entry, rsp);
-                /* only reached if EBS refused */
-                say("loader: handoff failed, falling back to shell\n");
-            } else {
-                bs->FreePool(data);
+                                          (void **)&li)) && li) {
+            UINTN k;
+            for (k = 0; k < KERNEL_PATH_COUNT; k++) {
+                void *data = 0;
+                UINTN size = 0;
+                UINT64 entry = 0, rsp = 0;
+
+                if (EFI_ERROR(esp_read_file(bs, li->DeviceHandle,
+                                            gKernelPaths[k], &data, &size))) {
+                    continue;
+                }
+                tried = 1;
+                say("loader: found ");
+                {
+                    char name[64];
+                    UINTN n = 0;
+                    while (gKernelPaths[k][n] && n + 1 < sizeof(name)) {
+                        name[n] = (char)gKernelPaths[k][n];
+                        n++;
+                    }
+                    name[n] = 0;
+                    say(name);
+                }
+                say(" (");
+                say_dec(size);
+                say(" bytes)\n");
+                if (load_kernel_image(bs, data, size, &entry, &rsp)) {
+                    bs->FreePool(data);
+                    write_bootinfo(bs);
+                    handoff_to_kernel(bs, image_handle, entry, rsp);
+                    /* only reached if ExitBootServices refused */
+                    say("loader: handoff failed, falling back to shell\n");
+                } else {
+                    bs->FreePool(data);
+                    say("loader: kernel payload rejected, falling back to shell\n");
+                }
+                break;
             }
-        } else {
-            say("loader: no /EFI/KERNEL.ELF on ESP -- shell only\n");
+        }
+        if (!tried) {
+            say("loader: no kernel payload on this volume -- shell only\n");
         }
     }
 
@@ -993,37 +1130,4 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
      * firmware's own messages stay readable in the serial log. */
     say("loader: returning to firmware\n");
     return EFI_SUCCESS;
-}
-
-/* Entry when we were NOT loaded as a PE image but recovered a handoff from
- * the legacy jump-to-0xB0000 path.  Runs entirely without firmware image
- * services: prints the banner through whatever console the recovered
- * SystemTable offers, then parks. */
-static void legacy_rescue_entry(void)
-{
-    EFI_SYSTEM_TABLE *st = scan_stack_for_systable();
-
-    if (!st) {
-        /* Last resort: poke COM1 directly (0x3F8), same UART QEMU wires for
-         * -serial.  No driver model needed -- just busy-wait on LSR. */
-        unsigned char *com = (unsigned char *)0x3F8;
-        const char *m = "ravynOS loader: legacy path, no systable found\n";
-        while (*m) {
-            while ((com[5] & 0x20) == 0) { }
-            com[0] = (unsigned char)*m++;
-        }
-        return;
-    }
-
-    /* Console via the recovered table; same helpers work once globals are
-     * populated. */
-    find_console(st);
-    say("ravynOS UEFI loader (legacy handoff rescue)\n");
-    say("RAVYNOS-LOADER-OK\n");
-    say("loader: kernel loading not implemented yet (step C)\n");
-    for (;;) {
-        if (st->BootServices) {
-            st->BootServices->Stall(1000000);
-        }
-    }
 }
