@@ -30,7 +30,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 STUB="$TMP/stub_macho"
 clang -arch x86_64 -static -nostdlib -Wl,-e,_start \
-    -Wl,-image_base,0xffffff8000200000 \
+    -Wl,-image_base,0xffffff8000200000 -Wl,-no_pagezero \
     -o "$STUB" "$ROOT/tools/bootloader/test/stub_macho.S"
 otool -l "$STUB" | grep -A3 -E "LC_SEGMENT_64|LC_UNIXTHREAD"
 
