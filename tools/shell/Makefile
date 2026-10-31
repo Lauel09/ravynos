@@ -1,36 +1,18 @@
 # Build the ravynOS boot shell (SHELL.EFI).
 #
-# Same toolchain contract as tools/bootloader/Makefile: freestanding clang
-# for the Windows/UEFI ABI + lld-link with -subsystem:efi_application.
-# See that file's comments for why each flag is mandatory.
+# A thin wrapper over build.sh, which owns the flags and the toolchain
+# detection (clang + lld-link, or a zig binary).  Keeping the flags out of the
+# Makefile is what makes `make` work under GNU make and bmake alike.
+#
+#   make                 # builds ./SHELL.EFI
+#   make clean
 
-PROG =  SHELL.EFI
-OBJ =   shell_efi.o
-SRCS =  shell_efi.c
+OUT ?= SHELL.EFI
 
-# Assigned, not ?=: make predefines CC=cc and LD=ld, and Apple's ld cannot
-# link a PE32+ image.  Command-line overrides still win.
-CC = clang
-LD = lld-link
-
-CFLAGS += -target x86_64-unknown-windows \
-          -ffreestanding -fno-stack-protector -fno-builtin \
-          -mno-red-zone -fshort-wchar -O2 -Wall -Wextra \
-          -Wno-unused-parameter
-
-LDFLAGS += -machine:x64 -subsystem:efi_application -entry:efi_main \
-           -nodefaultlib
-
-all: $(PROG)
-
-$(PROG): $(OBJ)
-	$(LD) $(LDFLAGS) -out:$@ $^
-	@echo "built $@"
-
-$(OBJ): $(SRCS)
-	$(CC) $(CFLAGS) -c -o $@ $<
+all:
+	@OUT="$(OUT)" ./build.sh
 
 clean:
-	rm -f $(PROG) $(OBJ)
+	@./build.sh --clean
 
 .PHONY: all clean

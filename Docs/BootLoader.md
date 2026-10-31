@@ -1,9 +1,13 @@
 # The boot path: what boots the kernel, and how
 
-**Status:** decision document + staged plan. Step A (milestone stub) is done;
-Step B (UEFI application) is in tree, builds with clang+lld-link *or* zig, and
-has a CI job that boots it under OVMF from both the ESP and the ISO — see §3.
-Steps C and D are not started. Everything below is constrained by two facts
+**Status:** decision document + staged plan. Step A (milestone stub) is done.
+Step B (UEFI application) builds with clang+lld-link *or* zig and has a CI job
+that boots it under OVMF from the ISO, the GPT/ESP image and a bare FAT volume
+— see §3. Step C (read a payload off the volume) and Step D (ELF load +
+handoff) are implemented and packaged, but no OVMF run has yet observed the
+loader *running*: the boot option BDS starts has no file node, i.e. firmware
+never mounted the volume. That is the open defect; `PROGRESS.md` rev 17 records
+what was ruled out and how each boot is now diagnosed. Everything below is constrained by two facts
 that can be checked in this repository:
 
 1. The kernel build produces a **Mach-O** executable (`Kernel/xnu` links with
@@ -128,22 +132,41 @@ That validates the ESP construction and the catalog entry in one shot — before
 any kernel work.  The CI job is the arbiter; a local host with QEMU and OVMF
 can run the same two commands.
 
-### Step C — load a payload from the image
+### Step C — load a payload from the image *(implemented)*
 
-Extend the stub to open the volume, `ReadFile('/BOOT/KERNEL')`, verify a
-checksum stored beside it, print its size/model, and emit
-`RAVYNOS-KERNEL-OK` *only after* the bytes are in memory and validated.
+The loader opens the volume it was started from, tries `\EFI\KERNEL.ELF`,
+`\BOOT\KERNEL`, `\EFI\KERNEL` and `\KERNEL.ELF` in that order, names the
+file it found, and validates the ELF before touching memory: ELF64/`ET_EXEC`/
+`EM_X86_64`, every `PT_LOAD` extent inside the file, `MemSiz >= FileSiz`, no
+overlapping segments, linked at or above 1 MiB and below the 4 GiB identity
+map, and `e_entry` inside a loadable segment. A payload that fails is refused
+with a specific message instead of being jumped into.
 
-**Exit:** the same bootcheck with `--milestones --expect-any` sees the first two
-markers; a deliberately corrupted `BOOT/KERNEL` in the image must make it fail.
+`mkimage --kernel` stages the payload as both `EFI/KERNEL.ELF` and
+`BOOT/KERNEL`, *and* inside the FAT volume that wraps the El Torito UEFI entry,
+because firmware only mounts that volume — a kernel left outside it is
+invisible to this loader. `tools/image/elf.py` is the same check as a program,
+run at kernel build time, at image build time, and again by `verify.py` on the
+bytes inside the finished ISO/ESP.
 
-### Step D — Mach-O load and handoff
+**Exit:** a deliberately corrupted kernel must make the boot log say why; the
+loader prints `RAVYNOS-KERNEL-LOAD …` only after the payload is validated.
 
-Load the kernel's segments, build `boot_args`, `ExitBootServices`, jump. This
-is where XNU start-up work begins; failures here are kernel bring-up failures,
-not loader-format failures, and the markers separate the two.
+### Step D — ELF load and handoff *(implemented for the stub kernel)*
 
-**Exit:** `RAVYNOS-KERNEL-OK` then a kernel banner on serial.
+`AllocatePages(AllocateAddress)` reserves the link range, `CopyMem` + `SetMem`
+stage each `PT_LOAD`, a 64 KiB boot stack is allocated, `bootinfo` is written
+at `0x90000` (conventional-memory list, harvested from the last `GetMemoryMap`
+before `ExitBootServices`), then `ExitBootServices` is attempted with the key
+from that same call and the CPU jumps to `e_entry` with `rdi = &bootinfo`.
+
+Mach-O and Apple's `boot_args` remain future work: the stub kernel is ELF, and
+loading a Mach-O XNU is a separate loader beside this one. The
+`ExitBootServices`/memory-map/boot-stack code is reusable unchanged.
+
+**Exit:** `RAVYNOS-KERNEL-OK` and `RAVYNOS-KSHELL-OK` on the serial console,
+and the prompt answers `help` typed over the serial socket
+(`tools/bootcheck.sh --send`).
 
 ### Step E — real image in the pipeline
 
@@ -155,10 +178,14 @@ not loader-format failures, and the markers separate the two.
 
 ## 4. Constraints and pitfalls
 
-* **No ELF anywhere.** If a future kernel build can emit an ELF or a flat
-  binary, `qemu -kernel` becomes viable for early bring-up. It does not today,
-  and adding a second output format to the kernel build is more work than the
-  UEFI stub.
+* **Payload format.** The stub kernel is ELF64 because lld and GNU ld both
+  emit it for `x86_64-unknown-none` with no relocator needed. Real XNU links
+  as Mach-O with the in-tree cctools `ld`; a Mach-O loader is the next piece of
+  work and reuses the memory-map/`ExitBootServices` path above.
+* **Serial output cannot depend on a firmware protocol.** The loader drives the
+  16550 at `0x3F8` directly for exactly this reason — see `Docs/Shell.md` §1.
+  A loader that prints only through `EFI_SERIAL_IO_PROTOCOL` can be silent on
+  a host that has none, which is indistinguishable from never having run.
 * **Memory map churn.** `ExitBootServices` fails if the map changed since
   `GetMemoryMap`; the loader must re-read and retry. This is the single most
   common cause of "it works in QEMU, hangs on hardware".

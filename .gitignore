@@ -94,8 +94,12 @@ work/**/*.rep
 __pycache__/
 *.pyc
 
-# Kernel/UEFI build outputs (KERNEL.ELF is a checked-in test fixture)
+# Kernel/UEFI build outputs.  KERNEL.ELF used to be committed as a "test
+# fixture", which meant the image pipeline could package a kernel nobody had
+# built from the current source.  It is a build artefact: build.sh/gcc produce
+# it in seconds, and the pipeline rebuilds it before staging.
 *.o
 *.obj
+/Kernel/ravynkern/KERNEL.ELF
 /tools/bootloader/BOOTX64.EFI
 /tools/shell/SHELL.EFI

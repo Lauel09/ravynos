@@ -23,6 +23,9 @@
 #   tools/mkimage.sh --stub -o out/stub.iso
 #   tools/mkimage.sh --root ../build/stage --boot-image BOOT/BOOTX64.BIN \
 #                    --format both -o out/ravynos.iso --verify
+#   tools/mkimage.sh --root stage --efi-payload EFI/BOOT/BOOTX64.EFI \
+#                    --kernel Kernel/ravynkern/KERNEL.ELF \
+#                    --shell tools/shell/SHELL.EFI --format both -o out/uefi
 #
 # Every output gets a sibling .manifest.txt (deterministic, one line per file)
 # and a .sha256 unless --no-checksum is given; --json writes a machine-readable
@@ -45,6 +48,8 @@ EFI_PAYLOAD=
 BOOT_LOAD_SIZE=4
 EFI_LOAD_SIZE=auto
 KERNEL=
+SHELL=
+EFI_INCLUDES=
 VOLUME_ID=RAVYNOS
 FAT_LABEL=RAVYNOS
 TIMESTAMP_SPEC=git
@@ -74,7 +79,13 @@ Options:
   --boot-load-size N     BIOS load size in 512-byte sectors (default 4)
   --efi-load-size N      UEFI load size in 512-byte sectors (default: auto,
                          i.e. the whole .efi file; a smaller value is refused)
-  --kernel PATH          copy PATH into the image as BOOT/KERNEL
+  --kernel PATH          stage PATH as EFI/KERNEL.ELF (where the loader looks
+                         first) and as BOOT/KERNEL (the documented alias)
+  --shell PATH           stage a PE32+ EFI application as EFI/SHELL.EFI, the
+                         image the loader chain-loads when no kernel boots
+  --efi-include REL      extra staged file to place inside the FAT volume that
+                         wraps --efi-payload (repeatable; the kernel and shell
+                         paths above are included automatically)
   --volume-id ID         ISO volume identifier (default RAVYNOS)
   --label ID             FAT volume label (default RAVYNOS)
   --timestamp SPEC       epoch seconds, "SOURCE_DATE_EPOCH", or "git"
@@ -104,6 +115,8 @@ while [ $# -gt 0 ]; do
         --boot-load-size)  BOOT_LOAD_SIZE=$2; shift ;;
         --efi-load-size)   EFI_LOAD_SIZE=$2; shift ;;
         --kernel)          KERNEL=$2; shift ;;
+        --shell)           SHELL=$2; shift ;;
+        --efi-include)     EFI_INCLUDES="${EFI_INCLUDES:+$EFI_INCLUDES }$2"; shift ;;
         --volume-id)       VOLUME_ID=$2; shift ;;
         --label)           FAT_LABEL=$2; shift ;;
         --timestamp)       TIMESTAMP_SPEC=$2; shift ;;
@@ -144,6 +157,11 @@ fi
     die "--efi-payload and --efi-image are different things; pass one" 2
 [ -z "$EFI_PAYLOAD" ] || [ "$MODE" = root ] ||
     die "--efi-payload needs --root DIR (the payload is a staged file)" 2
+for _opt in KERNEL SHELL; do
+    eval "_val=\$$_opt"
+    [ -z "$_val" ] || [ "$MODE" = root ] ||
+        die "--$(printf '%s' "$_opt" | tr 'A-Z' 'a-z') needs --root DIR" 2
+done
 
 # Root-free by construction: running as root hides permission bugs and would
 # let a stray mount succeed, which the portable pipeline must never need.
@@ -285,9 +303,26 @@ stage_root() {
     cp -R "$ROOT_DIR/." "$STAGE/root/" || die "failed to copy $ROOT_DIR"
     if [ -n "$KERNEL" ]; then
         [ -f "$KERNEL" ] || die "kernel not found: $KERNEL"
-        mkdir -p "$STAGE/root/BOOT"
+        # The loader searches EFI/KERNEL.ELF first and BOOT/KERNEL second
+        # (see tools/bootloader/uefi_stub.c); stage both names so either
+        # convention works and the shell's `kernel` builtin finds it.
+        [ -n "${PYTHON:-}" ] || die "validating --kernel needs python3"
+        "$PYTHON" "$SCRIPT_DIR/image/elf.py" "$KERNEL" --require-load \
+            --min-vaddr 0x100000 --max-end 0x100000000 -q ||
+            die "--kernel $KERNEL is not a loadable x86-64 kernel ELF"
+        mkdir -p "$STAGE/root/EFI" "$STAGE/root/BOOT"
+        cp "$KERNEL" "$STAGE/root/EFI/KERNEL.ELF"
         cp "$KERNEL" "$STAGE/root/BOOT/KERNEL"
-        log "staged $(human_size "$(file_size "$KERNEL")") kernel as BOOT/KERNEL"
+        log "staged $(human_size "$(file_size "$KERNEL")") kernel as EFI/KERNEL.ELF (and BOOT/KERNEL)"
+    fi
+    if [ -n "$SHELL" ]; then
+        [ -f "$SHELL" ] || die "shell not found: $SHELL"
+        [ -n "${PYTHON:-}" ] || die "validating --shell needs python3"
+        "$PYTHON" "$SCRIPT_DIR/image/pe.py" "$SHELL" --require-subsystem 10 -q ||
+            die "--shell $SHELL is not a PE32+ EFI application"
+        mkdir -p "$STAGE/root/EFI"
+        cp "$SHELL" "$STAGE/root/EFI/SHELL.EFI"
+        log "staged $(human_size "$(file_size "$SHELL")") shell as EFI/SHELL.EFI"
     fi
     # BIOS and UEFI boot images are different programs: a PE32+ EFI
     # application cannot be an El Torito BIOS boot image and vice versa, so
@@ -319,6 +354,16 @@ stage_root() {
         esac
         cp "$STAGE/root/$EFI_PAYLOAD" "$wrap/EFI/BOOT/$efifile" ||
             die "cannot stage $EFI_PAYLOAD"
+        # The loader inside this volume has to be able to find what it boots:
+        # firmware only mounts the El Torito FAT image, so anything left
+        # outside it (the kernel, the shell, the extras) is invisible to it.
+        # Every such file is copied here as well.
+        for rel in EFI/KERNEL.ELF BOOT/KERNEL EFI/SHELL.EFI $EFI_INCLUDES; do
+            [ -f "$STAGE/root/$rel" ] || continue
+            mkdir -p "$wrap/$(dirname "$rel")" || die "cannot create $wrap/$(dirname "$rel")"
+            cp "$STAGE/root/$rel" "$wrap/$rel" || die "cannot stage $rel into the EFI volume"
+            log "  efi volume: $rel"
+        done
         # Smallest legal FAT16 volume: FAT16 needs 4085 clusters, so 4 MiB at
         # 512-byte clusters is about as small as this writer can go.
         EFI_IMAGE=BOOT/EFIBOOT.IMG

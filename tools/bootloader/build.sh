@@ -54,6 +54,15 @@ fi
 
 [ -f "$SRC" ] || { printf 'build: missing %s\n' "$SRC" >&2; exit 1; }
 
+# `-o out/stage/BOOTX64.EFI` is the documented way to build into a staging tree
+# that does not exist yet; lld then failed with "cannot open output file", which
+# read like a linker problem rather than a missing directory.
+_outdir=$(dirname -- "$OUT")
+[ -d "$_outdir" ] || mkdir -p "$_outdir" || {
+    printf 'build: cannot create %s\n' "$_outdir" >&2
+    exit 1
+}
+
 find_zig() {
     if [ -n "${ZIG:-}" ] && [ -x "${ZIG}" ]; then
         printf '%s\n' "$ZIG"
