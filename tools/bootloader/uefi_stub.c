@@ -157,7 +157,15 @@ typedef struct {
 
 typedef struct EFI_SERIAL_IO_PROTOCOL EFI_SERIAL_IO;
 
+/* The UEFI specification puts a UINT32 Revision in front of every one of
+ * these members (EFI_SERIAL_IO_PROTOCOL.Revision).  Leaving it out shifted
+ * every function pointer by eight bytes, so this->Reset() called the address
+ * 0x00010000 -- the Revision value read as a pointer -- which is one of the
+ * ways an EFI application dies on an "invalid opcode" far outside its own
+ * image.  Do not "simplify" this field away. */
 struct EFI_SERIAL_IO_PROTOCOL {
+    UINT32 Revision;
+    UINT32 Pad;
     EFI_STATUS (EFIAPI *Reset)(EFI_SERIAL_IO *This);
     EFI_STATUS (EFIAPI *SetAttributes)(EFI_SERIAL_IO *This, UINT64 BaudRate,
                                        UINT32 ReceiveFifoDepth, UINT32 Timeout,
@@ -167,6 +175,7 @@ struct EFI_SERIAL_IO_PROTOCOL {
     EFI_STATUS (EFIAPI *Write)(EFI_SERIAL_IO *This, UINTN *BufferSize, void *Buffer);
     EFI_STATUS (EFIAPI *Read)(EFI_SERIAL_IO *This, UINTN *BufferSize, void *Buffer);
     EFI_SERIAL_IO_MODE *Mode;
+    const EFI_GUID *DeviceTypeGuid;   /* added in UEFI 2.8; unused, but sized */
 };
 
 /* ---------------------------------------------------------------------- */
@@ -754,14 +763,27 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
         }
     }
     /* Reserve [lo, hi) at its fixed link address.  The stub links at
-     * 0x100000 which OVMF maps as conventional RAM post-EBS. */
+     * 0x100000 which OVMF maps as conventional RAM post-EBS.
+     *
+     * The range is rounded *down* to a page first.  AllocatePages with
+     * AllocateAddress requires a page-aligned address and returns
+     * EFI_INVALID_PARAMETER otherwise, and a kernel whose first PT_LOAD
+     * starts at 0x1000b0 (the ELF headers sit in front of .text) is not
+     * aligned -- which made every handoff fail with "cannot reserve link
+     * range" while looking like a memory-map problem. */
     {
-        UINT64 pages = (hi - lo + EFI_PAGE_SIZE - 1) >> EFI_PAGE_SHIFT;
-        UINT64 addr = lo;
+        UINT64 lo_page = lo & ~(EFI_PAGE_SIZE - 1);
+        UINT64 hi_page = (hi + EFI_PAGE_SIZE - 1) & ~(EFI_PAGE_SIZE - 1);
+        UINT64 pages = (hi_page - lo_page) >> EFI_PAGE_SHIFT;
+        UINT64 addr = lo_page;
         EFI_STATUS stt = bs->AllocatePages(AllocateAddress, EfiLoaderCode,
-                                           pages, &addr);
-        if (EFI_ERROR(stt) || addr != lo) {
-            say("kernel: cannot reserve link range\n");
+                                           (UINTN)pages, &addr);
+        if (EFI_ERROR(stt) || addr != lo_page) {
+            say("kernel: cannot reserve link range 0x");
+            say_hex(lo_page, 16);
+            say(" (");
+            say_dec(pages);
+            say(" pages)\n");
             return 0;
         }
     }
@@ -801,23 +823,39 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     return 1;
 }
 
-/* Harvest conventional memory into the bootinfo block at BOOTINFO_ADDR. */
-static void write_bootinfo(EFI_BOOT_SERVICES *bs)
+/* Harvest conventional memory into the bootinfo block at BOOTINFO_ADDR.
+ *
+ * The block lives at a fixed physical address because the kernel hands over
+ * before it has a heap: writing to 0x90000 without reserving it is a write to
+ * firmware-owned memory, and the firmware is free to reuse that page (or to
+ * have it mapped read-only) until ExitBootServices.  Returns 0 when the block
+ * could not be reserved, so the caller can refuse the handoff instead of
+ * jumping to a kernel with a bootinfo pointer to somebody else's memory. */
+static int write_bootinfo(EFI_BOOT_SERVICES *bs)
 {
     UINTN mapsize = 0, descsize = 0, key = 0;
     UINT32 descver = 0;
     EFI_MEMORY_DESCRIPTOR *map = 0;
     bootinfo_t *bi = (bootinfo_t *)(UINTN)BOOTINFO_ADDR;
     UINTN off;
+    UINT64 bi_addr = BOOTINFO_ADDR;
+
+    if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1, &bi_addr)) ||
+        bi_addr != BOOTINFO_ADDR) {
+        say("bootinfo: cannot reserve page 0x");
+        say_hex(BOOTINFO_ADDR, 16);
+        say("\n");
+        return 0;
+    }
 
     bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
     mapsize += 2 * descsize;
     if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map))) {
-        return;
+        return 0;
     }
     if (EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver))) {
         bs->FreePool(map);
-        return;
+        return 0;
     }
     bs->SetMem(bi, sizeof(*bi), 0);
     bi->magic = BOOTINFO_MAGIC;
@@ -834,6 +872,7 @@ static void write_bootinfo(EFI_BOOT_SERVICES *bs)
     }
     bs->FreePool(map);
     (void)key; /* caller re-fetches key right before ExitBootServices */
+    return 1;
 }
 
 /* Final handoff: fresh map key -> ExitBootServices -> jump.  Never returns
@@ -1052,6 +1091,17 @@ static void try_start_shell(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 
 EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 {
+    /*
+     * Proof of execution, first, with nothing between the entry point and the
+     * UART: no firmware call, no protocol lookup, no shared state.  Every
+     * earlier version of this file discovered the console first and printed
+     * afterwards, so a crash in that discovery was indistinguishable from the
+     * firmware never running the image at all -- which is exactly the
+     * ambiguity that cost several CI runs.  Keep this first.
+     */
+    uart_init();
+    serial_puts("RAVYNOS-ENTRY\n");
+
     find_console(st);
 
     /* From here on the UART is driven directly, so these lines appear even
@@ -1108,7 +1158,10 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                 say(" bytes)\n");
                 if (load_kernel_image(bs, data, size, &entry, &rsp)) {
                     bs->FreePool(data);
-                    write_bootinfo(bs);
+                    if (!write_bootinfo(bs)) {
+                        say("loader: no bootinfo block, not handing off\n");
+                        break;
+                    }
                     handoff_to_kernel(bs, image_handle, entry, rsp);
                     /* only reached if ExitBootServices refused */
                     say("loader: handoff failed, falling back to shell\n");

@@ -415,7 +415,7 @@ jobs:
             qemu-system-x86_64 --version | head -2
             qemu-system-x86_64 -accel help 2>&1 | head -5
             echo "== firmware =="
-            for d in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2 \\
+            for d in /usr/share/OVMF /usr/share/ovmf /usr/share/edk2 \
                      /usr/share/edk2/ovmf /usr/share/qemu; do
               [ -d "$d" ] || continue
               echo "-- $d"
