@@ -106,12 +106,22 @@ if [ -n "${toolchain:-}" ]; then
     # shellcheck disable=SC2086  # deliberate word splitting of the flag list
     "$CC" -target x86_64-unknown-windows $COMMON_FLAGS -c -o "$OBJ" "$SRC" ||
         { printf 'build: compilation failed\n' >&2; exit 1; }
+    if [ -f "$HERE/xnu_handoff.S" ]; then
+        "$CC" -target x86_64-unknown-windows $COMMON_FLAGS -c -o "$HERE/xnu_handoff.o" "$HERE/xnu_handoff.S" ||
+            { printf 'build: asm compilation failed\n' >&2; exit 1; }
+    fi
     # The subsystem is spelled by name: newer lld-link releases reject the
     # numeric 10 ("unknown subsystem: 10"), which is how the first CI run of
     # this script failed.
-    "$LD" -machine:x64 -subsystem:efi_application -entry:EfiMain \
-        -nodefaultlib -nxcompat:no -out:"$OUT" "$OBJ" ||
-        { printf 'build: link failed\n' >&2; exit 1; }
+    if [ -f "$HERE/xnu_handoff.o" ]; then
+        "$LD" -machine:x64 -subsystem:efi_application -entry:EfiMain \
+            -nodefaultlib -nxcompat:no -out:"$OUT" "$OBJ" "$HERE/xnu_handoff.o" ||
+            { printf 'build: link failed\n' >&2; exit 1; }
+    else
+        "$LD" -machine:x64 -subsystem:efi_application -entry:EfiMain \
+            -nodefaultlib -nxcompat:no -out:"$OUT" "$OBJ" ||
+            { printf 'build: link failed\n' >&2; exit 1; }
+    fi
 else
     ZIG_BIN=$(find_zig) || ZIG_BIN=
     if [ -z "$ZIG_BIN" ]; then
@@ -124,14 +134,25 @@ else
     # shellcheck disable=SC2086
     "$ZIG_BIN" cc -target x86_64-windows $COMMON_FLAGS -c -o "$OBJ" "$SRC" ||
         { printf 'build: compilation failed\n' >&2; exit 1; }
+    if [ -f "$HERE/xnu_handoff.S" ]; then
+        "$ZIG_BIN" cc -target x86_64-windows $COMMON_FLAGS -c -o "$HERE/xnu_handoff.o" "$HERE/xnu_handoff.S" ||
+            { printf 'build: asm compilation failed\n' >&2; exit 1; }
+    fi
     # zig's COFF linker wants the subsystem spelled out and takes the default
     # entry symbol EfiMain; /entry: is not accepted.
-    "$ZIG_BIN" cc -target x86_64-windows -nostdlib \
-        -Wl,/subsystem:efi_application -o "$OUT" "$OBJ" ||
-        { printf 'build: link failed\n' >&2; exit 1; }
+    if [ -f "$HERE/xnu_handoff.o" ]; then
+        "$ZIG_BIN" cc -target x86_64-windows -nostdlib \
+            -Wl,/subsystem:efi_application -o "$OUT" "$OBJ" "$HERE/xnu_handoff.o" ||
+            { printf 'build: link failed\n' >&2; exit 1; }
+    else
+        "$ZIG_BIN" cc -target x86_64-windows -nostdlib \
+            -Wl,/subsystem:efi_application -o "$OUT" "$OBJ" ||
+            { printf 'build: link failed\n' >&2; exit 1; }
+    fi
     # zig's COFF linker always writes a .pdb next to the image; it is a build
     # artefact of no use to firmware and must not land in the repository.
     rm -f "${OUT%.*}.pdb"
+    rm -f "$HERE/xnu_handoff.o"
 fi
 
 [ -f "$OUT" ] || { printf 'build: linker produced no %s\n' "$OUT" >&2; exit 1; }

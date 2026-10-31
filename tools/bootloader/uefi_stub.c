@@ -504,7 +504,8 @@ static const CHAR16 *const gKernelPaths[] = {
     u"\\EFI\\KERNEL.ELF",
     u"\\BOOT\\KERNEL",
     u"\\EFI\\KERNEL",
-    u"\\KERNEL.ELF"
+    u"\\KERNEL.ELF",
+    u"\\System\\Library\\Kernels\\kernel"
 };
 #define KERNEL_PATH_COUNT (sizeof(gKernelPaths) / sizeof(gKernelPaths[0]))
 
@@ -551,6 +552,51 @@ typedef struct { UINT32 Type; UINT32 Pad; UINT64 Offset; UINT64 Vaddr;
 #define EM_X86_64    62
 #define PT_LOAD      1
 
+/* ---------------------------------------------------------------------- */
+/* Mach-O 64 payload support (D4)                                          */
+/* ---------------------------------------------------------------------- */
+#define MH_MAGIC_64       0xFEEDFACFu
+#define MH_EXECUTE        2
+#define MH_FILESET        12
+#define LC_SEGMENT_64     0x19u
+#define LC_UNIXTHREAD     0x05u
+#define LC_MAIN           0x80000028u
+#define CPU_TYPE_X86_64   0x01000007u
+
+#pragma pack(push, 1)
+typedef struct {
+    UINT32 magic;
+    UINT32 cputype;
+    UINT32 cpusubtype;
+    UINT32 filetype;
+    UINT32 ncmds;
+    UINT32 sizeofcmds;
+    UINT32 flags;
+    UINT32 reserved;
+} mach_header_64_t;
+
+typedef struct {
+    UINT32 cmd;
+    UINT32 cmdsize;
+} load_command_t;
+
+typedef struct {
+    UINT32 cmd;
+    UINT32 cmdsize;
+    char   segname[16];
+    UINT64 vmaddr;
+    UINT64 vmsize;
+    UINT64 fileoff;
+    UINT64 filesize;
+    UINT32 maxprot;
+    UINT32 initprot;
+    UINT32 nsects;
+    UINT32 flags;
+} segment_command_64_t;
+#pragma pack(pop)
+
+#define VM_MIN_KERNEL_ADDRESS 0xFFFFFF8000000000ULL
+
 /* Where a kernel payload may be linked: above the firmware's low memory and
  * inside the identity-mapped first 4 GiB (Docs/KernelHandoff.md risk notes). */
 #define KERNEL_MIN_ADDR 0x100000ULL
@@ -567,6 +613,11 @@ typedef struct {
 } bootinfo_t;
 
 static EFI_SIMPLE_FILE_SYSTEM *gFs = 0;
+UINT32 gDTPhys = 0;
+UINT32 gDTSize = 0;
+UINT32 gHandoffEntry = 0;
+UINT32 gHandoffBootArgs = 0;
+UINT32 gHandoffRsp = 0;
 
 /* Read the whole file at `path` (relative to volume root) into an
  * allocated pool buffer.  On EFI_SUCCESS, buf_out/size_out receive the
@@ -670,10 +721,69 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
     }
 }
 
+/* ---------------------------------------------------------------------- */
+/* boot_args (D3) -- byte-for-byte copy of Kernel/xnu/pexpert/pexpert/i386/boot.h */
+/* ---------------------------------------------------------------------- */
+#define BOOT_LINE_LENGTH 1024
+#define kBootArgsRevision 0
+#define kBootArgsVersion 2
+#define kBootArgsEfiMode64 64
+
+typedef struct { UINT32 v_display, v_rowBytes, v_width, v_height, v_depth;
+                 UINT8 v_rotate; UINT8 v_resv_byte[3]; UINT32 v_resv[6];
+                 UINT64 v_baseAddr; } Boot_Video;
+typedef struct { UINT32 v_baseAddr, v_display, v_rowBytes, v_width, v_height, v_depth; } Boot_VideoV1;
+
+typedef struct boot_args {
+    UINT16 Revision;
+    UINT16 Version;
+    UINT8  efiMode;
+    UINT8  debugMode;
+    UINT16 flags;
+    char   CommandLine[BOOT_LINE_LENGTH];
+    UINT32 MemoryMap;
+    UINT32 MemoryMapSize;
+    UINT32 MemoryMapDescriptorSize;
+    UINT32 MemoryMapDescriptorVersion;
+    Boot_VideoV1 VideoV1;
+    UINT32 deviceTreeP;
+    UINT32 deviceTreeLength;
+    UINT32 kaddr;
+    UINT32 ksize;
+    UINT32 efiRuntimeServicesPageStart;
+    UINT32 efiRuntimeServicesPageCount;
+    UINT64 efiRuntimeServicesVirtualPageStart;
+    UINT32 efiSystemTable;
+    UINT32 kslide;
+    UINT32 performanceDataStart;
+    UINT32 performanceDataSize;
+    UINT32 keyStoreDataStart;
+    UINT32 keyStoreDataSize;
+    UINT64 bootMemStart;
+    UINT64 bootMemSize;
+    UINT64 PhysicalMemorySize;
+    UINT64 FSBFrequency;
+    UINT64 pciConfigSpaceBaseAddress;
+    UINT32 pciConfigSpaceStartBusNumber;
+    UINT32 pciConfigSpaceEndBusNumber;
+    UINT32 csrActiveConfig;
+    UINT32 csrCapabilities;
+    UINT32 boot_SMC_plimit;
+    UINT16 bootProgressMeterStart;
+    UINT16 bootProgressMeterEnd;
+    Boot_Video Video;
+    UINT32 apfsDataStart;
+    UINT32 apfsDataSize;
+    UINT32 __reserved4[710];
+} boot_args_t;
+
+_Static_assert(sizeof(boot_args_t) == 4096, "boot_args size mismatch");
+
 /* Parse + stage the kernel image.  On success returns entry point and
  * allocates a boot stack; rsp_out receives its top. */
 static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
-                             UINT64 *entry_out, UINT64 *rsp_out)
+                             UINT64 *entry_out, UINT64 *rsp_out,
+                             UINT64 *kphys_base_out, UINT64 *kphys_size_out)
 {
     Elf64_Ehdr *eh = (Elf64_Ehdr *)file_data;
     Elf64_Phdr *ph;
@@ -811,6 +921,8 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     }
     entry = eh->Entry;
     *entry_out = entry;
+    if (kphys_base_out) { *kphys_base_out = lo; }
+    if (kphys_size_out) { *kphys_size_out = hi - lo; }
     say("RAVYNOS-KERNEL-LOAD ");
     say_dec(size);
     say(" bytes, image 0x");
@@ -820,6 +932,175 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     say(", entry 0x");
     say_hex(entry, 16);
     say("\n");
+    return 1;
+}
+
+/* Parse + stage a Mach-O 64 kernel (XNU).  On success returns the physical
+ * entry point and allocates a boot stack; rsp_out receives its top.  Also
+ * reports the physical base and span of the loaded image for boot_args. */
+static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
+                                   UINT64 *entry_out, UINT64 *rsp_out,
+                                   UINT64 *kphys_base_out, UINT64 *kphys_size_out)
+{
+    mach_header_64_t *mh = (mach_header_64_t *)file_data;
+    UINT8 *base = (UINT8 *)file_data;
+    UINT8 *lc = base + sizeof(mach_header_64_t);
+    UINTN i;
+    UINT64 entry_vm = 0;
+    UINT64 have_entry = 0;
+    UINT64 min_phys = ~0ULL, max_phys = 0;
+    UINT64 ncmds = 0;
+
+    if (size < sizeof(mach_header_64_t) || mh->magic != MH_MAGIC_64 ||
+        mh->cputype != CPU_TYPE_X86_64) {
+        say("kernel: not a Mach-O 64 x86_64 image\\n");
+        return 0;
+    }
+    if (mh->filetype != MH_EXECUTE && mh->filetype != MH_FILESET) {
+        say("kernel: Mach-O filetype not executable/fileset\\n");
+        return 0;
+    }
+    ncmds = mh->ncmds;
+    if (sizeof(mach_header_64_t) + mh->sizeofcmds > size) {
+        say("kernel: Mach-O load commands out of bounds\\n");
+        return 0;
+    }
+
+    /* First pass: load every LC_SEGMENT_64. */
+    for (i = 0; i < ncmds; i++) {
+        load_command_t *cmd = (load_command_t *)lc;
+        if (lc + sizeof(load_command_t) > base + size) {
+            break;
+        }
+        if (cmd->cmd == LC_SEGMENT_64) {
+            segment_command_64_t *seg = (segment_command_64_t *)lc;
+            UINT64 vmaddr, vmsize, fileoff, filesize;
+            UINT64 phys, pages;
+            UINTN s;
+
+            if (lc + sizeof(segment_command_64_t) > base + size) {
+                say("kernel: truncated LC_SEGMENT_64\\n");
+                return 0;
+            }
+            vmaddr = seg->vmaddr;
+            vmsize = seg->vmsize;
+            fileoff = seg->fileoff;
+            filesize = seg->filesize;
+
+            if (vmsize == 0) {
+                lc += cmd->cmdsize;
+                continue;
+            }
+            if (vmaddr < VM_MIN_KERNEL_ADDRESS) {
+                say("kernel: Mach-O segment below kernel base, refusing\\n");
+                return 0;
+            }
+            if (fileoff + filesize > size) {
+                say("kernel: Mach-O segment file extent past EOF\\n");
+                return 0;
+            }
+            if (filesize > vmsize) {
+                say("kernel: Mach-O segment FileSiz > MemSiz\\n");
+                return 0;
+            }
+
+            phys = vmaddr - VM_MIN_KERNEL_ADDRESS;
+            if (phys + vmsize < phys) {
+                say("kernel: Mach-O segment overflow\\n");
+                return 0;
+            }
+            if (phys < min_phys) { min_phys = phys; }
+            if (phys + vmsize > max_phys) { max_phys = phys + vmsize; }
+
+            {
+                UINT64 lo_page = phys & ~(EFI_PAGE_SIZE - 1);
+                UINT64 hi_page = (phys + vmsize + EFI_PAGE_SIZE - 1) &
+                                 ~(EFI_PAGE_SIZE - 1);
+                pages = (hi_page - lo_page) >> EFI_PAGE_SHIFT;
+                {
+                    UINT64 addr = lo_page;
+                    EFI_STATUS stt = bs->AllocatePages(AllocateAddress,
+                                                       EfiLoaderCode,
+                                                       (UINTN)pages, &addr);
+                    if (EFI_ERROR(stt) || addr != lo_page) {
+                        say("kernel: cannot reserve Mach-O segment 0x");
+                        say_hex(lo_page, 16);
+                        say("\\n");
+                        return 0;
+                    }
+                }
+            }
+            bs->CopyMem((void *)(UINTN)phys,
+                        base + fileoff, filesize);
+            if (vmsize > filesize) {
+                bs->SetMem((void *)(UINTN)(phys + filesize),
+                           (UINTN)(vmsize - filesize), 0);
+            }
+            (void)s;
+        }
+        if (cmd->cmdsize == 0) {
+            break;
+        }
+        lc += cmd->cmdsize;
+    }
+
+    /* Second pass: entry point. */
+    lc = base + sizeof(mach_header_64_t);
+    for (i = 0; i < ncmds; i++) {
+        load_command_t *cmd = (load_command_t *)lc;
+        if (cmd->cmdsize == 0) {
+            break;
+        }
+        if (cmd->cmd == LC_UNIXTHREAD) {
+            /* flavor, count, then x86_thread_state64_t; rip is field 16. */
+            UINT32 *p = (UINT32 *)(lc + 8);
+            UINT32 flavor = p[0];
+            UINT32 count = p[1];
+            UINT64 *state = (UINT64 *)(lc + 16);
+            (void)flavor;
+            (void)count;
+            if (count >= 17 * 2) {
+                entry_vm = state[16];
+                have_entry = 1;
+            }
+        } else if (cmd->cmd == LC_MAIN) {
+            /* entryoff is first field after cmd/cmdsize. */
+            UINT64 *off = (UINT64 *)(lc + 8);
+            entry_vm = *off + (min_phys + VM_MIN_KERNEL_ADDRESS); /* approx */
+            /* LC_MAIN entryoff is relative to __TEXT; better not use. */
+            have_entry = 0; /* prefer UNIXTHREAD */
+        }
+        lc += cmd->cmdsize;
+    }
+
+    if (!have_entry) {
+        /* Fall back: try any LC_MAIN entryoff as absolute vm? Skip. */
+        say("kernel: no LC_UNIXTHREAD entry found\\n");
+        return 0;
+    }
+    if (entry_vm < VM_MIN_KERNEL_ADDRESS) {
+        say("kernel: Mach-O entry below kernel base\\n");
+        return 0;
+    }
+
+    /* Boot stack. */
+    {
+        UINT64 stk = 0;
+        if (EFI_ERROR(bs->AllocatePages(AllocateAnyPages, EfiLoaderData,
+                                        BOOTKSTACK_SIZE / EFI_PAGE_SIZE, &stk))) {
+            say("kernel: boot stack allocation failed\\n");
+            return 0;
+        }
+        *rsp_out = stk + BOOTKSTACK_SIZE;
+    }
+
+    *entry_out = entry_vm - VM_MIN_KERNEL_ADDRESS;
+    if (kphys_base_out) { *kphys_base_out = min_phys; }
+    if (kphys_size_out) { *kphys_size_out = max_phys - min_phys; }
+
+    say("RAVYNOS-KERNEL-LOAD (macho) entry 0x");
+    say_hex(*entry_out, 16);
+    say("\\n");
     return 1;
 }
 
@@ -873,6 +1154,125 @@ static int write_bootinfo(EFI_BOOT_SERVICES *bs)
     bs->FreePool(map);
     (void)key; /* caller re-fetches key right before ExitBootServices */
     return 1;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Minimal flattened device tree (D5)                                       */
+/* ---------------------------------------------------------------------- */
+static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
+{
+    UINT64 phys = 0;
+    UINTN cap = 64 * 1024;
+    UINT8 *buf, *p;
+    EFI_STATUS stt;
+
+    stt = bs->AllocatePages(AllocateAnyPages, EfiLoaderData,
+                             (cap + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE, &phys);
+    if (EFI_ERROR(stt)) {
+        return 0;
+    }
+    buf = (UINT8 *)(UINTN)phys;
+    bs->SetMem(buf, cap, 0);
+    p = buf;
+
+#define WU32(x) do { *(UINT32 *)p = (x); p += 4; } while (0)
+#define WNAME(nm) do {         bs->SetMem(p, 32, 0);         { UINTN _i = 0; while ((nm)[_i] && _i < 31) { p[_i] = (UINT8)(nm)[_i]; _i++; } }         p += 32;     } while (0)
+#define WPROP_NAME(nm) do { WNAME(nm); } while (0)
+#define WPROP_STR(pname, sval) do {         WNAME(pname);         *(UINT32 *)p = (UINT32)(sizeof(sval)); p += 4;         bs->CopyMem(p, (sval), sizeof(sval));         p += ((sizeof(sval) + 3) & ~3u);     } while (0)
+#define WPROP_U64(pname, val) do {         WNAME(pname);         *(UINT32 *)p = 8; p += 4;         *(UINT64 *)p = (val); p += 8;     } while (0)
+
+    /* root: 1 prop (name), 2 children */
+    WU32(1); WU32(2);
+    WPROP_STR("name", "");
+
+    /* chosen */
+    WU32(1); WU32(1);
+    WPROP_STR("name", "chosen");
+    /* memory-map */
+    WU32(1); WU32(0);
+    WPROP_STR("name", "memory-map");
+
+    /* efi */
+    WU32(1); WU32(1);
+    WPROP_STR("name", "efi");
+    /* platform */
+    WU32(2); WU32(0);
+    WPROP_STR("name", "platform");
+    WPROP_U64("FSBFrequency", 100000000ULL);
+
+#undef WU32
+#undef WNAME
+#undef WPROP_STR
+#undef WPROP_U64
+
+    gDTPhys = (UINT32)phys;
+    gDTSize = (UINT32)(p - buf);
+    return gDTPhys;
+}
+
+static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
+                              UINT64 kphys_base, UINT64 kphys_size)
+{
+    UINT64 ba_phys = 0;
+    boot_args_t *ba;
+    UINTN mapsize = 0, descsize = 0, key = 0;
+    UINT32 descver = 0;
+    EFI_MEMORY_DESCRIPTOR *map = 0;
+    UINT64 total_mem = 0;
+    UINTN off;
+
+    if (EFI_ERROR(bs->AllocatePages(AllocateAnyPages, EfiLoaderData, 1, &ba_phys))) {
+        return 0;
+    }
+    ba = (boot_args_t *)(UINTN)ba_phys;
+    bs->SetMem(ba, sizeof(*ba), 0);
+
+    /* Memory map. */
+    bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
+    mapsize += 2 * descsize;
+    if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map))) {
+        return 0;
+    }
+    if (EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver))) {
+        bs->FreePool(map);
+        return 0;
+    }
+
+    ba->Revision = kBootArgsRevision;
+    ba->Version = kBootArgsVersion;
+    ba->efiMode = kBootArgsEfiMode64;
+    /* CommandLine */
+    {
+        const char *cmd = "-v debug=0x8 serial=3 keepsyms=1";
+        UINTN i = 0;
+        while (cmd[i] && i < BOOT_LINE_LENGTH - 1) {
+            ba->CommandLine[i] = cmd[i];
+            i++;
+        }
+        ba->CommandLine[i] = 0;
+    }
+    ba->MemoryMap = (UINT32)(UINTN)map;
+    ba->MemoryMapSize = (UINT32)mapsize;
+    ba->MemoryMapDescriptorSize = (UINT32)descsize;
+    ba->MemoryMapDescriptorVersion = descver;
+    ba->deviceTreeP = gDTPhys;
+    ba->deviceTreeLength = gDTSize;
+    ba->kaddr = (UINT32)kphys_base;
+    ba->ksize = (UINT32)kphys_size;
+    ba->efiSystemTable = (UINT32)(UINTN)st;
+    ba->PhysicalMemorySize = 0; /* filled below */
+    ba->FSBFrequency = 100000000ULL;
+
+    for (off = 0; off < mapsize; off += descsize) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + off);
+        if (d->Type == EfiConventionalMemory) {
+            total_mem += d->NumberOfPages * EFI_PAGE_SIZE;
+        }
+    }
+    ba->PhysicalMemorySize = total_mem;
+
+    (void)key;
+    return (UINT32)ba_phys;
 }
 
 /* Final handoff: fresh map key -> ExitBootServices -> jump.  Never returns
@@ -1089,6 +1489,38 @@ static void try_start_shell(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
     }
 }
 
+extern void xnu_handoff(void);
+
+static void handoff_to_xnu(EFI_BOOT_SERVICES *bs, EFI_HANDLE image_handle,
+                           UINT64 entry, UINT32 boot_args_phys, UINT64 rsp)
+{
+    UINTN mapsize = 0, descsize = 0, key = 0;
+    UINT32 descver = 0;
+    EFI_MEMORY_DESCRIPTOR *map = 0;
+    EFI_STATUS stt;
+
+    bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
+    mapsize += 2 * descsize;
+    bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map);
+    stt = bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver);
+    if (EFI_ERROR(stt)) {
+        say("handoff: final GetMemoryMap failed\n");
+        return;
+    }
+    say("handoff: ExitBootServices...\n");
+    stt = bs->ExitBootServices(image_handle, key);
+    if (EFI_ERROR(stt)) {
+        say("handoff: ExitBootServices refused (stale key?)\n");
+        return;
+    }
+    __asm__ volatile("cli");
+    gHandoffEntry = (UINT32)entry;
+    gHandoffBootArgs = boot_args_phys;
+    gHandoffRsp = (UINT32)rsp;
+    xnu_handoff();
+    for (;;) { __asm__ volatile("hlt"); }
+}
+
 EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
 {
     /*
@@ -1156,18 +1588,40 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                 say(" (");
                 say_dec(size);
                 say(" bytes)\n");
-                if (load_kernel_image(bs, data, size, &entry, &rsp)) {
-                    bs->FreePool(data);
-                    if (!write_bootinfo(bs)) {
-                        say("loader: no bootinfo block, not handing off\n");
-                        break;
+                {
+                    UINT64 kphys_base = 0, kphys_size = 0;
+                    int is_macho = (size >= 4 && *(UINT32 *)data == MH_MAGIC_64);
+                    int ok = 0;
+                    if (is_macho) {
+                        ok = load_macho_kernel_image(bs, data, size, &entry, &rsp,
+                                                     &kphys_base, &kphys_size);
+                    } else {
+                        ok = load_kernel_image(bs, data, size, &entry, &rsp,
+                                              &kphys_base, &kphys_size);
                     }
-                    handoff_to_kernel(bs, image_handle, entry, rsp);
-                    /* only reached if ExitBootServices refused */
-                    say("loader: handoff failed, falling back to shell\n");
-                } else {
-                    bs->FreePool(data);
-                    say("loader: kernel payload rejected, falling back to shell\n");
+                    if (ok) {
+                        bs->FreePool(data);
+                        if (is_macho) {
+                            build_device_tree(bs);
+                            UINT32 bargs = build_boot_args(bs, st, kphys_base, kphys_size);
+                            if (!bargs) {
+                                say("loader: no boot_args, not handing off\n");
+                                break;
+                            }
+                            handoff_to_xnu(bs, image_handle, entry, bargs, rsp);
+                        } else {
+                            if (!write_bootinfo(bs)) {
+                                say("loader: no bootinfo block, not handing off\n");
+                                break;
+                            }
+                            handoff_to_kernel(bs, image_handle, entry, rsp);
+                        }
+                        /* only reached if ExitBootServices refused */
+                        say("loader: handoff failed, falling back to shell\n");
+                    } else {
+                        bs->FreePool(data);
+                        say("loader: kernel payload rejected, falling back to shell\n");
+                    }
                 }
                 break;
             }

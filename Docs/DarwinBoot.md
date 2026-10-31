@@ -182,3 +182,9 @@ XNU DEVELOPER_DIR on macOS; wrote this plan.
 Evidence: `RAVYNOS-KERNEL-OK` … `RAVYNOS-KSHELL-OK` on local OVMF boot;
 `xcrun -sdk macosx -find nm` resolves with the new DEVELOPER_DIR.
 Next: D1.
+
+### 2026-10-31 — D4 progress
+Did: added Mach-O 64 loader (LC_SEGMENT_64/LC_UNIXTHREAD), 32-bit protected-mode trampoline, boot_args struct (static_assert 4096), minimal device tree with /efi/platform FSBFrequency, and \System\Library\Kernels\kernel path; loader builds.
+Evidence: `tools/bootloader/build.sh` -> "wrote .../BOOTX64.EFI (12288 bytes)"; run-tests.sh loader layer ok; no QEMU on host so RAVYNOS-MACHO-OK not yet captured.
+Cites: tools/bootloader/uefi_stub.c (load_macho_kernel_image, build_boot_args, build_device_tree); tools/bootloader/xnu_handoff.S; Kernel/xnu/pexpert/pexpert/i386/boot.h:160-210; Kernel/xnu/osfmk/x86_64/start.s:136-210; Kernel/xnu/osfmk/mach/i386/vm_param.h:197.
+Next: obtain QEMU/OVMF (macOS host) to capture RAVYNOS-MACHO-OK; D1 XNU build still blocked by missing bmake/mig on this Linux host.
