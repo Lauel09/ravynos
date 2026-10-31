@@ -14,6 +14,11 @@
 #   --expect-any        succeed when any expectation is seen, not all
 #   --timeout SECONDS   give up after this long (default 60)
 #   --mem SIZE          guest RAM (default 2G)
+#   --disk-interface IF virtio | ide | ahci | scsi for .img boots (default
+#                       virtio).  Evidence, not decoration: a media that one
+#                       block driver mounts and another does not is a driver
+#                       bug, and the only way to see that is to vary the
+#                       interface while everything else stays identical.
 #   --kernel PATH       boot PATH directly with -kernel instead of the image's
 #                       bootloader (early kernel bring-up)
 #   --append STRING     kernel command line for -kernel boots
@@ -25,6 +30,10 @@
 #                       (default 8; firmware needs time to reach a prompt)
 #   --send-interval S   gap between typed lines (default 2)
 #   --screenshot        capture a framebuffer screenshot via the QEMU monitor
+#   --postmortem        on a failed boot, ask the still-running guest what it
+#                       was doing: CPU registers, the memory region that owns
+#                       RIP, and a decode of the bytes there (default: on)
+#   --no-postmortem     skip that dump
 #   --outdir DIR        where serial.log / qemu.log / screenshot land; a fresh
 #                       temp dir by default, always printed
 #   --json PATH         write a machine-readable verdict record
@@ -55,6 +64,7 @@ IMAGE=
 EXPECT=
 TIMEOUT=${BOOTCHECK_TIMEOUT:-60}
 MEM=${BOOTCHECK_MEM:-2G}
+DISK_IF=${BOOTCHECK_DISK_IF:-virtio}
 QEMU=${BOOTCHECK_QEMU:-qemu-system-x86_64}
 KERNEL=
 APPEND=
@@ -67,6 +77,8 @@ QUIET=${QUIET:-0}
 SEND_FILE=
 SEND_DELAY=${BOOTCHECK_SEND_DELAY:-8}
 SEND_INTERVAL=${BOOTCHECK_SEND_INTERVAL:-2}
+POSTMORTEM=${BOOTCHECK_POSTMORTEM:-1}
+POST_LOG=  # set below: $OUTDIR/postmortem.log
 
 MILESTONES="RAVYNOS-LOADER-OK RAVYNOS-KERNEL-OK RAVYNOS-ROOT-MOUNT-OK RAVYNOS-USERSPACE-OK"
 
@@ -82,6 +94,7 @@ while [ $# -gt 0 ]; do
         --expect-any) EXPECT_ANY=1 ;;
         --timeout)    TIMEOUT=$2; shift ;;
         --mem)        MEM=$2; shift ;;
+        --disk-interface) DISK_IF=$2; shift ;;
         --kernel)     KERNEL=$2; shift ;;
         --append)     APPEND=$2; shift ;;
         --uefi)       UEFI=1 ;;
@@ -89,6 +102,8 @@ while [ $# -gt 0 ]; do
         --send-delay)    SEND_DELAY=$2; shift ;;
         --send-interval) SEND_INTERVAL=$2; shift ;;
         --screenshot)    SCREENSHOT=1 ;;
+        --postmortem)    POSTMORTEM=1 ;;
+        --no-postmortem) POSTMORTEM=0 ;;
         --outdir)     OUTDIR=$2; shift ;;
         --json)       JSON_OUT=$2; shift ;;
         -q|--quiet)   QUIET=1 ;;
@@ -106,6 +121,11 @@ done
 [ -n "$EXPECT" ] || EXPECT=RAVYNOS-BOOTCHECK-STUB-OK
 have "$QEMU" || { printf 'bootcheck: missing %s\n' "$QEMU" >&2; exit 2; }
 case $TIMEOUT in ''|*[!0-9]*) printf 'bootcheck: --timeout must be seconds\n' >&2; exit 2 ;; esac
+case $DISK_IF in
+    virtio|ide|ahci|scsi|none) ;;
+    *)  printf 'bootcheck: --disk-interface must be virtio, ide, ahci, scsi or none\n' >&2
+        exit 2 ;;
+esac
 case $SEND_DELAY$SEND_INTERVAL in ''|*[!0-9]*)
     printf 'bootcheck: --send-delay/--send-interval must be seconds\n' >&2
     exit 2 ;;
@@ -124,6 +144,7 @@ LOG="$OUTDIR/serial.log"
 QEMU_LOG="$OUTDIR/qemu.log"
 SHOT="$OUTDIR/screenshot.ppm"
 MON="$OUTDIR/monitor.sock"
+POST_LOG="$OUTDIR/postmortem.log"
 SERIAL_SOCK="$OUTDIR/serial.sock"
 rm -f "$SERIAL_SOCK"
 : > "$LOG"
@@ -245,7 +266,7 @@ if [ -n "$KERNEL" ]; then
     [ -n "$APPEND" ] && set -- "$@" -append "$APPEND"
 else
     case $IMAGE in
-        *.img|*.raw) set -- "$@" -drive "file=$IMAGE,format=raw,if=virtio" ;;
+        *.img|*.raw) set -- "$@" -drive "file=$IMAGE,format=raw,if=$DISK_IF" ;;
         *)           set -- "$@" -cdrom "$IMAGE" -boot d ;;
     esac
 fi
@@ -441,6 +462,36 @@ if [ "$running" = 1 ] && [ "$SCREENSHOT" = 1 ]; then
         warn "could not take a screenshot (monitor socket $MON)"
     fi
 fi
+# --------------------------------------------------------------------------
+# Post-mortem
+#
+# A boot that dies before its first marker leaves nothing but silence, and the
+# firmware's own exception dump says where the CPU was, not what it was
+# executing.  The guest is still alive at this point (the poll loop only leaves
+# a running guest when it timed out), so ask it directly -- but only when the
+# boot is already known to have failed, never on a pass, and never in a way
+# that can change the verdict.
+# --------------------------------------------------------------------------
+poll_pass=0
+if [ "$EXPECT_ANY" = 1 ]; then
+    [ "$found" -gt 0 ] && poll_pass=1
+else
+    [ -z "$missing" ] && poll_pass=1
+fi
+
+post_dumped=0
+if [ "$running" = 1 ] && [ "$POSTMORTEM" = 1 ] && [ "$poll_pass" = 0 ]; then
+    PY=$(find_python) || PY=
+    if [ -n "$PY" ] && [ -f "$SCRIPT_DIR/bootcheck-postmortem.py" ]; then
+        if "$PY" "$SCRIPT_DIR/bootcheck-postmortem.py" \
+                --monitor "$MON" --out "$POST_LOG" --serial "$LOG" >/dev/null 2>&1; then
+            post_dumped=1
+        else
+            warn "could not collect a post-mortem dump (monitor $MON)"
+        fi
+    fi
+fi
+
 if [ "$running" = 1 ]; then
     mon_cmd "quit" || kill "$QPID" 2>/dev/null || true
 fi
@@ -503,6 +554,11 @@ if [ "$rc" != 0 ]; then
         tail -20 "$QEMU_LOG"
     fi
     [ -f "$SHOT" ] && printf 'screenshot: %s\n' "$SHOT"
+    if [ "$post_dumped" = 1 ]; then
+        printf -- '---- post-mortem ----\n'
+        head -40 "$POST_LOG"
+        printf 'post-mortem: %s\n' "$POST_LOG"
+    fi
 fi
 
 if [ -n "$JSON_OUT" ]; then
@@ -515,10 +571,11 @@ if [ -n "$JSON_OUT" ]; then
         fi
         "$PY" - "$JSON_OUT" "$IMAGE" "$rc" "$elapsed" "${ACCEL:-tcg}" \
             "$QSTATUS" "$LOG" "$QEMU_LOG" "$missing" "$markers_arg" \
-            "$SCREENSHOT" "$SHOT" "$json_sent" <<'PY' || warn "could not write $JSON_OUT"
+            "$SCREENSHOT" "$SHOT" "$json_sent" "$POST_LOG" "$post_dumped" \
+            <<'PY' || warn "could not write $JSON_OUT"
 import json, os, sys
 (out, image, rc, elapsed, accel, qstatus, log, qemu_log, missing,
- markers_arg, screenshot, shot) = sys.argv[1:]
+ markers_arg, screenshot, shot, post_log, post_dumped) = sys.argv[1:]
 record = {
     "schema": 1,
     "image": os.path.abspath(image),
@@ -534,6 +591,7 @@ record = {
     "serial_bytes": os.path.getsize(log) if os.path.exists(log) else 0,
     "screenshot": shot if screenshot == "1" and os.path.exists(shot) else None,
     "sent_lines": int(json_sent or 0),
+    "postmortem": post_log if post_dumped == "1" and os.path.exists(post_log) else None,
 }
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(record, fh, indent=2, sort_keys=True)
