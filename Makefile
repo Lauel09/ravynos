@@ -106,6 +106,21 @@ MK_TOOLCHAIN ?= yes
 .if ${MK_TOOLCHAIN} == "yes"
 TOOLCHAIN = ${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform/Developer/Toolchains/Default.xctoolchain
 .endif
+
+# On Darwin prefer the in-tree built toolchain whenever it exists.  sys.mk
+# defaults TOOLCHAIN to /Library/Developer/Toolchains/Default.xctoolchain,
+# and if an Xcode-installed bundle occupies that path then MK_TOOLCHAIN
+# stays "no" and XCRUN (${TOOLS}/xcrun) becomes Apple's xcrun, which
+# rejects the DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer that Kernel/Makefile
+# hands to xnu: "xcrun: error: invalid DEVELOPER_DIR path (…), missing
+# xcrun at: …/usr/bin/xcrun" (DarwinBoot.md §4, 2026-11-01).  The built
+# xcbuild xcrun accepts that DEVELOPER_DIR -- it finds tools under
+# $DEVELOPER_DIR/Toolchains, which Kernel/Makefile xnu_devdir links --
+# and was hand-verified in §1.
+.if "${.MAKE.OS}" == "Darwin" && exists(${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform/Developer/Toolchains/Default.xctoolchain)
+MK_TOOLCHAIN = no
+TOOLCHAIN = ${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform/Developer/Toolchains/Default.xctoolchain
+.endif
 TOOLS = ${TOOLCHAIN}/usr/bin
 DEVEL = ${ROOT_SOURCE_DIR}/Developer
 

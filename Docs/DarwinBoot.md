@@ -254,3 +254,40 @@ RAVYNOS-KSHELL-OK
 Reading: macho path now prints a clean line then the stub's COM1 marker; ELF
 regression intact. No fixes needed. D4 remains DONE; \n fix verified.
 Next: D1 -- user to run `./tools/darwin-gate.sh xnu` and paste its output.
+
+### 2026-11-01 — D1 gate run 1 (user Mac): xcrun rejects DEVELOPER_DIR
+Output (verbatim):
+```
+832:xcrun: error: invalid DEVELOPER_DIR path (/Users/solus/Documents/test-ravyn-os/build/Developer), missing xcrun at: /Users/solus/Documents/test-ravyn-os/build/Developer/usr/bin/xcrun
+833:gmake[7]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/SETUP/installfile/Makefile:35: installfile.o] Error 1
+835:gmake[6]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/makedefs/MakeInc.dir:59: build_setup] Error 2
+837:gmake[5]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/makedefs/MakeInc.dir:60: build_setup_recurse_into_installfile] Error 2
+838:gmake[5]: *** Waiting for unfinished jobs....
+839:xcrun: error: invalid DEVELOPER_DIR path (/Users/solus/Documents/test-ravyn-os/build/Developer), missing xcrun at: /Users/solus/Documents/test-ravyn-os/build/Developer/usr/bin/xcrun
+840:gmake[7]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/SETUP/kextsymboltool/Makefile:40: kextsymboltool.o] Error 1
+842:gmake[6]: *** [/Users/solus/Documents/test-ravyn-os/ravynos/Kernel/xnu/makedefs/MakeInc.dir:59: build_setup] Error 2
+```
+Diagnosis (from output + source; no "unable to find sdk" this time -- §1's
+fix held, the build got as far as compiling SETUP tools):
+* The failing xcrun demands an Apple-style DEVELOPER_DIR containing
+  `usr/bin/xcrun`. The string "invalid DEVELOPER_DIR path"/"missing xcrun
+  at" exists nowhere in this repo or its git history (the built xcbuild
+  xcrun, Developer/Default.xctoolchain/xcbuild/…/xcrun.cpp:276-279, finds
+  the developer root and toolchains under $DEVELOPER_DIR/Toolchains and
+  printed "error: unable to find sdk" in attempt33) -- so the xcrun that
+  ran is Apple's.
+* Chain: xnu's MakeInc.cmd:42-46 uses the XCRUN env var, which
+  Kernel/Makefile passes as ${XCRUN} = ${TOOLS}/xcrun (sys.mk:287,
+  Makefile:109). TOOLCHAIN starts at sys.mk:113 =
+  /Library/Developer/Toolchains/Default.xctoolchain; Makefile:99-104 then
+  sets MK_TOOLCHAIN=no if that path exists, so ${TOOLS}/xcrun becomes the
+  Apple bundle's xcrun -- and DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer
+  (Kernel/Makefile:35-38, passed at :55-56/:84) has no usr/bin/xcrun.
+  §1's hand-test used the *built* xcbuild xcrun by absolute path, which
+  is why it worked while the build used Apple's.
+Fix (attempt 1): Makefile now prefers the in-tree built toolchain on
+Darwin when it exists (guarded by .MAKE.OS), so XCRUN is the built
+xcbuild xcrun that §1 verified against DEVELOPER_DIR=build/Developer.
+Cites: Makefile:99-107 (MK_TOOLCHAIN), sys.mk:113,152,287;
+Kernel/Makefile:35-38,54-56,84; Kernel/xnu/makedefs/MakeInc.cmd:42-58;
+Kernel/xnu/SETUP/installfile/Makefile:33-35; xcrun.cpp:276-279.
