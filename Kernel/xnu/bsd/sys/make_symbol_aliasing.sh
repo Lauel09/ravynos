@@ -40,7 +40,12 @@ if [ ! -x "${AVAILABILITY_PL}" ] ; then
     echo "Unable to locate ${AVAILABILITY_PL} (or not executable)" >&2
     exit 1
 fi
-	    
+
+# The installed header can be read-only after a previous header install.
+# Replace it by rename instead of reopening it for writing.
+OUTPUT_TMP=$(mktemp "${OUTPUT}.tmp.XXXXXX") || exit 1
+trap 'rm -f "$OUTPUT_TMP"' EXIT
+
 {
 cat <<EOF
 /* Copyright (c) 2010 Apple Inc. All rights reserved.
@@ -115,5 +120,12 @@ for ver in $(${AVAILABILITY_PL} --macosx) ; do
     echo "#endif"
     echo ""
 done
-} > "$OUTPUT"
+} > "$OUTPUT_TMP"
+status=$?
 
+if [ "$status" -eq 0 ]; then
+    chmod 0644 "$OUTPUT_TMP" && mv -f "$OUTPUT_TMP" "$OUTPUT"
+    status=$?
+fi
+
+exit "$status"
