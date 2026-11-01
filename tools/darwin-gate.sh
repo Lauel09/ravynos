@@ -43,6 +43,26 @@ if [ "${1:-}" = "xnu" ]; then
     KERNEL="$ROOT/../build/sysroot/System/Library/Kernels/kernel"
     rm -f "$KERNEL"
 
+    # XNU's setup objects do not depend on HOST_SDKROOT or compiler flags.
+    # Recompile only the known objects affected by the host-SDK correction;
+    # do not disturb unrelated build products.
+    SETUP_OBJROOT="$ROOT/../build$ROOT/Kernel/xnu/SETUP"
+    rm -f \
+        "$SETUP_OBJROOT/config/externs.o" \
+        "$SETUP_OBJROOT/config/main.o" \
+        "$SETUP_OBJROOT/config/mkheaders.o" \
+        "$SETUP_OBJROOT/config/mkioconf.o" \
+        "$SETUP_OBJROOT/config/mkmakefile.o" \
+        "$SETUP_OBJROOT/config/openp.o" \
+        "$SETUP_OBJROOT/config/searchp.o" \
+        "$SETUP_OBJROOT/config/lexer.yy.o" \
+        "$SETUP_OBJROOT/config/parser.o" \
+        "$SETUP_OBJROOT/decomment/decomment.o" \
+        "$SETUP_OBJROOT/installfile/installfile.o" \
+        "$SETUP_OBJROOT/replacecontents/replacecontents.o" \
+        "$SETUP_OBJROOT/setsegname/setsegname.o" \
+        "$SETUP_OBJROOT/kextsymboltool/kextsymboltool.o"
+
     echo "D1: building Kernel (build-xnu.log)"
     if "$BMAKE" Kernel >"$ROOT/build-xnu.log" 2>&1; then
         :
