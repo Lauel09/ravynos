@@ -38,9 +38,25 @@ PLATFORM_DIR=${ROOT_BINARY_DIR}/Developer/Platforms/ravynOS.platform
 # $DEVELOPER_DIR/Toolchains). DEVELOPER_DIR itself must stay the CLT: the host
 # /usr/bin/clang is Apple's xcrun shim and rejects any other directory.
 XNU_DEVELOPER_DIR=/Library/Developer/CommandLineTools
+# SETUP programs are host executables.  They must use the host macOS SDK,
+# not the incompletely populated ravynOS target SDK that XNU itself is
+# installing headers into.  Keep the Linux/default xcrun resolution unchanged.
+XNU_INSTALL_HOST_SDKROOT=${RAVYN_SDKROOT}
+XNU_INSTALL_HOST_SDKROOT_RESOLVED=
+XNU_INSTALL_HOST_TOOL_ARGS=
+XNU_ALL_HOST_ARGS=
 .if "${.MAKE.OS}" == "Darwin"
 RAVYN_DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer
 XNU_XCRUN=env DEVELOPER_DIR=${RAVYN_DEVELOPER_DIR} ${XCRUN}
+XNU_INSTALL_HOST_SDKROOT=${XNU_DEVELOPER_DIR}/SDKs/MacOSX.sdk
+XNU_INSTALL_HOST_SDKROOT_RESOLVED=${XNU_INSTALL_HOST_SDKROOT}
+# The ravynOS xcrun only knows SDKs in RAVYN_DEVELOPER_DIR, so do not ask it
+# to resolve host tools through the external Apple SDK used for -isysroot.
+XNU_INSTALL_HOST_TOOL_ARGS=HOST_GM4=m4
+XNU_ALL_HOST_ARGS=HOST_SDKROOT=${XNU_INSTALL_HOST_SDKROOT} \
+	HOST_SDKROOT_RESOLVED=${XNU_INSTALL_HOST_SDKROOT_RESOLVED} \
+	HOST_FLEX=flex HOST_BISON=bison HOST_GM4=m4 \
+	HOST_CODESIGN_ALLOCATE=/bin/true
 .else
 XNU_XCRUN=${XCRUN}
 .endif
@@ -63,14 +79,15 @@ installhdrs: .PHONY xnu_devdir
 		CC=${CC} CXX=${CXX} HOST_OS_VERSION=${MACOS_VERSION_MIN} \
 		UNIFDEF=${UNIFDEF} CTFCONVERT=${CTFCONVERT} \
 		CTFMERGE=${CTFMERGE} CTFINSERT=${CTFINSERT} \
-		HOST_SDKROOT=${RAVYN_SDKROOT} VERBOSE=yes \
+		HOST_SDKROOT=${XNU_INSTALL_HOST_SDKROOT} \
+		HOST_SDKROOT_RESOLVED=${XNU_INSTALL_HOST_SDKROOT_RESOLVED} VERBOSE=yes \
 		AVAILABILITY_PL=${AVAILABILITY_PL} SDKROOT=macosx \
 		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} XCRUN="${XNU_XCRUN}" \
 		KERNEL_CONFIGS=${KERNEL_CONFIGS} ARCH_CONFIGS=${ARCH_CONFIGS} \
 		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} HOST_FLEX=flex \
 		SYMROOT=${ROOT_BINARY_DIR} HOST_CC=${HOST_CC} HOST_BISON=bison \
 		HOST_CXX=${HOST_CXX} HOST_LD=${HOST_LD} \
-		HOST_CODESIGN_ALLOCATE=/bin/true installhdrs
+		HOST_CODESIGN_ALLOCATE=/bin/true ${XNU_INSTALL_HOST_TOOL_ARGS} installhdrs
 
 libfirehose_kernel: .PHONY
 	${MAKE} -C ${ROOT_SOURCE_DIR}/Libraries/libfirehose_kernel all
@@ -97,6 +114,7 @@ xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt
 		HOST_OS_VERSION=${MACOS_VERSION_MIN} VERBOSE=yes \
 		AVAILABILITY_PL_PATH=${AVAILABILITY_PL_PATH} \
 		DEVELOPER_DIR=${XNU_DEVELOPER_DIR} \
+		${XNU_ALL_HOST_ARGS} \
 		LIBTOOL=${TOOLCHAIN}/usr/bin/libtool VERBOSE=yes \
 		KERNEL_CONFIGS=${KERNEL_CONFIGS} ARCH_CONFIGS=${ARCH_CONFIGS} \
 		HOST_CC=${HOST_CC} HOST_CXX=${HOST_CXX} HOST_LD=${HOST_LD} all install

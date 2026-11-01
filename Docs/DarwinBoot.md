@@ -440,3 +440,32 @@ Developer/ravynOS.sdk/Makefile:18-48; Kernel/Makefile:85-113;
 Kernel/xnu/makedefs/MakeInc.def:902-931.
 Next: on the Mac run `./tools/darwin-gate.sh xnu`; paste its output here. A
 failure now returns nonzero and names either build-sdk.log or build-xnu.log.
+
+### 2026-11-02 — D1 run 5: separate host SDK from the target SDK
+Output (verbatim):
+```
+215:install: .../libsystem_c/libdarwin/h/dirstat.h: No such file or directory
+747:.../ravynOS.sdk/usr/include/sys/_types.h:33:10: fatal error: 'machine/_types.h' file not found
+751:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+Diagnosis: two independent source defects. The libc header script still points
+at the removed `libsystem_c/libdarwin` directory; the identical header now lives
+in `libsystem_darwin/h`. More importantly, XNU's SETUP programs are host tools,
+but Kernel/Makefile forced their `-isysroot` to the incomplete target SDK.
+Upstream normally resolves HOST_SDKROOT as the host macOS SDK.
+Did: corrected the dirstat source path. On Darwin, pass the CLT MacOSX.sdk as
+HOST_SDKROOT(_RESOLVED) to both XNU invocations; supply host flex/bison/m4 and
+codesign-allocation settings directly because ravynOS xcrun cannot resolve
+tools through that external SDK. Linux's xnu_all host-argument list stays empty.
+No DEVELOPER_DIR/XCRUN handling changed.
+Evidence: bmake 20200212 parsed both branches; Darwin `xnu_all` dry-run contains
+the CLT SDK and explicit host tools, Linux's XNU_ALL_HOST_ARGS is empty;
+`bash -n headers.sh`, dirstat existence and `git diff --check` passed. Real macOS
+D1 gate not run here.
+Cites: Libraries/Libsystem/libsystem_c/xcodescripts/headers.sh:195-203;
+Libraries/Libsystem/libsystem_darwin/h/dirstat.h; Kernel/Makefile:42-68,81-91,108-123;
+Kernel/xnu/makedefs/MakeInc.cmd:52-71,209-228;
+Kernel/xnu/SETUP/replacecontents/Makefile:14-15;
+Developer/Default.xctoolchain/xcbuild/Libraries/xcsdk/Tools/xcrun.cpp:305-308.
+Next: pull this change on the Mac and rerun `./tools/darwin-gate.sh xnu`.
