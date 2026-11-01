@@ -469,3 +469,47 @@ Kernel/xnu/makedefs/MakeInc.cmd:52-71,209-228;
 Kernel/xnu/SETUP/replacecontents/Makefile:14-15;
 Developer/Default.xctoolchain/xcbuild/Libraries/xcsdk/Tools/xcrun.cpp:305-308.
 Next: pull this change on the Mac and rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 6: dirstat fixed; setup recursion still uses the target SDK
+Key output (verbatim snippets):
+```
+.../ravynOS.sdk/usr/include/sys/_types.h:33:10: fatal error: 'machine/_types.h' file not found
+ld: library 'bsd' not found
+"_fstat$INODE64", referenced from:
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+The real Mac run confirms that the dirstat source-path correction worked, but
+D1 still fails. The first `gmake` contains the CLT host SDK while effective leaf
+setup compiles still select ravynOS headers. Run 5's top-level-only dry-run was
+therefore insufficient evidence. Four setup Makefiles also compare `uname` to
+the quoted string `"Darwin"`; that GNU-make condition is always false, sending
+`replacecontents` through its non-Darwin `-lbsd` branch. Setup objects have no
+dependency on SDK/flag changes, so previously compiled objects can also survive
+into the `_fstat$INODE64` links. The repeated
+`/bin/sh: 6-${\#__A}: bad substitution` messages remain unassigned to a source
+line; no speculative shell rewrite is included.
+
+Did (run-7 candidate, not a gate pass): explicitly propagate HOST_SDKROOT,
+HOST_SDKROOT_RESOLVED, HOST_FLEX, HOST_BISON, HOST_GM4, and
+HOST_CODESIGN_ALLOCATE through both XNU recursion templates; use the existing
+OPSYS value for the four Darwin setup conditionals; delete only the 14 known
+setup object files before the gated build; and change `VERBOSE=yes` to the
+`VERBOSE=YES` spelling XNU checks so subsequent logs contain effective commands.
+The user-owned DEVELOPER_DIR/XCRUN handling is unchanged.
+
+Evidence: the actual recursive XNU `build_setup` rules passed a dry-run with
+OPSYS=Darwin: each of the six host variables appeared on 21 nested assignments,
+20 effective compile/link commands used `/CLT`, and none used a ravynOS sysroot
+or combined that sysroot with `-lbsd`. The same dry-run with OPSYS=Linux retained
+21 explicit assignments, added no macOS sysroot/deployment flags, and retained
+three expected `-lbsd` commands. Direct probes of all six setup Makefiles passed
+for Darwin and Linux flag selection. The gate cleanup fixture removed its listed
+object while preserving two unlisted objects. `bash -n`/`sh -n` on the gate and
+`git diff --check` passed. No real macOS D1 pass is claimed from these checks.
+Cites: Kernel/xnu/makedefs/MakeInc.top:324-329;
+Kernel/xnu/makedefs/MakeInc.dir:34-39,55-60;
+Kernel/xnu/SETUP/{config,decomment,replacecontents,setsegname}/Makefile;
+tools/darwin-gate.sh:46-64; Kernel/Makefile:83,114,118.
+Next: pull this candidate on the Mac and rerun `./tools/darwin-gate.sh xnu`.
+D1 still requires `D1 GATE PASSED`, the exact staged kernel path, and genuine
+`Mach-O 64-bit executable x86_64` identification.
