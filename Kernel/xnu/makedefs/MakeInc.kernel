@@ -26,6 +26,14 @@ ifeq ($(filter $(PLATFORM),$(SUPPORTED_PLATFORMS)),)
 $(error Unsupported PLATFORM $(PLATFORM))
 endif
 
+# macOS builds stage the profiling runtime beside the other kernel archives.
+# Keep the original Libraries build path on other hosts.
+ifeq ($(OPSYS),Darwin)
+XNU_PROFILE_RT_DIR = $(RAVYN_SDKROOT)/usr/local/lib/kernel
+else
+XNU_PROFILE_RT_DIR = $(OBJROOT)/../../Libraries/llvm_target/compiler-rt/lib/ravynos
+endif
+
 ifeq ($(BUILD_JSON_COMPILATION_DATABASE),1)
 do_build_setup::
 	$(_v)$(CAT) > $(OBJPATH)/compile_commands.json < /dev/null
@@ -141,7 +149,7 @@ ifeq ($(PRE_LTO),1)
 else
 	$(call makelog,$(ColorL)LD$(Color0)  $(ColorLF)$(@F)$(Color0))
 	$(_v)$(CAT) $(filter %.filelist,$+) < /dev/null > link.filelist
-	$(_v)$(LD) $(LDFLAGS_KERNEL) $(LDFLAGS_KERNEL_EXPORTS) -filelist link.filelist version.o $(filter %.o,$+) -o $@ $(LD_KERNEL_LIBS) $(LD_KERNEL_ARCHIVES) -L$(OBJROOT)/../../Libraries/llvm_target/compiler-rt/lib/ravynos -lclang_rt.profile_osx
+	$(_v)$(LD) $(LDFLAGS_KERNEL) $(LDFLAGS_KERNEL_EXPORTS) -filelist link.filelist version.o $(filter %.o,$+) -o $@ $(LD_KERNEL_LIBS) $(LD_KERNEL_ARCHIVES) -L$(XNU_PROFILE_RT_DIR) -lclang_rt.profile_osx
 endif
 
 

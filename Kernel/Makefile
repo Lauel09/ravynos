@@ -98,6 +98,10 @@ compiler_rt: .PHONY
 	  ${RAVYN_SDKROOT}/usr/lib/libclang_rt.osx.a
 	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.cc_kext.a \
 	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libcc_kext.a
+.if "${.MAKE.OS}" == "Darwin"
+	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.profile_osx.a \
+	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libclang_rt.profile_osx.a
+.endif
 
 xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt
 	PATH="${PATH}" SHELL=/bin/bash ${GMAKE} -C ${.CURDIR}/xnu LOGCOLORS=y \
