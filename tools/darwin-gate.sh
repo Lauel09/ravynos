@@ -23,7 +23,7 @@ if [ "${1:-}" = "xnu" ]; then
 
     show_build_errors() {
         log=$1
-        grep -n -m8 -E "error:|\*\*\* |No rule|unable to find sdk|No such file" \
+        grep -n -m8 -E "error:|\*\*\* |No rule|unable to find sdk|No such file|Permission denied" \
             "$log" || tail -20 "$log"
     }
 
