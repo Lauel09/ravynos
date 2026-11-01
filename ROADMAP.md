@@ -7,7 +7,7 @@
 > for the next D1 verdict. Everything below is background; the OVMF
 > `#UD 0xB0000` "blocker" does not reproduce locally and is deprioritised.**
 
-**Last updated:** 2026-11-02 (rev 9: D1 reaches the final XNU link; Darwin profiling-runtime staging corrected; macOS gate pending)
+**Last updated:** 2026-11-02 (rev 10: D1 incremental SDK header regeneration corrected; profiling-runtime and final-kernel gate verdicts pending)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**

@@ -549,3 +549,33 @@ Developer/Default.xctoolchain/llvm/compiler-rt/lib/profile/InstrProfilingBuffer.
 Next: update the Mac to this candidate and rerun `./tools/darwin-gate.sh xnu`.
 The acceptance bar remains a fresh staged x86_64 Mach-O kernel and an explicit
 `D1 GATE PASSED` verdict.
+
+### 2026-11-02 — D1 run 8: SDK refresh cannot replace _symbol_aliasing.h
+Output (verbatim):
+```
+make_symbol_aliasing.sh: line 118: .../usr/include/sys/_symbol_aliasing.h: Permission denied
+*** Error code 1
+D1: SDK refresh failed; full log: .../ravynos/build-sdk.log
+```
+This run stopped before the Kernel stage, so the run-8 profiling-runtime
+candidate still has no real Mac verdict. The generator previously reopened the
+existing output with `> "$OUTPUT"`; the immediately preceding header copy in
+the same directory succeeded, identifying the existing output file rather than
+an unwritable directory as the obstacle.
+
+Did (run-9 candidate, not a gate pass): generate into a same-directory mktemp
+file, chmod it 0644, and atomically rename it over the old header while
+preserving the generation/mv exit status and cleaning temporary files. This
+avoids reopening the installed header and preserves the old file if generation
+fails. Also add `Permission denied` to the gate's diagnostic filter so this
+failure appears directly next time.
+Evidence: with a fake availability tool, the old and new generators produced
+byte-identical output; the new generator replaced an existing 0444 header,
+restored mode 0644, and left no temporary files. An invalid output directory
+still returned 1. `bash -n` on the generator, `bash -n`/`sh -n` on the gate, a
+filter fixture, and `git diff --check` passed.
+Cites: Kernel/xnu/bsd/sys/make_symbol_aliasing.sh:44-47,123-131;
+Developer/ravynOS.sdk/Makefile:53-55; tools/darwin-gate.sh:24-27.
+Next: update the Mac and rerun `./tools/darwin-gate.sh xnu`. A successful SDK
+refresh must be followed by the still-unverified profiling-runtime link and the
+fresh x86_64 Mach-O artifact check before D1 can pass.
