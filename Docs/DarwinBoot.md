@@ -315,3 +315,112 @@ instruction the DEVELOPER_DIR/XCRUN handling in Kernel/Makefile is the
 user's to own. My Makefile:99-107 in-tree-toolchain preference (b1ae45e94)
 stays.
 Cites: Kernel/Makefile:35-42,65,93 (b6ac3a8d8); commit b6ac3a8d8.
+
+### 2026-11-01 — D1 gate run 3: xcrun fixed; SDK header compile errors
+Output (verbatim):
+```
+854:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:104:44: error: expected ';' after top level declarator
+857:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:107:50: error: expected ';' after top level declarator
+860:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:108:49: error: expected ';' after top level declarator
+863:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:111:48: error: expected ';' after top level declarator
+866:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/mach/arm/vm_types.h:112:49: error: expected ';' after top level declarator
+871:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:561:30: error: a parameter list without types is only allowed in a function definition
+874:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:561:42: error: expected ';' at end of declaration list
+877:/Users/solus/Documents/test-ravyn-os/build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk/usr/include/sys/socket.h:565:30: error: a parameter list without types is only allowed in a function definition
+```
+Reading: the xcrun/DEVELOPER_DIR failure is gone (user's b6ac3a8d8 + this
+branch's toolchain preference); SETUP tools built, installhdrs ran, and the
+kernel compile now fails on the INSTALLED SDK headers. The in-repo sources
+do not line up with the built-SDK line numbers (Kernel/xnu/osfmk/mach/arm/
+vm_types.h:104 is a plain `typedef uint64_t mach_vm_address_t;`; xnu's
+header install transforms headers, so the installed copies differ). Both
+error classes look like a declaration whose trailing macro/parameters did
+not expand as expected -- not guessing further until the clang source-echo
+lines are seen. Compiler is the in-tree LLVM 17.0.6
+(Developer/Default.xctoolchain/llvm/llvm/CMakeLists.txt LLVM_VERSION_*).
+Next: two greps of the existing build-xnu.log (no rebuild) to capture the
+echoed source line + caret + compile unit for vm_types.h:104 and
+socket.h:561.
+Cites: Kernel/xnu/osfmk/mach/arm/vm_types.h:100-112; Kernel/xnu/bsd/sys/socket.h:555-565;
+Kernel/xnu/makedefs/MakeInc.cmd:164-174; MakeInc.rule:121.
+
+### 2026-11-01 — D1 run 3 diagnosis: stale foreign headers in the build SDK
+User-pasted context (verbatim):
+```
+848-In file included from .../ravynOS.sdk/usr/include/sys/mount.h:76:
+849-In file included from .../ravynOS.sdk/usr/include/sys/attr.h:42:
+850-In file included from .../ravynOS.sdk/usr/include/sys/ucred.h:76:
+851-In file included from .../ravynOS.sdk/usr/include/bsm/audit.h:420:
+852-In file included from .../ravynOS.sdk/usr/include/mach/port.h:92:
+853-In file included from .../ravynOS.sdk/usr/include/mach/machine/vm_types.h:35:
+854-.../ravynOS.sdk/usr/include/mach/arm/vm_types.h:104:44: error: expected ';' after top level declarator
+855-  104 | typedef uintptr_t               vm_offset_t __kernel_ptr_semantics;
+869-In file included from .../ravynos/Kernel/xnu/SETUP/decomment/decomment.c:34:
+870-In file included from .../ravynOS.sdk/usr/include/libc.h:54:
+871-.../ravynOS.sdk/usr/include/sys/socket.h:561:30: error: a parameter list without types is only allowed in a function definition
+872-  561 |         void            *__sized_by(msg_namelen) msg_name; /* [XSI] optional address */
+```
+Diagnosis (output + source):
+* The installed SDK copies contain macOS-14/15-era attribute syntax
+  (`__kernel_ptr_semantics`, `__sized_by(msg_namelen)`). Both tokens exist
+  NOWHERE in this repository or its git history (repo-wide grep + `git log
+  -S` over Developer/ravynOS.sdk, Kernel/xnu: no matches). They are not
+  produced by any current build step: Developer/ravynOS.sdk/Makefile:30
+  copies the repo's usr/ + System/, and xnu's own bsd/sys/socket.h
+  (Kernel/xnu/bsd/sys/Makefile:90 installs socket.h) and
+  osfmk/mach/arm/vm_types.h have plain typedefs/prototypes at those
+  constructs. The build tree at ../build predates this repo state
+  (§1 noted its old baked-in paths) and still carries these foreign
+  headers; xnu's header install evidently did not overwrite the newer
+  foreign copies (install-if-older skip).
+* The first failing TU is a SETUP host tool (decomment.c:34 includes
+  libc.h) compiled with -isysroot at that stale SDK; the second chain is
+  a kernel TU via bsm/audit.h -> mach/machine/vm_types.h.
+Fix (machine-side, no repo change): wipe the stale SDK and repopulate it
+from this repo, then rerun the gate (xnu_all reinstalls xnu's headers):
+```
+rm -rf ../build/Developer/Platforms/ravynOS.platform/Developer/SDKs/ravynOS.sdk
+env SUBDIR=Developer/ravynOS.sdk bmake all
+./tools/darwin-gate.sh xnu
+```
+(`SUBDIR` via env so only the top level's recursion is narrowed; the SDK
+Makefile's own rpcsvc recursion is unaffected because its plain
+`SUBDIR = rpcsvc` overrides the inherited env value.)
+Cites: Developer/ravynOS.sdk/Makefile:5-30; Developer/ravynOS.sdk/usr/include/libc.h:54;
+Kernel/xnu/bsd/sys/Makefile:90; Kernel/xnu/SETUP/decomment/decomment.c:34.
+
+### 2026-11-01 — D1 run 4: _posix_availability.h missing + host-tool link failures
+Output (verbatim):
+```
+cp -f /Users/solus/Documents/test-ravyn-os/ravynos/Libraries/objc4/runtime/maptable.h .../usr/local/include/objc/
+744:.../ravynOS.sdk/usr/include/sys/cdefs.h:806:10: fatal error: 'sys/_posix_availability.h' file not found
+750:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+751:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+752:gmake[7]: *** [.../Kernel/xnu/SETUP/installfile/Makefile:29: installfile] Error 1
+754:clang: error: linker command failed with exit code 1 (use -v to see invocation)
+755:gmake[6]: *** [.../makedefs/MakeInc.dir:59: build_setup] Error 2
+757:gmake[7]: *** [.../Kernel/xnu/SETUP/replacecontents/Makefile:24: replacecontents] Error 1
+759:gmake[5]: *** [.../makedefs/MakeInc.dir:60: build_setup_recurse_into_installfile] Error 2
+```
+Reading: SDK repopulation worked (the __sized_by/__kernel_ptr_semantics
+headers are gone; SETUP tools now compile). Two new blockers, both from
+the repo-native SDK being thinner than the old foreign snapshot:
+* A: usr/include/sys/cdefs.h:806 includes <sys/_posix_availability.h> for
+  non-KERNEL compiles. The only copies in the tree are
+  System/.../PrivateHeaders/sys/_posix_availability.h (identical to
+  BSD/include/apple/sys/_posix_availability.h) and nothing installs them
+  into usr/include/sys.
+* B: the repo SDK's usr/lib is empty (0 files); .tbd stubs are Libsystem
+  build products and world order is Developer Kernel Libraries ... BSD,
+  so at Kernel time host tools linking with -isysroot at this SDK find no
+  libSystem. (installfile.c is a hosted C program: stdio/stdlib/err.h.)
+Fix (Developer/ravynOS.sdk/Makefile only; Kernel/Makefile untouched):
+cp the PrivateHeaders _posix_availability.h into usr/include/sys, and on
+Darwin (guarded, exists-checked) seed the CLT SDK's libSystem.tbd +
+libSystem.B.tbd into usr/lib -- same CLT-path precedent as
+Kernel/Makefile:79-83 compiler_rt. Re-run `env SUBDIR=Developer/ravynOS.sdk
+bmake all` then the gate.
+Cites: Developer/ravynOS.sdk/usr/include/sys/cdefs.h:803-809;
+Developer/ravynOS.sdk/System/.../PrivateHeaders/sys/_posix_availability.h;
+BSD/include/apple/sys/Makefile:6-8; Developer/ravynOS.sdk/Makefile (this
+commit); Kernel/Makefile:66,79-83; Kernel/xnu/SETUP/installfile/installfile.c:24-30.

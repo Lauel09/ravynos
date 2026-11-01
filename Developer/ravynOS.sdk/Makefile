@@ -5,6 +5,18 @@ FPATH = /System/Library/Frameworks/System.framework
 libc_path = ${ROOT_SOURCE_DIR}/Libraries/Libsystem/libsystem_c
 objc_path = ${ROOT_SOURCE_DIR}/Libraries/objc4
 
+# On Darwin, host tools (xnu SETUP) link with -isysroot at this SDK and
+# need libSystem for that.  usr/lib is only filled later by the Libsystem
+# build (world order: Developer Kernel Libraries ... BSD), so seed the
+# CLT SDK's libSystem TBDs -- same precedent as Kernel/Makefile's
+# compiler_rt copy from /Library/Developer/CommandLineTools.
+CLTSDK = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+.if "${.MAKE.OS}" == "Darwin" && exists(${CLTSDK}/usr/lib/libSystem.tbd) && exists(${CLTSDK}/usr/lib/libSystem.B.tbd)
+CLT_LIBSYSTEM_COPY = cp -f ${CLTSDK}/usr/lib/libSystem.tbd ${CLTSDK}/usr/lib/libSystem.B.tbd ${RAVYN_SDKROOT}/usr/lib/
+.else
+CLT_LIBSYSTEM_COPY = :
+.endif
+
 all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	mkdir -p ${RAVYN_SDKROOT}${FPATH}/Versions/B
 	mkdir -p ${RAVYN_SDKROOT}/usr/local/include
@@ -28,6 +40,15 @@ all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	ln -sf ravynOS.platform ${ROOT_BINARY_DIR}/Developer/Platforms/MacOSX.platform
 	ln -sf ravynOS.sdk ${ROOT_BINARY_DIR}/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
 	cp -Rf ${.CURDIR}/usr ${.CURDIR}/System ${RAVYN_SDKROOT}/
+	# sys/cdefs.h:806 does #include <sys/_posix_availability.h> for
+	# non-KERNEL compiles.  The only copies in this tree are under
+	# System.framework PrivateHeaders (identical to
+	# BSD/include/apple/sys/_posix_availability.h) and nothing installs
+	# them into usr/include/sys, where cdefs.h looks; expose it like a
+	# stock Apple SDK does.
+	cp -f ${.CURDIR}/System/Library/Frameworks/System.framework/Versions/B/PrivateHeaders/sys/_posix_availability.h \
+		${RAVYN_SDKROOT}/usr/include/sys/
+	${CLT_LIBSYSTEM_COPY}
 	cp -f ${ROOT_SOURCE_DIR}/Libraries/Libsystem/private/pthread/tsd_private.h \
 		${RAVYN_SDKROOT}/usr/local/include/pthread/
 	${ROOT_SOURCE_DIR}/Kernel/xnu/bsd/sys/make_symbol_aliasing.sh \
