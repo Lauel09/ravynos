@@ -321,6 +321,12 @@ $$($(1)_bootstrap_target_list): $(1)_bootstrap_% : $(1)_stripe_dep_for_% $$(adds
 		CURRENT_ARCH_CONFIG=$$(call function_extract_arch_config_from_build_config,$$(patsubst $(1)_bootstrap_%,%,$$@))	  \
 		CURRENT_MACHINE_CONFIG=$$(call function_extract_machine_config_from_build_config,$$(patsubst $(1)_bootstrap_%,%,$$@))	\
 		CURRENT_BUILD_CONFIG=$$(patsubst $(1)_bootstrap_%,%,$$@)							\
+		HOST_SDKROOT="$$(HOST_SDKROOT)"							\
+		HOST_SDKROOT_RESOLVED="$$(HOST_SDKROOT_RESOLVED)"				\
+		HOST_FLEX="$$(HOST_FLEX)"							\
+		HOST_BISON="$$(HOST_BISON)"							\
+		HOST_GM4="$$(HOST_GM4)"								\
+		HOST_CODESIGN_ALLOCATE="$$(HOST_CODESIGN_ALLOCATE)"			\
 		PRIMARY_BUILD_CONFIGS="$(PRIMARY_BUILD_CONFIGS)"							\
 		SOURCE=$${SRCROOT}/												\
 		RELATIVE_SOURCE_PATH=.											\
