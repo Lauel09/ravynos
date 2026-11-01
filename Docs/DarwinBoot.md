@@ -513,3 +513,39 @@ tools/darwin-gate.sh:46-64; Kernel/Makefile:83,114,118.
 Next: pull this candidate on the Mac and rerun `./tools/darwin-gate.sh xnu`.
 D1 still requires `D1 GATE PASSED`, the exact staged kernel path, and genuine
 `Mach-O 64-bit executable x86_64` identification.
+
+### 2026-11-02 — D1 run 7: kernel compiles; final link lacks the profiling runtime
+Output (verbatim):
+```
+ld: warning: directory not found for option '-L.../Libraries/llvm_target/compiler-rt/lib/ravynos'
+ld: library not found for -lclang_rt.profile_osx
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+The run-7 candidate worked through host setup and all kernel compilation; the
+failure is now the final `kernel.unstripped` link. History identifies the
+regression: 76afd8c278 replaced Kernel's `Libraries all` dependency with copies
+of the CLT `libclang_rt.osx.a` and `libclang_rt.cc_kext.a`, but XNU's existing
+`-lclang_rt.profile_osx` still pointed into the no-longer-built Libraries tree.
+The archive cannot simply be conditioned on BUILD_PROFILE: OSKext.cpp references
+its buffer helpers unconditionally. LLVM explicitly supports linking these
+profile sources into the Darwin kernel, and XNU supplies
+`__llvm_profile_runtime = 0` to disable userspace profile-file handling.
+
+Did (run-8 candidate, not a gate pass): on Darwin only, copy the CLT
+`libclang_rt.profile_osx.a` beside `libcc_kext.a` in the target SDK and point
+XNU's existing profile-library search at that directory. Other hosts retain the
+original `Libraries/llvm_target/compiler-rt/lib/ravynos` path. The unconditional
+profile archive remains, and no build-order or XCRUN changes are included.
+Evidence: dry-running the actual `kernel.unstripped` rule with placeholder
+prerequisites produced `-L/SDK/usr/local/lib/kernel -lclang_rt.profile_osx` for
+OPSYS=Darwin; OPSYS=Linux retained the exact original Libraries path.
+`git diff --check` passed. No real macOS D1 pass is claimed from these checks.
+Cites: commit 76afd8c278; Kernel/Makefile:95-104;
+Kernel/xnu/makedefs/MakeInc.kernel:29-35,152;
+Kernel/xnu/libkern/c++/OSKext.cpp:8497-8508,8645-8671;
+Kernel/xnu/bsd/pgo/profile_runtime_data.c:1-5;
+Developer/Default.xctoolchain/llvm/compiler-rt/lib/profile/InstrProfilingBuffer.c:9-20.
+Next: update the Mac to this candidate and rerun `./tools/darwin-gate.sh xnu`.
+The acceptance bar remains a fresh staged x86_64 Mach-O kernel and an explicit
+`D1 GATE PASSED` verdict.
