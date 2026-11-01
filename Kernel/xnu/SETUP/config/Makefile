@@ -14,7 +14,7 @@ LDFLAGS =
 ifeq ($(OPSYS),Linux)
 LDFLAGS += -lbsd
 endif
-ifeq ($(shell uname -s),"Darwin")
+ifeq ($(OPSYS),Darwin)
 	CFLAGS += -isysroot $(HOST_SDKROOT) -mmacosx-version-min=$(HOST_OS_VERSION)
 	LDFLAGS += -isysroot $(HOST_SDKROOT) -mmacosx-version-min=$(HOST_OS_VERSION)
 endif
