@@ -7,19 +7,70 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
 if [ "${1:-}" = "xnu" ]; then
-    # D1: kernel-only build. The right target is the top-level `Kernel`
-    # subdir (world lists `Developer .WAIT Kernel …`, Makefile:153) so the
-    # top-level exports (GMAKE, XCRUN, TOOLCHAIN …, Makefile:155) reach
-    # Kernel/Makefile; running `-C Kernel` directly would miss them.
-    : > "$ROOT/build-xnu.log"
+    # D1: refresh the repo-native SDK first so its Makefile changes reach an
+    # existing build tree, then run only the top-level Kernel stage. Running
+    # `-C Kernel` directly would miss the top-level exports (GMAKE, XCRUN,
+    # TOOLCHAIN, ...). Keep the two logs separate: an SDK failure must not be
+    # mistaken for an XNU failure, and neither may be hidden by `|| true`.
     if command -v bmake >/dev/null 2>&1; then
-        bmake Kernel >"$ROOT/build-xnu.log" 2>&1 || true
+        BMAKE=bmake
+    elif command -v make >/dev/null 2>&1; then
+        BMAKE=make
     else
-        make Kernel >"$ROOT/build-xnu.log" 2>&1 || true
+        echo "D1: neither bmake nor make is installed" >&2
+        exit 2
     fi
-    # Show only the first real errors; do not dump the whole log.
-    grep -n -m8 -E "error:|\*\*\* |No rule|unable to find sdk" \
-        "$ROOT/build-xnu.log" || true
+
+    show_build_errors() {
+        log=$1
+        grep -n -m8 -E "error:|\*\*\* |No rule|unable to find sdk|No such file" \
+            "$log" || tail -20 "$log"
+    }
+
+    echo "D1: refreshing Developer/ravynOS.sdk (build-sdk.log)"
+    if env SUBDIR=Developer/ravynOS.sdk "$BMAKE" all \
+            >"$ROOT/build-sdk.log" 2>&1; then
+        :
+    else
+        rc=$?
+        show_build_errors "$ROOT/build-sdk.log"
+        echo "D1: SDK refresh failed; full log: $ROOT/build-sdk.log" >&2
+        exit "$rc"
+    fi
+
+    # Do not let a previous successful build satisfy the artifact check if
+    # this invocation returns success without installing a fresh kernel.
+    KERNEL="$ROOT/../build/sysroot/System/Library/Kernels/kernel"
+    rm -f "$KERNEL"
+
+    echo "D1: building Kernel (build-xnu.log)"
+    if "$BMAKE" Kernel >"$ROOT/build-xnu.log" 2>&1; then
+        :
+    else
+        rc=$?
+        show_build_errors "$ROOT/build-xnu.log"
+        echo "D1: XNU build failed; full log: $ROOT/build-xnu.log" >&2
+        exit "$rc"
+    fi
+
+    # Kernel/Makefile:xnu_all copies the RELEASE kernel here after XNU's own
+    # `all install` completes. Check that exact staged product, not an
+    # object-directory kernel left by an earlier attempt.
+    if [ ! -f "$KERNEL" ]; then
+        echo "D1: build returned success but staged kernel is missing: $KERNEL" >&2
+        exit 1
+    fi
+    description=$(file "$KERNEL")
+    echo "$description"
+    case $description in
+        *"Mach-O 64-bit executable x86_64"*)
+            echo "D1 GATE PASSED: $KERNEL"
+            ;;
+        *)
+            echo "D1: staged kernel is not an x86_64 Mach-O executable" >&2
+            exit 1
+            ;;
+    esac
     exit 0
 fi
 

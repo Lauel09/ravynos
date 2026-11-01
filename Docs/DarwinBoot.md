@@ -424,3 +424,19 @@ Cites: Developer/ravynOS.sdk/usr/include/sys/cdefs.h:803-809;
 Developer/ravynOS.sdk/System/.../PrivateHeaders/sys/_posix_availability.h;
 BSD/include/apple/sys/Makefile:6-8; Developer/ravynOS.sdk/Makefile (this
 commit); Kernel/Makefile:66,79-83; Kernel/xnu/SETUP/installfile/installfile.c:24-30.
+
+### 2026-11-01 — D1 progress: one-command gate now checks the real product
+Did: `tools/darwin-gate.sh xnu` now refreshes the repo-native SDK (so run 4's
+fix reaches an existing build tree), runs the top-level Kernel stage with
+separate logs, preserves failure exit statuses, removes the old staged kernel
+before building, and requires `file` to identify the fresh product as
+`Mach-O 64-bit executable x86_64`. It no longer prints errors and exits 0.
+Evidence: `sh -n tools/darwin-gate.sh` passed; mocked build contract passed:
+`success=0 sdk-failure=23 kernel-failure=27 missing-artifact=1 wrong-format=1`.
+This Linux workspace has no macOS XNU toolchain, so the real D1 gate remains
+unrun; the mocked `D1 GATE PASSED` path is not a milestone pass.
+Cites: tools/darwin-gate.sh (xnu mode); Makefile:49,168-180;
+Developer/ravynOS.sdk/Makefile:18-48; Kernel/Makefile:85-113;
+Kernel/xnu/makedefs/MakeInc.def:902-931.
+Next: on the Mac run `./tools/darwin-gate.sh xnu`; paste its output here. A
+failure now returns nonzero and names either build-sdk.log or build-xnu.log.

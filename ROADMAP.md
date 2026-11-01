@@ -1,11 +1,13 @@
 # RavynOS Fork — Roadmap
 
-> **⚠ ACTIVE PLAN (2026-10-31): `Docs/DarwinBoot.md` — goal: XNU prints
+> **⚠ ACTIVE PLAN (2026-11-01): `Docs/DarwinBoot.md` — goal: XNU prints
 > `Darwin Kernel Version` via our loader. Work only its milestones D1→D6, log
-> there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
-> not reproduce locally and is deprioritised.**
+> there. D4's Mach-O stub and ELF regression gates have passed on the Mac;
+> D1 (build the real XNU kernel) is current. Run `./tools/darwin-gate.sh xnu`
+> for the next D1 verdict. Everything below is background; the OVMF
+> `#UD 0xB0000` "blocker" does not reproduce locally and is deprioritised.**
 
-**Last updated:** 2026-10-30 (rev 5: UEFI loader builds; El Torito load size fixed; PE32+ payload validation; OVMF boot job)
+**Last updated:** 2026-11-01 (rev 6: Mach-O handoff gate passed; real-XNU build is the active milestone)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**
