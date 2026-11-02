@@ -58,12 +58,20 @@ CFLAGS = --sysroot=${RAVYN_SDKROOT} ${DEFINES} ${INCLUDES} \
 	 -fPIC -O3 -fvisibility=hidden -fomit-frame-pointer -Wall \
 	 -Wno-unused-command-line-argument -Wno-incompatible-sysroot
 
-all: ${RAVYN_SDKROOT}/usr/local/lib/kernel/${LIB}.a
-
-${RAVYN_SDKROOT}/usr/local/lib/kernel/${LIB}.a: ${OBJS}
-	mkdir -p ${RAVYN_SDKROOT}/usr/local/lib/kernel
-	rm -f ${.TARGET}
-	${TOOLS}/libtool -static \
-	  -o ${.TARGET} -no_warning_for_no_symbols ${OBJS}
-
 .include <bsd.lib.mk>
+
+# bsd.lib.mk builds lib${LIB}.a in the objdir and derives ${OBJS} from ${SRCS}
+# at the point it is included -- defining an archive rule of our own above it
+# saw an empty ${OBJS} and ran libtool before anything was compiled (and would
+# also have named the archive clang_rt.profile_osx.a, since the "lib" prefix
+# is added by that rule).  Let it compile and archive, then stage the finished
+# archive into the SDK, where MakeInc.kernel's -lclang_rt.profile_osx looks.
+#
+# The final rm drops any leftover from the earlier revision that staged the
+# archive without its "lib" prefix; nothing else writes that name.
+all: ${RAVYN_SDKROOT}/usr/local/lib/kernel/lib${LIB}.a
+
+${RAVYN_SDKROOT}/usr/local/lib/kernel/lib${LIB}.a: lib${LIB}.a
+	mkdir -p ${RAVYN_SDKROOT}/usr/local/lib/kernel
+	cp -f lib${LIB}.a ${.TARGET}
+	rm -f ${RAVYN_SDKROOT}/usr/local/lib/kernel/${LIB}.a

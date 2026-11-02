@@ -332,7 +332,12 @@ first real gap Phases 1–2 produce. See `work/README.md`.
   long-standing `/bin/sh: 6-${\#__A}: bad substitution` — GNU make keeps the
   backslash in upstream's `\#`, so `CMD_MC` always came out empty; it is now
   one `printf %-6.6s` whose output is byte-identical to the old expansion.
-  **Unverified on hardware: still needs a real `D1 GATE PASSED`.**
+  **Unverified on hardware: still needs a real `D1 GATE PASSED`.** The first
+  attempt at that library staged `clang_rt.profile_osx.a` (no `lib` prefix, so
+  `-l` would have missed it) and compiled nothing, because the archive rule
+  was declared before `.include <bsd.lib.mk>`, which is what derives `${OBJS}`
+  from `${SRCS}`; the rule now delegates to `bsd.lib.mk` and only copies the
+  finished archive into the SDK.
 - **2026-10-31 (rev 17) — the chain exists; firmware still won't start it.**
   (1) *Chain*: loader → kernel console → prompt, plus an independent shell, all
   built and verified, with `verify.py` parsing the kernel *inside* the finished

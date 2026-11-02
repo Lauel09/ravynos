@@ -637,3 +637,41 @@ Next: pull on the Mac and rerun `./tools/darwin-gate.sh xnu`. The acceptance bar
 is unchanged: `D1 GATE PASSED`, a fresh staged
 `.../sysroot/System/Library/Kernels/kernel`, and genuine
 `Mach-O 64-bit executable x86_64`.
+
+### 2026-11-02 — D1 run 11: the new archive was never built (and misnamed)
+Output (verbatim):
+```
+bmake -C .../Libraries/libclang_rt_profile all
+rm -f .../usr/local/lib/kernel/clang_rt.profile_osx.a
+libtool -static  -o .../usr/local/lib/kernel/clang_rt.profile_osx.a \
+    -no_warning_for_no_symbols InstrProfiling.o InstrProfilingBuffer.o ...
+error: libtool: can't open file: InstrProfiling.o (No such file or directory)
+...
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+Two defects in the run-10 `Libraries/libclang_rt_profile/Makefile`, both visible
+in that one command line. First, no object was compiled: the archive rule was
+declared *before* `.include <bsd.lib.mk>`, and `bsd.lib.mk` is what derives
+`${OBJS}` from `${SRCS}`, so the prerequisite list was empty. Second, the
+archive was named `clang_rt.profile_osx.a` — `bsd.lib.mk` supplies the `lib`
+prefix, and since the rule bypassed it the prefix was missing, so
+`-lclang_rt.profile_osx` would not have found the result even if it had linked.
+
+Did (run-11 candidate, not a gate pass): let `bsd.lib.mk` own the build (it
+compiles `${OBJS}` and archives them into `${.OBJDIR}/libclang_rt.profile_osx.a`)
+and add a single staging rule after it that copies that archive to
+`${RAVYN_SDKROOT}/usr/local/lib/kernel/libclang_rt.profile_osx.a`, removing the
+mis-named leftover from run 10.
+
+Evidence: replaying the exact rule order (sources → `lib${LIB}.a` →
+staged path) under a `libtool -static` stand-in that hard-fails on a missing
+object produced `a.o b.o` → `libclang_rt.profile_osx.a` → a byte-identical copy
+at `out/usr/local/lib/kernel/libclang_rt.profile_osx.a`, with the
+`clang_rt.profile_osx.a` leftover deleted. The earlier ordering fails the same
+way the Mac did (`libtool: can't open file: a.o`), confirming the diagnosis.
+Cites: Libraries/libclang_rt_profile/Makefile:61-79;
+Developer/.../BSD/share/mk/bsd.lib.mk:192-209; Kernel/Makefile:100-101;
+Kernel/xnu/makedefs/MakeInc.kernel:154.
+Next: rerun `./tools/darwin-gate.sh xnu`. Expect the archive step to succeed,
+then the real test — whether the kernel link resolves without
+`___stderrp`/`_fprintf`.
