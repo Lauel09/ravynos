@@ -960,3 +960,37 @@ Caveat: not compile-verified. This sandbox has no clang, and gcc cannot stand in
 during the build. The check was static: guard/greps across the three copies plus
 a trace of the `OS_OBJECT_USE_OBJC` branch logic.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 19: kHIDPage_AppleVendor defined twice
+Output (verbatim):
+```
+IOKit.framework/Headers/hid/IOHIDUsageTables.h:78:5: error:
+  redefinition of enumerator 'kHIDPage_AppleVendor'
+  Kernel/Extensions/IOHIDFamily/IOHIDFamily/AppleHIDUsageTables.h:35:5:
+  note: previous definition is here
+1 warning and 1 error generated.
+```
+Did (run-19 candidate, not a gate pass): dropped the second element of the last
+enumerator in `IOHIDUsageTables.h`, so the vendor page terminates at
+`kHIDPage_VendorDefinedStart = 0xFF00` exactly as Apple ships it.
+
+Evidence: `gh api
+repos/apple-oss-distributions/IOHIDFamily/contents/IOHIDFamily/IOHIDUsageTables.h`
+shows line 81 is `kHIDPage_VendorDefinedStart = 0xFF00` and nothing follows, so
+`kHIDPage_AppleVendor` is a local addition, not an upstream export. It collides
+with the same-named enumerator in `AppleHIDUsageTables.h:35`, which is the
+Apple-specific table and is what declares the `kHIDPage_AppleVendor*` family.
+Compared as symbol sets, the two headers have exactly one name in common, so this
+is the only collision to fix. Nothing loses the constant: the only consumer
+outside IOHIDFamily, `Kernel/IOKitUser/hid.subproj/IOHIDLibPrivate.cpp`, gets
+`AppleHIDUsageTables.h` by force-include (`Kernel/IOKitUser/Makefile:237`), and
+IOHIDFamily's own HID targets list it in their headers
+(`Kernel/Extensions/IOHIDFamily/HID/Makefile:45,55,96`).
+Invariant sweep over all 140 headers in the four staged trees, to catch the rest
+of this class: 0 enumerators defined in more than one header, 0 include guard
+names shared by different headers, 0 regressions of the empty-header problem.
+Cites: Kernel/Extensions/IOHIDFamily/IOHIDFamily/IOHIDUsageTables.h:74-78;
+Kernel/Extensions/IOHIDFamily/IOHIDFamily/AppleHIDUsageTables.h:33-35.
+Note: the file is not valid UTF-8 (a stray byte near offset 17533), so edits to
+it must be byte-preserving; decoding it as text fails.
+Next: rerun `./tools/darwin-gate.sh xnu`.

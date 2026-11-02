@@ -74,8 +74,7 @@ enum
     kHIDPage_Arcade                 = 0x91,    /* OAAF Definitions for arcade and coinop related Devices */
     /* Reserved 0x92 - 0xFEFF */
     /* VendorDefined 0xFF00 - 0xFFFF */
-    kHIDPage_VendorDefinedStart     = 0xFF00,
-    kHIDPage_AppleVendor            = 0xFF00
+    kHIDPage_VendorDefinedStart     = 0xFF00
 };
 
 /* Undefined Usage for all usage pages */

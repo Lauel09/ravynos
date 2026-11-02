@@ -319,6 +319,16 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 26) — `kHIDPage_AppleVendor` defined once.**
+  `IOHIDUsageTables.h` declared it in the same enumerator as
+  `kHIDPage_VendorDefinedStart = 0xFF00`, duplicating the entry in
+  `AppleHIDUsageTables.h` and breaking any translation unit that sees both
+  (IOKitUser's ObjC++ files include both). Apple's upstream file ends at
+  `kHIDPage_VendorDefinedStart`, so the extra entry was a local addition and is
+  removed; every consumer still gets the constant from
+  `AppleHIDUsageTables.h`, which IOKitUser force-includes. A sweep of all 140
+  staged headers found no other duplicate enumerator and no shared include
+  guards. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 25) — the right os/object.h this time.**
   Rev 24 staged the correct file name from the wrong tree:
   `BSD/include/os/object.h` is a stale 188-line variant that shares the
