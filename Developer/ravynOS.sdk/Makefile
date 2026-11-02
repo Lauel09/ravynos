@@ -40,6 +40,13 @@ all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	ln -sf ravynOS.platform ${ROOT_BINARY_DIR}/Developer/Platforms/MacOSX.platform
 	ln -sf ravynOS.sdk ${ROOT_BINARY_DIR}/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
 	cp -Rf ${.CURDIR}/usr ${.CURDIR}/System ${RAVYN_SDKROOT}/
+	# usr/include/os/ ships base.h, lock.h, availability.h and
+	# state_private.h but not object.h, yet dispatch/dispatch.h, xpc/xpc.h and
+	# the asl_*.h headers in this same SDK all #include <os/object.h>.  The
+	# tree's only copy is BSD/include/os/object.h (same directory as the
+	# base.h already shipped); it needs only Availability.h, os/base.h and
+	# objc/NSObject.h, all of which are staged here.
+	cp -f ${ROOT_SOURCE_DIR}/BSD/include/os/object.h ${RAVYN_SDKROOT}/usr/include/os/
 	# sys/cdefs.h:806 does #include <sys/_posix_availability.h> for
 	# non-KERNEL compiles.  The only copies in this tree are under
 	# System.framework PrivateHeaders (identical to

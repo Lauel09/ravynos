@@ -881,3 +881,36 @@ Kernel/IOKitUser/hid.subproj/IOHIDTypes.h (empty);
 Kernel/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h;
 Kernel/IOKitUser/Makefile:340-345,382-404.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 17: the SDK never shipped <os/object.h>
+Output (verbatim):
+```
+.../ravynOS.sdk/usr/include/dispatch/dispatch.h:64:10: fatal error:
+  'os/object.h' file not found
+```
+Not an IOKit problem, and not a kernel problem: the header is missing from
+Developer/ravynOS.sdk, which `darwin-gate.sh xnu` refreshes before it builds
+the kernel.
+
+Did (run-17 candidate, not a gate pass): `Developer/ravynOS.sdk/Makefile` now
+copies `BSD/include/os/object.h` into `${RAVYN_SDKROOT}/usr/include/os/`.
+
+Evidence: the SDK ships `usr/include/os/{availability,base,lock,state_private}.h`
+but not `object.h`, yet `dispatch/dispatch.h:64`, `xpc/xpc.h:7` and
+`asl_{file,msg_list,private,store}.h` in that same SDK all `#include
+<os/object.h>`. `BSD/include/os/Makefile` (INCS = assumes.h base.h object.h
+trace.h) shows the directory is the tree's libsystem-`os/` source, and
+`bsd.own.mk`'s install path is not that of this SDK, so the file never arrived.
+`object.h` needs only `Availability.h`, `os/base.h` and `objc/NSObject.h`: the
+first two are already in the SDK, and the recipe installs the third from
+`Libraries/objc4/runtime` a few lines further down. `assumes.h` and `trace.h`
+from the same directory were deliberately left out — they pull `_simple.h`,
+`CrashReporterClient.h` and `xpc/xpc.h`, which needs its own check.
+Cites: Developer/ravynos.sdk/Makefile:41-45 (the new copy);
+Developer/ravynOS.sdk/usr/include/dispatch/dispatch.h:64; BSD/include/os/Makefile:7-12.
+Dead end: a repo-wide scan for "SDK header includes a file that is not staged,
+but that basename exists somewhere in the tree" returned 4861 rows and is pure
+noise (`sys/types.h` matching `BSD/lib/libnetbsd/sys/types.h`, `stdbool.h`, the
+toolchain's `availability.h`). Do not act on that signal; resolve includes
+against the staged SDK and the actual `-I` path, not by basename.
+Next: rerun `./tools/darwin-gate.sh xnu`.

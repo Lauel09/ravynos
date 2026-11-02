@@ -319,6 +319,14 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 24) — SDK stages `<os/object.h>`.**
+  The D1 gate failed on `dispatch/dispatch.h:64: 'os/object.h' file not found`,
+  which is an SDK-content gap rather than a kernel one: `usr/include/os/` had
+  `base.h`, `lock.h`, `availability.h` and `state_private.h` but not
+  `object.h`, while `dispatch.h`, `xpc/xpc.h` and the `asl_*.h` headers in the
+  same SDK all include it. The tree's copy is `BSD/include/os/object.h`, whose
+  `os/Makefile` INCS list had never been wired into this SDK's install; it is
+  now copied explicitly. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 23) — the header-glob shortcut was reverted.**
   Replacing IOKitUser's per-file header lists with `cp dir/*.h` (rev 22) was a
   regression: the tree has two `IOHIDEvent.h` files -- the user-space C API in
