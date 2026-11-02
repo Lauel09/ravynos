@@ -38,8 +38,15 @@ INSTALL_KF_MI_GEN_LIST = $(GENERATED_HEADERS)  $(OTHER_HEADERS)
 
 COMP_FILES = ${GENERATED_HEADERS} $(GENERATED_IMPL)
 
+# ${IIG} must be a prerequisite: the header is a pure function of the tool and
+# the .iig, but without it a rebuilt iig leaves the previous output in place.
+# That is not theoretical.  The checked-in headers here are Apple's
+# "iig(DriverKit-254)" output and carry eleven "class NATIVE KERNEL X" lines; on
+# a fresh checkout they are as new as their .iig sources, so anything that
+# copies source over object shortens the gap to seconds.  An iig-linux fix that
+# is correct and still has no effect is the symptom to look for here.
 $(GENERATED_HEADERS) : \
-	%.h : %.iig
+	%.h : %.iig ${IIG}
 	$(IIG) --def $< --header $@ --impl $(patsubst %.h,%.iig.cpp,$@) --framework-name DriverKit ${OTHER_IIG_FLAGS} -- ${OTHER_IIG_CFLAGS}
 
 $(GENERATED_IMPL) : $(GENERATED_HEADERS)

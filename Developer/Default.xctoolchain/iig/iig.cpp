@@ -135,17 +135,25 @@ sanitizeDocumentationText(const std::string &input)
     std::string out = input;
     out = std::regex_replace(out, std::regex(R"(\bLOCALONLY\b)"), "");
     out = std::regex_replace(out, std::regex(R"(\bLOCAL\b)"), "");
-    // The IIG attributes are only meaningful while iig itself is running; the
-    // header it emits is compiled as ordinary C++ where NATIVE, KERNEL and
-    // friends are undefined.  Drop NATIVE too: the previous pattern only
-    // matched a bare "class KERNEL", so the valid declaration form
+    // OSObject.h maps these tokens onto IIG_* and defines the IIG_* set to
+    // nothing for ordinary builds, but KERNEL is different: the kernel and the
+    // kexts compile with -DKERNEL (MakeInc.def, rvn.kext.mk), so it expands to
+    // 1, not to nothing.  The declaration
     //   class NATIVE KERNEL OSAction : public OSObject
-    // kept its NATIVE token and consumers failed with
+    // therefore preprocessed to "class NATIVE 1 OSAction" and failed with
     //   OSAction.h:61:14: error: expected unqualified-id
-    //     class NATIVE KERNEL OSAction : public OSObject
-    // Strip every trace of the three keywords wherever they appear before the
-    // class keyword, in either order and with any spacing.
+    //         note: expanded from macro 'KERNEL'
+    // i.e. at column 14, which is the 1.  Drop NATIVE and every other
+    // attribute keyword, then rewrite "class KERNEL ..." to "class ...".
     out = std::regex_replace(out, std::regex(R"(\bNATIVE\b)"), "");
+    // Method-level IIG specifiers, as in "retain() const LOCALONLY;", appear in
+    // class bodies other than the one findMainClass selects (OSObject.h also
+    // declares OSMetaClassBase), so they were never sanitised.  These are
+    // specifiers, not user identifiers: iig defines all of them itself in
+    // OSObject.h -- and both the __IIG and the ordinary branch define the
+    // lower-case libkern spellings separately -- so removing them from the
+    // generated text is safe and keeps the emitted header valid C++.
+    out = std::regex_replace(out, std::regex(R"(\b(LOCALONLY|LOCALHOST|INVOKEREPLY|PORTMAKESEND|PORTCOPYSEND)\b)"), "");
     out = std::regex_replace(out, std::regex(R"(class\s+(?:\bKERNEL\b\s*)+)"), "class ");
     out = std::regex_replace(out, std::regex(R"(\n\s*#\s*undef\s+KERNEL\s*\n)"), "\n");
     return out;
@@ -158,6 +166,8 @@ sanitizeTypeText(std::string s)
     s = std::regex_replace(s, std::regex(R"(\bLOCAL\b)"), "");
     s = std::regex_replace(s, std::regex(R"(\bKERNEL\b)"), "");
     s = std::regex_replace(s, std::regex(R"(\bTARGET\b)"), "");
+    s = std::regex_replace(s, std::regex(R"(\bNATIVE\b)"), "");
+    s = std::regex_replace(s, std::regex(R"(\bREMOTE\b)"), "");
     s = std::regex_replace(s, std::regex(R"(\s+)"), " ");
     return trim(s);
 }
@@ -391,7 +401,16 @@ findMainClass(const std::string &input,
               size_t &classStart,
               size_t &classEnd)
 {
-    std::regex cls(R"(class\s+(?:KERNEL\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*public\s+[A-Za-z_][A-Za-z0-9_]*)");
+    // The attribute keywords may appear before the class name in any order and
+    // any combination: the DriverKit .iig files contain "class KERNEL X",
+    // "class NATIVE X" and "class NATIVE KERNEL X".  The previous pattern
+    // allowed only an optional single KERNEL, so for
+    //   class NATIVE KERNEL OSAction : public OSObject
+    // it matched neither OSAction nor anything else, findMainClass returned
+    // false, and buildHeader fell through to its "not found" path, which emits
+    // the definition *verbatim* -- no sanitisation at all.  That is why the
+    // NATIVE token survived into EXPORT_HDRS and broke every consumer.
+    std::regex cls(R"(class\s+(?:(?:KERNEL|NATIVE|LOCAL|LOCALONLY|REMOTE|LOCALHOST|INVOKEREPLY|REPLY|TARGET|PORTMAKESEND|PORTCOPYSEND)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*public\s+[A-Za-z_][A-Za-z0-9_]*)");
     std::smatch m;
     std::string work = input;
     size_t searchOffset = 0;
