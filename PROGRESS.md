@@ -319,6 +319,16 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 34) — plktool stays Linux-only; Extensions skips the cache.**
+  Rev 33 enabled plktool's build rule on Darwin on the assumption that its
+  absence was an oversight. It is not: plktool is a Linux port of kextcache
+  needing OpenSSL (`openssl/evp.h`), glibc `<byteswap.h>`, `-lssl -lcrypto -lbsd`
+  and 236 CoreFoundation call sites against the in-tree CF. Reverted to
+  Linux-only with the reason recorded, and `Kernel/Extensions` now builds the 16
+  kexts on every host while skipping the prelinked cache on Darwin with an
+  explicit message. The D1 gate only inspects `System/Library/Kernels/kernel`, so
+  this does not affect it; a Darwin prelinked cache needs Apple's kextcache or a
+  real port, tracked separately. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 33) — audited the whole remaining Kernel path.**
   Instead of chasing the next failing line, swept the remaining stages at once.
   Found and fixed one more blocker: `plktool` had no build rule on Darwin

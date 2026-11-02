@@ -1302,3 +1302,40 @@ error -- it cannot compile C++, so a genuine source-level error in one of the 16
 kexts would still surface on the next run, one kext at a time, and no audit can
 pre-empt that.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 27: plktool is Linux-only; stop trying to build it on Darwin
+Output (verbatim, from run 26's change):
+```
+/usr/bin/clang ... -c .../plktool/plktool.c -o plktool.o
+.../plktool/plktool.h:39:10: fatal error: 'openssl/evp.h' file not found
+    39 | #include <openssl/evp.h>
+```
+Run 26 was wrong. It treated "plktool is never built on Darwin, yet kernelcache
+calls it" as a missing build rule and enabled the rule. It is not a missing rule:
+plktool is a **Linux port** of Apple's kextcache, and the makefile's own comment
+("This uses Open-CF-Lite, not our CoreFoundation ... opencflite in AUR") says so.
+
+Did (run-27 candidate, not a gate pass): reverted the build rule to
+Linux-only, with the reason recorded; and made `Kernel/Extensions` build the 16
+kexts and skip the prelinked cache on Darwin with an explicit message.
+
+Evidence for "Linux port, not a host tool": `plktool.h:39-40` include
+`<openssl/evp.h>` and `<openssl/sha.h>`; `plktool.c` includes glibc's
+`<byteswap.h>` and uses `bswap_32`/`bswap_64` (16 + 2 sites, correct on macOS
+only via `libkern/OSByteOrder.h`); `LDFLAGS` pull `-lssl -lcrypto -lbsd` (none of
+which exist in the SDK, and libbsd's symbols are not even used); and the sources
+make 236 CoreFoundation call sites across 53 distinct symbols against the
+*in-tree* CF, with `CFBundlePriv.h` from `Frameworks/CoreFoundation`, which is
+built in the Frameworks pass that runs after Kernel. Porting it means rewriting
+six `EVP_*` SHA-256 calls onto CommonCrypto and reconciling CF -- work that
+cannot be validated without a macOS host, and that the D1 gate does not need.
+Why skipping is safe for this milestone: `tools/darwin-gate.sh:80-91` checks
+only `${RAVYN_SDKROOT}/System/Library/Kernels/kernel` and that `file` calls it an
+x86_64 Mach-O; the prelinked cache is a separate artifact consumed at boot, and
+`tools/build.sh` already exposes it as its own `kernelcache` subcommand.
+Cites: Developer/Default.xctoolchain/plktool/{Makefile,plktool.h:39-40,plktool.c,kext.c};
+Kernel/Extensions/Makefile; tools/darwin-gate.sh:80-91.
+Honest limit: this removes the plktool failure from the D1 path; it does not make
+a Darwin prelinked cache. Booting on Darwin still needs Apple's kextcache or a
+real port, which is out of scope for D1 and not attempted here.
+Next: rerun `./tools/darwin-gate.sh xnu`.

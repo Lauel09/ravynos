@@ -3,7 +3,18 @@ SUBDIR = AppleAPIC IOACPIFamily IOPCIFamily IOStorageFamily IOATAFamily \
 	 IOGraphics corecrypto pthread IOHIDFamily ApplePS2Controller \
          AppleI386PCI #RavynXHCIPort IOUSBFamily
 
+# All 16 kexts must build on every host; only the prelinked cache is
+# host-dependent.  plktool is a Linux port (OpenSSL, glibc <byteswap.h>, the
+# in-tree CoreFoundation) and cannot be built on macOS, so skip the cache there
+# with an explicit message rather than failing after every kext has been built.
+# The D1 gate consumes System/Library/Kernels/kernel, which this does not touch;
+# a Darwin boot still needs Apple's kextcache or a real plktool port.
+.if "${.MAKE.OS}" == "Darwin"
+all: ${SUBDIR}
+	@echo "Skipping prelinked kernel cache: plktool is Linux-only (see Developer/Default.xctoolchain/plktool/Makefile)"
+.else
 all: kernelcache
+.endif
 .for target_dir in ${RAVYN_SDKROOT}/System/Library/Extensions \
   ${SYSROOT_DIR}/System/Library/Extensions
 	mkdir -p ${target_dir}
