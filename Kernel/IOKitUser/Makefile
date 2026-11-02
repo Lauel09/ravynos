@@ -377,27 +377,6 @@ copy_headers: .PHONY
 		${.CURDIR}/hid.subproj/IOHIDLib.h \
 		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDProperties.h \
 		${iokitHdrs}/hid/
-	# The headers above IOHIDFamily/IOHIDFamily imports as <IOKit/hid/...>
-	# were never staged: IOHIDEvent.h pulls IOHIDEventTypes.h, which pulls
-	# IOHIDEventFieldDefs.h, and so on.  clang resolves <IOKit/...> inside
-	# IOKit.framework under --sysroot, so the chain has to be present there.
-	cp -f \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/AppleHIDUsageTables.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDDeviceKeys.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDDeviceTypes.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventData.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventFieldDefs.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventMacroDefs.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventServiceKeys.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventServiceKeys_Private.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventStructDefs.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDKeys.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDLibUserClient.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDPrivateKeys.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDResourceUserClient.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDUsageTables.h \
-		${iokitHdrs}/hid/
 	mkdir -p ${iokitHdrs}/network
 	cp -f \
 		${.CURDIR}/network.subproj/IOUserEthernetController.h \
@@ -430,6 +409,32 @@ copy_headers: .PHONY
 	mkdir -p ${iokitHdrs}/platform
 	cp -f ${.CURDIR}/platform.subproj/IOPlatformSupportPrivate.h \
 		${iokitHdrs}/platform/
+	# The header lists above are per-file and were chronically incomplete:
+	# each `bmake Kernel` run compiled until it hit the next header that had
+	# never been staged (IOHIDEvent.h, IOHIDEventFieldDefs.h,
+	# IOHIDParameter.h, ...).  The tree already carries the complete public
+	# trees that an Apple SDK's IOKit.framework is assembled from -- e.g.
+	# IOHIDSystem/IOKit/hidsystem/ holds all 14 hidsystem headers, and
+	# hid.subproj/ plus IOHIDFamily/IOHIDFamily/ hold the hid ones -- so
+	# stage those directories whole instead of enumerating them.  Consumers
+	# resolve <IOKit/...> inside IOKit.framework, so anything absent here is
+	# a hard failure; surplus headers are inert.
+	mkdir -p ${iokitHdrs}/hid ${iokitHdrs}/hidsystem ${iokitHdrs}/kext \
+		${iokitHdrs}/graphics ${iokitHdrs}/i2c
+	cp -f ${.CURDIR}/hid.subproj/*.h ${iokitHdrs}/hid/
+	cp -f ${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/*.h \
+		${iokitHdrs}/hid/
+	cp -f ${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDLib/*.h \
+		${iokitHdrs}/hid/
+	cp -f ${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/*.h \
+		${iokitHdrs}/hidsystem/
+	cp -f ${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/*.h \
+		${iokitHdrs}/hid/
+	cp -f ${.CURDIR}/kext.subproj/*.h ${iokitHdrs}/kext/
+	cp -f ${.CURDIR:H}/Extensions/IOGraphics/IOGraphicsFamily/IOKit/graphics/*.h \
+		${iokitHdrs}/graphics/
+	cp -f ${.CURDIR:H}/Extensions/IOGraphics/IOGraphicsFamily/IOKit/i2c/*.h \
+		${iokitHdrs}/i2c/
 	rm -f ${RAVYN_SDKROOT}${SLF}/IOKit.framework/Headers
 	rm -f ${RAVYN_SDKROOT}${SLF}/IOKit.framework/PrivateHeaders
 	ln -sf Versions/A/Headers ${RAVYN_SDKROOT}${SLF}/IOKit.framework/Headers

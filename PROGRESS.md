@@ -319,6 +319,17 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 22) — IOKit headers staged as trees, not lists.**
+  Runs 13-14 fixed one missing `IOKit/hid` header per build; run 15 hit
+  `IOHIDParameter.h`. The enumeration in `copy_headers` was simply never
+  complete, so it now copies the whole public directories (hid.subproj,
+  IOHIDFamily/IOHIDFamily, IOHIDFamily/IOHIDLib, IOHIDSystem/IOKit/hidsystem,
+  kext.subproj, IOGraphics/IOKit/{graphics,i2c}) instead of naming files. The
+  closure model — rebuilt to join recipe continuations and to search all of
+  `Kernel/` for a missing header — models 212 staged headers and reports zero
+  unsatisfied `<IOKit/...>` includes; it also caught a gap the hand-picked
+  search path had hidden (`IOHIDLibObsolete.h` lives in IOHIDFamily/IOHIDLib).
+  Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 21) — IOKit/hid header closure staged in one go.**
   Run 13 fixed one missing header; the compiler then asked for the next
   (`IOHIDEventFieldDefs.h`). Instead of iterating, the full closure was

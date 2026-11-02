@@ -798,3 +798,44 @@ Kernel/IOKitUser/hidsystem.subproj/event_status_driver.h:42.
 Next: rerun `./tools/darwin-gate.sh xnu`. If a further `file not found`
 appears, it will be outside `IOKit/hid|hidsystem` and the same closure check
 extends to it directly.
+
+### 2026-11-02 — D1 run 15: stop enumerating headers, stage the trees
+Output (verbatim):
+```
+IOKit.framework/Headers/hid/IOHIDKeys.h:29:10: fatal error:
+  'IOKit/hidsystem/IOHIDParameter.h' file not found
+```
+Runs 13 and 14 each chased one link of the same chain, so this changes the
+mechanism rather than extending the list. `copy_headers` enumerates headers
+file by file, and the enumeration was never complete; every run compiled until
+it found the next omission. The tree already contains the complete public trees
+an Apple SDK's IOKit.framework is assembled from, so those directories are now
+staged whole.
+
+Did (run-15 candidate, not a gate pass): replace the enumeration for the
+affected groups with directory copies — `hid.subproj/*.h` (62),
+`Extensions/IOHIDFamily/IOHIDFamily/*.h` (54),
+`Extensions/IOHIDFamily/IOHIDLib/*.h` (10),
+`Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/*.h` (14, into both
+`hid/` and `hidsystem/`), `kext.subproj/*.h` (12),
+`IOGraphicsFamily/IOKit/graphics/*.h` (16) and `IOKit/i2c/*.h` (2) — and drop
+the hand-written fifteen-file list added in run 14, which the directory copy
+supersedes.
+
+Evidence: the closure model was rebuilt to join recipe continuations (the
+earlier "0 gaps" number came from a parser that only saw the single-line `cp`
+form, so it was not trustworthy) and to source a missing header from *any*
+directory in `Kernel/`, not a hand-picked pool. It now models 212 staged
+headers and reports **0** unsatisfied `<IOKit/...>` includes across 853 files
+and 21 `-I` directories. That rebuild found one further genuine gap the
+hand-picked pool had hidden: `IOHIDLibObsolete.h` (included by both
+`IOHIDLib.h` and `IOHIDDevicePlugIn.h`) lives in `IOHIDFamily/IOHIDLib/`, not
+in either tree that was being copied. All seven source directories were checked
+to exist and to hold the stated header counts; `git diff --check` passes.
+Cites: Kernel/IOKitUser/Makefile:409-437;
+Kernel/IOKitUser/hid.subproj/IOHIDLib.h:34;
+Kernel/Extensions/IOHIDFamily/IOHIDFamily/IOHIDKeys.h:29.
+Next: rerun `./tools/darwin-gate.sh xnu`. The header question is now answered by
+construction for `hid`, `hidsystem`, `kext`, `graphics` and `i2c`; anything still
+missing would have to come from a subdirectory not staged here, and the model
+would name it.
