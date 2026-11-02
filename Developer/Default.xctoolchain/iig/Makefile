@@ -9,14 +9,14 @@ CXXFLAGS += -std=gnu++17
 #   Undefined symbols for architecture arm64:
 #     "std::__1::codecvt<char, char, __mb_state_t>::id", referenced from:
 #         std::__1::has_facet[abi:ne200100]<...codecvt<char, char, __mb_state_t>>...
-# libc++ declares the codecvt<char, char, mbstate_t> facet as an extern template
-# under an ABI tag chosen by the deployment target, so compiling with the
-# default target and linking against the SDK's libc++ asks for a mangled name
-# that dylib does not export.  Every other target in this tree passes
-# -mmacos-version-min (rvn.kext.mk, rvn.framework.mk, and the SDK recipe's own
-# CLT copies rely on the same 10.15 baseline, and the top level already exports
-# MACOS_VERSION_MIN); the host tools were simply missed.  Apply it to both the
-# compile and the link so the two agree.
+# The mangled name was in fact caused by the __mb_state_t/__mbstate_t mismatch
+# documented below -- fixing that is what made the link work, and this flag was
+# not the cure.  It is kept because it is still correct: every other target in
+# this tree passes -mmacos-version-min (rvn.kext.mk, rvn.framework.mk, the SDK
+# recipe's own CLT copies all rely on the same 10.15 baseline, and the top level
+# already exports MACOS_VERSION_MIN), and a host tool that links against the
+# SDK's libc++ should agree with it on the deployment target.  Apply it to both
+# the compile and the link so the two cannot drift apart.
 .if defined(MACOS_VERSION_MIN)
 CXXFLAGS += -mmacos-version-min=${MACOS_VERSION_MIN}
 LDFLAGS  += -mmacos-version-min=${MACOS_VERSION_MIN}
