@@ -319,6 +319,15 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 29) — corecrypto stops recursing into `user/`.**
+  The Kernel pass reached `Kernel/Extensions` and failed with
+  `bmake[4]: don't know how to make all` in `corecrypto/user`, which holds only
+  `dummy.c` (a typedef that exists because Xcode refuses a target with no
+  sources). `SUBDIR = user` is removed, matching the earlier fix for IOKitUser's
+  `kext.subproj`. A rescan across all stages — this time matching lowercase
+  `makefile` too, which is why the earlier sweep missed this file — finds no
+  other `SUBDIR` naming a directory without a makefile (2400 files checked).
+  Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 28) — SDK seeds link stubs for IOKit.framework.**
   With `-lkernel` gone the IOKit.framework link failed on the next missing
   input, `ld: framework not found CoreFoundation`; the SDK ships only

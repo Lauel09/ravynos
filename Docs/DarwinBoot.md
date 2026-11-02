@@ -1080,3 +1080,37 @@ actual filename.
 Cites: Developer/ravynOS.sdk/Makefile:8-30,66-80; BSD/share/mk/bsd.sys.mk:523-529;
 Kernel/IOKitUser/Makefile:277-290; Makefile:168.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 22: corecrypto recursed into a stub directory
+Output (verbatim):
+```
+===> Kernel/Extensions/corecrypto/user (all)
+[Creating objdir .../Kernel/Extensions/corecrypto/user...]
+bmake[4]: don't know how to make all. Stop
+```
+IOKit.framework now links; the Kernel pass is into `Kernel/Extensions`.
+
+Did (run-22 candidate, not a gate pass): `SUBDIR = user` became `SUBDIR =` in
+`Kernel/Extensions/corecrypto/makefile`, with `#SUBDIR += user` left commented
+alongside the reason.
+
+Evidence: `user/` contains exactly one file, `dummy.c`, whose entire content is
+`typedef int the_c_standard_does_not_like_empty_modules;` under the comment
+"Xcode won't build a target without at least one source file." There is nothing
+to build, and upstream ravynsoft/ravynos carries the same stub directory. The
+kext itself is assembled from `SRCS` in the parent file. This is the same defect
+as run 12's IOKitUser `kext.subproj`, and the parent file already sets
+`SUBDIR =` empty at line 2, so the trailing `SUBDIR = user` was the only thing
+making `bsd.subdir.mk` descend.
+
+Worth recording: run 12's sweep missed this file because it is named `makefile`
+in lowercase, so matching only `Makefile` skipped it. Rescanned all of
+Kernel, Libraries, Frameworks, BSD and Developer with `Makefile|makefile|
+GNUmakefile`: 2400 makefiles, and `corecrypto/user` is the only remaining
+`SUBDIR` entry that names a directory without a makefile. A first attempt at
+that scan also produced a false positive on
+`Kernel/Extensions/IOHIDFamily/Makefile` because the pattern allowed `\s*` to
+cross a newline; the corrected line-anchored scan reports one hit, and
+IOHIDFamily's live `SUBDIR` is `IOHIDSystem`, which does have a makefile.
+Cites: Kernel/Extensions/corecrypto/makefile:2,66; .../corecrypto/user/dummy.c.
+Next: rerun `./tools/darwin-gate.sh xnu`.

@@ -52,7 +52,17 @@ copyheaders:
 	mkdir -p ${.OBJDIR}/include/corecrypto
 	cp -f ${.CURDIR}/cc_abort.h ${.OBJDIR}/include/corecrypto
 
-SUBDIR = user
+# user/ is not a buildable subdirectory: it holds a single dummy.c whose only
+# content is "typedef int the_c_standard_does_not_like_empty_modules;" and a
+# comment explaining that Xcode refuses a target with no source files.  The
+# kext itself is assembled from SRCS above.  Listing user/ in SUBDIR made
+# bsd.subdir.mk recurse into it and fail with
+#   bmake[4]: don't know how to make all. Stop
+#     bmake[4]: stopped making "all" in .../Kernel/Extensions/corecrypto/user
+# The same mistake was made with IOKitUser's kext.subproj (see
+# Kernel/IOKitUser/Makefile); this is not a build directory.
+SUBDIR =
+#SUBDIR += user
 
 .include <rvn.kext.mk>
 .include <bsd.subdir.mk>
