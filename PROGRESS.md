@@ -319,6 +319,18 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 28) — SDK seeds link stubs for IOKit.framework.**
+  With `-lkernel` gone the IOKit.framework link failed on the next missing
+  input, `ld: framework not found CoreFoundation`; the SDK ships only
+  `Kernel.framework` and `System.framework` and an empty `usr/lib`, yet the link
+  names CoreFoundation, Foundation, objc, c++, z and System, all produced by the
+  Libraries and Frameworks passes that run *after* Kernel. `Developer/ravynOS.sdk`
+  now seeds the CLT SDK's TBD text stubs for those five, extending the
+  `CLT_LIBSYSTEM_COPY` precedent already in that file. `-framework Foundation`
+  is appended by `bsd.sys.mk:529` for any `.m`/`.mm` source, so it was going to
+  be the next failure regardless. Chose stub seeding over reordering the world,
+  which would re-run Libraries/Frameworks on every `bmake Kernel`. Still needs
+  a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 27) — IOKit.framework no longer links `-lkernel`.**
   Every IOKitUser source now compiles; the framework link then failed with
   `ld: library not found for -lkernel`. That library is `libkernel.a`, the

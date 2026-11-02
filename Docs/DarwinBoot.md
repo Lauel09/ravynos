@@ -1035,3 +1035,48 @@ line 280), so this is upstream's defect rather than a local divergence; Apple
 publishes no makefile for IOKitUser (Xcode-only), so there is no upstream
 reference to compare against.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 21: the SDK has no link inputs for IOKit.framework
+Output (verbatim):
+```
+clang -shared -dylib -o .../IOKit.framework/Versions/A/IOKit -Wl,-force_load,.../libIOKit.a
+  ... -L.../ravynOS.sdk/usr/local/lib/kernel -lcc_kext -lkxld
+  -framework CoreFoundation -lobjc -lc++ -lz -lSystem ... -framework Foundation
+ld: framework not found CoreFoundation
+```
+Removing `-lkernel` (run 20) did not cause this; it revealed it. The link line
+names six inputs, and the SDK contains none of them: `System/Library/Frameworks/`
+holds only `Kernel.framework` and `System.framework`, and `usr/lib/` is empty.
+
+Did (run-21 candidate, not a gate pass): `Developer/ravynOS.sdk/Makefile` now
+seeds the CLT SDK's TBD text stubs for `libobjc`, `libc++`, `libz`,
+`CoreFoundation.framework` and `Foundation.framework`, guarded by
+`${.MAKE.OS} == "Darwin"` and by `[ -f ... ]` per file, placed after the
+`cp -Rf usr System` step so the copy cannot overwrite them.
+
+Evidence: this is the same fix the recipe already applies to `libSystem` nine
+lines above (`CLT_LIBSYSTEM_COPY`, with its own comment: "usr/lib is only filled
+later by the Libsystem build (world order: Developer Kernel Libraries ... BSD),
+so seed the CLT SDK's libSystem TBDs"). The argument is identical and now
+applies to the rest of the link line, because `Kernel/IOKitUser` links
+IOKit.framework during a pass that precedes both Libraries and Frameworks. TBDs
+are symbol-only text files: they let the link resolve, they embed no code, and
+they are overwritten when the real artifacts are installed later. A
+`.tbd`-for-a-framework stub is not exotic here -- this tree's own lld fixtures
+use `System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd`.
+`-framework Foundation` is not written in IOKitUser at all: it is appended by
+`BSD/share/mk/bsd.sys.mk:529` whenever `SRCS` contains `.m`/`.mm` files, so it
+would have been the next failure after CoreFoundation.
+Caveat, explicitly: this was chosen over reordering the world so Libraries and
+Frameworks precede Kernel. Reordering is architecturally cleaner, but it would
+re-run those stages on every `bmake Kernel` and is far too large a blast radius
+to land unverified against a build I cannot run here. The stub seeding is
+reversible and touches only SDK content.
+Unverified detail worth watching: libc++ ships in the CLT SDK as a dylib stub
+whose filename may not be `libc++.tbd`; the `[ -f ]` guard makes a missing file
+a silent skip rather than an error, so if the next log reports
+`library not found for -lc++` the answer is to point that entry at the CLT's
+actual filename.
+Cites: Developer/ravynOS.sdk/Makefile:8-30,66-80; BSD/share/mk/bsd.sys.mk:523-529;
+Kernel/IOKitUser/Makefile:277-290; Makefile:168.
+Next: rerun `./tools/darwin-gate.sh xnu`.

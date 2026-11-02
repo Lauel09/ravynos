@@ -17,6 +17,18 @@ CLT_LIBSYSTEM_COPY = cp -f ${CLTSDK}/usr/lib/libSystem.tbd ${CLTSDK}/usr/lib/lib
 CLT_LIBSYSTEM_COPY = :
 .endif
 
+# Kernel/IOKitUser links IOKit.framework during the Kernel pass, which runs
+# before Libraries and Frameworks (.WAIT between them), yet its LDFLAGS name
+# CoreFoundation, Foundation, objc, c++, z and System.  None of those exist in
+# this SDK yet at that point, so the link stops at the first one it cannot
+# resolve -- successively "library not found for -lkernel" (now removed), then
+# "framework not found CoreFoundation", then Foundation, then libobjc, and so
+# on.  Seed the CLT SDK's TBD text stubs for them, exactly as libSystem is
+# already seeded above: a TBD carries symbols only, needs no binary, and is
+# replaced by the real artifact when Libraries and Frameworks install over it.
+CLT_STUB_LIBS = libobjc.tbd libc++.tbd libz.tbd
+CLT_STUB_FMWKS = CoreFoundation Foundation
+
 all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	mkdir -p ${RAVYN_SDKROOT}${FPATH}/Versions/B
 	mkdir -p ${RAVYN_SDKROOT}/usr/local/include
@@ -51,6 +63,20 @@ all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	# staging it left dispatch/object.h unable to declare dispatch_object_t.
 	cp -f ${.CURDIR}/usr/local/include/kernel/os/object.h \
 		${RAVYN_SDKROOT}/usr/include/os/
+.if "${.MAKE.OS}" == "Darwin"
+	for lib in ${CLT_STUB_LIBS}; do \
+	  if [ -f ${CLTSDK}/usr/lib/$$lib ]; then \
+	    cp -f ${CLTSDK}/usr/lib/$$lib ${RAVYN_SDKROOT}/usr/lib/; \
+	  fi; \
+	done
+.for fmwk in ${CLT_STUB_FMWKS}
+	if [ -f ${CLTSDK}/System/Library/Frameworks/${fmwk}.framework/${fmwk}.tbd ]; then \
+	  mkdir -p ${RAVYN_SDKROOT}/System/Library/Frameworks/${fmwk}.framework; \
+	  cp -f ${CLTSDK}/System/Library/Frameworks/${fmwk}.framework/${fmwk}.tbd \
+	    ${RAVYN_SDKROOT}/System/Library/Frameworks/${fmwk}.framework/; \
+	fi
+.endfor
+.endif
 	# sys/cdefs.h:806 does #include <sys/_posix_availability.h> for
 	# non-KERNEL compiles.  The only copies in this tree are under
 	# System.framework PrivateHeaders (identical to
