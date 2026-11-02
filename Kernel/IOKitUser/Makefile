@@ -339,6 +339,8 @@ copy_headers: .PHONY
 		${iokitHdrs}/hidsystem/
 	mkdir -p ${iokitHdrs}/hid
 	cp -f \
+		${.CURDIR}/hid.subproj/IOHIDEvent.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h \
 		${.CURDIR}/hid.subproj/IOHIDAnalytics.h \
 		${.CURDIR}/hid.subproj/IOHIDEventPrivate.h \
 		${.CURDIR}/hid.subproj/IOHIDConnectionFilterPlugin.h \

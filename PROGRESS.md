@@ -319,6 +319,14 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 20) — IOKitUser's header staging was incomplete.**
+  With the kernel linking, `Kernel` reached IOKitUser and stopped on
+  `'IOKit/hid/IOHIDEvent.h' file not found`. IOKitUser's `copy_headers` is a
+  hand-maintained copy list that never staged `IOHIDEvent.h` (it lives in
+  `hid.subproj/`) nor the `IOHIDEventTypes.h` that header includes; clang
+  resolves `<IOKit/...>` inside `IOKit.framework` and so found neither. Both are
+  now copied into the framework's `Headers/hid`. Pre-existing, only reachable
+  now that the earlier failures are gone. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 19) — the kernel links.** `Kernel` now gets past
   `kernel.unstripped` (the freestanding profiling runtime works) and proceeds to
   IOKitUser, where it hit a pre-existing defect: `SUBDIR = kext.subproj` in

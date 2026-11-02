@@ -717,3 +717,45 @@ upstream comparison: ravynsoft/ravynos `Kernel/IOKitUser/Makefile@darwin` (diff 
 Next: rerun `./tools/darwin-gate.sh xnu`. The kernel link is now the last known
 obstacle cleared; what remains is whatever `Kernel`'s remaining targets do, then
 the staged-kernel check.
+
+### 2026-11-02 — D1 run 13: IOKitUser needs two headers it never staged
+Output (verbatim):
+```
+IOHIDEventObjc.m:9:9: fatal error: 'IOKit/hid/IOHIDEvent.h' file not found
+    9 | #import <IOKit/hid/IOHIDEvent.h>
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~
+      | did not find header 'hid/IOHIDEvent.h' in framework 'IOKit'
+      | (loaded from '.../ravynOS.sdk/System/Library/Frameworks')
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+`IOHIDEventObjc.m` opens with `#import <IOKit/hid/IOHIDEvent.h>`, and the body
+of IOKitUser's `copy_headers` is a hand-maintained `cp` list. That list omits
+`IOHIDEvent.h` even though the file exists at
+`Kernel/IOKitUser/hid.subproj/IOHIDEvent.h`, so clang's framework lookup —
+which searches `IOKit.framework/Versions/A/{Headers,PrivateHeaders}` because the
+code is compiled with `--sysroot` — found nothing. The include is not a leftover
+from our changes: it is line 9 of the first source the IOKitUser target compiles,
+and it was simply never reached before, because every earlier `Kernel` run died
+in the kernel link or the `kext.subproj` recursion.
+
+Did (run-13 candidate, not a gate pass): add
+`hid.subproj/IOHIDEvent.h` to the `IOKit/hid` copy list, plus
+`${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h`, which that
+header includes as `<IOKit/hid/IOHIDEventTypes.h>` and which was likewise never
+staged into the framework.
+
+Evidence: a simulated SDK built from the Makefile's own `cp` lists, then
+expanded transitively over every `#include`/`#import` in the staged headers,
+reports `IOHIDEvent.h` as the only `IOKit/hid` header reachable from a compiled
+source but absent from the framework, and `IOHIDEventTypes.h` as the next
+missing link in its chain. Both source files exist in the tree, and
+`IOHIDEvent.h`'s other two includes already resolve: `<CoreFoundation/...>`
+through the existing `-I${ROOT_SOURCE_DIR}/Frameworks`, and
+`<IOKit/hidobjc/hidobjcbase.h>` through `PrivateHeaders/hidobjc/`, which
+`copy_headers` already populates (`:292-308`).
+Cites: Kernel/IOKitUser/hid.subproj/IOHIDEventObjc.m:8-10;
+Kernel/IOKitUser/hid.subproj/IOHIDEvent.h:28-32;
+Kernel/IOKitUser/Makefile:283,288-308,340-342,358-360.
+Next: rerun `./tools/darwin-gate.sh xnu`. IOKitUser compiles in bulk after
+`copy_headers`, so the next report is expected to name any further missing
+header directly.
