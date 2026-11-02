@@ -759,3 +759,42 @@ Kernel/IOKitUser/Makefile:283,288-308,340-342,358-360.
 Next: rerun `./tools/darwin-gate.sh xnu`. IOKitUser compiles in bulk after
 `copy_headers`, so the next report is expected to name any further missing
 header directly.
+
+### 2026-11-02 — D1 run 14: the whole IOKit/hid header closure, not one file
+Output (verbatim):
+```
+IOKit.framework/Headers/hid/IOHIDEventTypes.h:147:10: fatal error:
+  'IOKit/hid/IOHIDEventFieldDefs.h' file not found
+  147 | #include <IOKit/hid/IOHIDEventFieldDefs.h>
+```
+Run 13 fixed exactly the header the compiler named first; this is the next link
+of the same chain, which is the expected shape when a hand-maintained copy list
+is filled in one failure at a time. Rather than chase the chain again, the whole
+closure was computed up front.
+
+Did (run-14 candidate, not a gate pass): stage every header the IOKitUser
+sources reach as `<IOKit/hid/...>` — fifteen files from
+`Extensions/IOHIDFamily/IOHIDFamily/` (`AppleHIDUsageTables.h`,
+`IOHIDDeviceKeys.h`, `IOHIDDeviceTypes.h`, `IOHIDEventData.h`,
+`IOHIDEventFieldDefs.h`, `IOHIDEventMacroDefs.h`, `IOHIDEventServiceKeys.h`,
+`IOHIDEventServiceKeys_Private.h`, `IOHIDEventStructDefs.h`,
+`IOHIDEventTypes.h`, `IOHIDKeys.h`, `IOHIDLibUserClient.h`,
+`IOHIDPrivateKeys.h`, `IOHIDResourceUserClient.h`, `IOHIDUsageTables.h`) — and
+`hid.subproj/IOHIDTypes.h` as `<IOKit/hidsystem/IOHIDTypes.h>`, which
+`event_status_driver.h` includes.
+
+Evidence: a model of the framework built from the Makefile's own `cp` lines
+(both the multi-line and single-line forms, including the
+`usr/local/include/IOKit` tree), resolved against the target's real `-I` set and
+expanded transitively over `#include`/`#import`, now reports **0** headers that
+a compiled source reaches but the framework lacks, having scanned 831 files and
+92 staged headers. Before the change it reported the same 16 entries the
+compiler was walking through one at a time. Every added source file was checked
+to exist; extra headers inside a framework's `Headers/` are inert for this
+build, so the set is deliberately generous.
+Cites: Kernel/IOKitUser/Makefile:336-402;
+Kernel/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h:147;
+Kernel/IOKitUser/hidsystem.subproj/event_status_driver.h:42.
+Next: rerun `./tools/darwin-gate.sh xnu`. If a further `file not found`
+appears, it will be outside `IOKit/hid|hidsystem` and the same closure check
+extends to it directly.

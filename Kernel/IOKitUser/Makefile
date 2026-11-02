@@ -337,10 +337,12 @@ copy_headers: .PHONY
 		${.CURDIR}/hidsystem.subproj/IOHIDLib.h \
 		${.CURDIR}/hidsystem.subproj/event_status_driver.h \
 		${iokitHdrs}/hidsystem/
+	# event_status_driver.h includes <IOKit/hidsystem/IOHIDTypes.h>, which
+	# lives in hid.subproj and was not staged under either name.
+	cp -f ${.CURDIR}/hid.subproj/IOHIDTypes.h ${iokitHdrs}/hidsystem/
 	mkdir -p ${iokitHdrs}/hid
 	cp -f \
 		${.CURDIR}/hid.subproj/IOHIDEvent.h \
-		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h \
 		${.CURDIR}/hid.subproj/IOHIDAnalytics.h \
 		${.CURDIR}/hid.subproj/IOHIDEventPrivate.h \
 		${.CURDIR}/hid.subproj/IOHIDConnectionFilterPlugin.h \
@@ -374,6 +376,27 @@ copy_headers: .PHONY
 		${.CURDIR}/hid.subproj/IOHIDLibPrivate.h \
 		${.CURDIR}/hid.subproj/IOHIDLib.h \
 		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDProperties.h \
+		${iokitHdrs}/hid/
+	# The headers above IOHIDFamily/IOHIDFamily imports as <IOKit/hid/...>
+	# were never staged: IOHIDEvent.h pulls IOHIDEventTypes.h, which pulls
+	# IOHIDEventFieldDefs.h, and so on.  clang resolves <IOKit/...> inside
+	# IOKit.framework under --sysroot, so the chain has to be present there.
+	cp -f \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/AppleHIDUsageTables.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDDeviceKeys.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDDeviceTypes.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventData.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventFieldDefs.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventMacroDefs.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventServiceKeys.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventServiceKeys_Private.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventStructDefs.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventTypes.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDKeys.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDLibUserClient.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDPrivateKeys.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDResourceUserClient.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDFamily/IOHIDUsageTables.h \
 		${iokitHdrs}/hid/
 	mkdir -p ${iokitHdrs}/network
 	cp -f \

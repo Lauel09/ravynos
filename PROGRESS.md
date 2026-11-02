@@ -319,6 +319,13 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 21) — IOKit/hid header closure staged in one go.**
+  Run 13 fixed one missing header; the compiler then asked for the next
+  (`IOHIDEventFieldDefs.h`). Instead of iterating, the full closure was
+  computed from the Makefile's own copy lists, the target's `-I` set and a
+  transitive scan of 831 files: fifteen `IOHIDFamily/IOHIDFamily` headers and
+  `hid.subproj/IOHIDTypes.h` (as `<IOKit/hidsystem/...>`) are now staged, and
+  the model reports zero remaining gaps. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 20) — IOKitUser's header staging was incomplete.**
   With the kernel linking, `Kernel` reached IOKitUser and stopped on
   `'IOKit/hid/IOHIDEvent.h' file not found`. IOKitUser's `copy_headers` is a
