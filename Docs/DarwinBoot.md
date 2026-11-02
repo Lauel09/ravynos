@@ -914,3 +914,49 @@ noise (`sys/types.h` matching `BSD/lib/libnetbsd/sys/types.h`, `stdbool.h`, the
 toolchain's `availability.h`). Do not act on that signal; resolve includes
 against the staged SDK and the actual `-I` path, not by basename.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 18: run 17 staged the wrong os/object.h
+Output (verbatim):
+```
+IOKit.framework ... usr/include/dispatch/object.h:55:1: error:
+  unknown type name 'OS_OBJECT_DECL_CLASS'
+usr/include/dispatch/object.h:66:27: error: use of undeclared identifier
+  'dispatch_object_t'; did you mean 'dispatch_object'?
+20 errors generated.
+```
+Run 17 found the right *file name* and the wrong *file*: the tree carries three
+different `os/object.h`, and the one it copied cannot declare what dispatch
+needs.
+
+Did (run-18 candidate, not a gate pass): `Developer/ravynOS.sdk/Makefile` now
+copies `${.CURDIR}/usr/local/include/kernel/os/object.h` instead of
+`BSD/include/os/object.h` into `${RAVYN_SDKROOT}/usr/include/os/`.
+
+Evidence: the three copies are not interchangeable. `BSD/include/os/object.h`
+(188 lines) and `Developer/ravynOS.sdk/usr/local/include/kernel/os/object.h`
+(271 lines) share the include guard `__OS_OBJECT__`, but only the 271-line one
+defines `OS_OBJECT_DECL_CLASS`, `OS_OBJECT_DECL`, `OS_OBJECT_DECL_SUBCLASS` and
+`os_retain`; `Kernel/xnu/libkern/os/object.h` (202 lines) is a third variant,
+also without `OS_OBJECT_DECL_CLASS`. So the guard is what turned a
+wrong-file mistake into a confusing error: `<dispatch/object.h>` included
+`<os/object.h>`, got the stale copy, and every later attempt to define the class
+was skipped. The 271-line copy is the one this tree already treats as
+authoritative — `Kernel/IOKitUser/Makefile:151-155` force-includes it into the
+`*Objc.o` rules and `Kernel/Extensions/IOHIDFamily/Makefile:45` does the same.
+Its includes resolve under the staged SDK: `Availability.h`,
+`os/availability.h`, `os/base.h` and `TargetConditionals.h` are all present, and
+`os/generic_unix_base.h` is behind `#elif defined(__unix__)`, which Darwin never
+reaches.
+Trigger, precisely: `Kernel/IOKitUser/IOKitLib.c:46` is plain C that includes
+`<dispatch/dispatch.h>`; it gets no `-include` and no `__OBJC__`, so
+`OS_OBJECT_HAVE_OBJC_SUPPORT` is 0 and `OS_OBJECT_DECL_CLASS` must exist in the
+non-ObjC branch — the branch the stale copy lacks. The header is self-contained
+under that branch: it declares the class and imports `objc/NSObject.h` itself.
+Cites: Developer/ravynOS.sdk/Makefile:42-53; BSD/include/os/object.h;
+Developer/ravynOS.sdk/usr/local/include/kernel/os/object.h:21-33,205-216;
+Kernel/IOKitUser/IOKitLib.c:46; Developer/ravynOS.sdk/usr/include/dispatch/object.h:55.
+Caveat: not compile-verified. This sandbox has no clang, and gcc cannot stand in
+— `TargetConditionals.h` rejects it and `sys/_symbol_aliasing.h` is generated
+during the build. The check was static: guard/greps across the three copies plus
+a trace of the `OS_OBJECT_USE_OBJC` branch logic.
+Next: rerun `./tools/darwin-gate.sh xnu`.

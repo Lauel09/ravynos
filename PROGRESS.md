@@ -319,6 +319,16 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 25) — the right os/object.h this time.**
+  Rev 24 staged the correct file name from the wrong tree:
+  `BSD/include/os/object.h` is a stale 188-line variant that shares the
+  `__OS_OBJECT__` guard with the real header but defines no
+  `OS_OBJECT_DECL_CLASS`, so `dispatch/object.h` failed with "unknown type name
+  'OS_OBJECT_DECL_CLASS'" and no `dispatch_object_t`. The SDK now stage
+  `usr/local/include/kernel/os/object.h` (271 lines, the copy
+  `Kernel/IOKitUser/Makefile:151` already force-includes) instead. The trigger
+  is `IOKitLib.c`, a plain C file that pulls dispatch and therefore needs the
+  non-ObjC branch. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 24) — SDK stages `<os/object.h>`.**
   The D1 gate failed on `dispatch/dispatch.h:64: 'os/object.h' file not found`,
   which is an SDK-content gap rather than a kernel one: `usr/include/os/` had

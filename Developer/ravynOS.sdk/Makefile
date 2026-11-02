@@ -42,11 +42,15 @@ all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	cp -Rf ${.CURDIR}/usr ${.CURDIR}/System ${RAVYN_SDKROOT}/
 	# usr/include/os/ ships base.h, lock.h, availability.h and
 	# state_private.h but not object.h, yet dispatch/dispatch.h, xpc/xpc.h and
-	# the asl_*.h headers in this same SDK all #include <os/object.h>.  The
-	# tree's only copy is BSD/include/os/object.h (same directory as the
-	# base.h already shipped); it needs only Availability.h, os/base.h and
-	# objc/NSObject.h, all of which are staged here.
-	cp -f ${ROOT_SOURCE_DIR}/BSD/include/os/object.h ${RAVYN_SDKROOT}/usr/include/os/
+	# the asl_*.h headers in this same SDK all #include <os/object.h>, and
+	# IOKitLib.c reaches it through dispatch from plain C.  Take the complete
+	# header from this SDK's own usr/local/include/kernel/os/, which is the
+	# copy IOKitUser/Makefile force-includes into its Objective-C++ objects;
+	# BSD/include/os/object.h is a stale 188-line variant of the same file
+	# with the same __OS_OBJECT__ guard and no OS_OBJECT_DECL_CLASS, so
+	# staging it left dispatch/object.h unable to declare dispatch_object_t.
+	cp -f ${.CURDIR}/usr/local/include/kernel/os/object.h \
+		${RAVYN_SDKROOT}/usr/include/os/
 	# sys/cdefs.h:806 does #include <sys/_posix_availability.h> for
 	# non-KERNEL compiles.  The only copies in this tree are under
 	# System.framework PrivateHeaders (identical to
