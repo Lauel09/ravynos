@@ -274,10 +274,19 @@ MIGFLAGS = -cc ${CC} -novouchers -server /dev/null ${MIG_DEFS} \
 iokitPrivateHdrs = ${RAVYN_SDKROOT}/System/Library/Frameworks/IOKit.framework/Versions/A/PrivateHeaders
 iokitHdrs = ${RAVYN_SDKROOT}/System/Library/Frameworks/IOKit.framework/Versions/A/Headers
 
+# Do not link -lkernel here.  libkernel.a is the libsyscall syscall library
+# (accept/bind/pselect/open/...), built by Libraries/Libsystem/libsystem_kernel
+# and consumed when libsystem_kernel.dylib is linked; the top level builds
+# Developer, then Kernel, then Libraries (.WAIT between them), so at this point
+# it does not exist yet and `bmake Kernel` dies in the IOKit.framework link with
+#   ld: library not found for -lkernel
+# IOKitUser calls no syscall wrappers from that archive, so the flag was inert
+# even when the file happened to be there.  -lcc_kext stays: it is a compiler
+# support runtime staged by Kernel/Makefile:compiler_rt, not a syscall library.
 LDFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
 	-Wl,-compatibility_version,1.0.0 -Wl,-current_version,275.0.0 \
 	-Wl,-flat_namespace -Wl,-undefined,warning \
-        -L${RAVYN_SDKROOT}/usr/local/lib/kernel -lcc_kext -lkxld -lkernel \
+        -L${RAVYN_SDKROOT}/usr/local/lib/kernel -lcc_kext -lkxld \
         -framework CoreFoundation -lobjc -lc++ -lz -lSystem
 
 all: copy_headers libkxld.a kext.subproj ${FRAMEWORK} to-sysroot

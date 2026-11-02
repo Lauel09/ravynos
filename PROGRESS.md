@@ -319,6 +319,16 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 27) — IOKit.framework no longer links `-lkernel`.**
+  Every IOKitUser source now compiles; the framework link then failed with
+  `ld: library not found for -lkernel`. That library is `libkernel.a`, the
+  libsyscall wrapper archive built by
+  `Libraries/Libsystem/libsystem_kernel` — but the top level builds
+  `Developer .WAIT Kernel Libraries ...`, so Kernel links before Libraries has
+  produced it, and IOKitUser references none of its symbols anyway (`kxld_*`
+  comes from the locally built `libkxld.a`). The flag is dropped; `-lcc_kext`
+  stays because `Kernel/Makefile:compiler_rt` stages it during the same pass.
+  Upstream carries the same defect. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 26) — `kHIDPage_AppleVendor` defined once.**
   `IOHIDUsageTables.h` declared it in the same enumerator as
   `kHIDPage_VendorDefinedStart = 0xFF00`, duplicating the entry in

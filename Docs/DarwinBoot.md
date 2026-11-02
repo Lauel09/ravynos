@@ -994,3 +994,44 @@ Kernel/Extensions/IOHIDFamily/IOHIDFamily/AppleHIDUsageTables.h:33-35.
 Note: the file is not valid UTF-8 (a stray byte near offset 17533), so edits to
 it must be byte-preserving; decoding it as text fails.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 20: IOKit.framework linked against a library that cannot exist yet
+Output (verbatim):
+```
+clang -shared -dylib -o .../IOKit.framework/Versions/A/IOKit -Wl,-force_load,.../libIOKit.a
+  ... -L.../ravynOS.sdk/usr/local/lib/kernel -lcc_kext -lkxld -lkernel ...
+ld: library not found for -lkernel
+clang: error: linker command failed with exit code 1
+```
+This is the first run where every source compiled — the log ends in the archive
+step (`ar -crsD libIOKit.a ...` with the full object list) and then the link.
+
+Did (run-20 candidate, not a gate pass): dropped `-lkernel` from `LDFLAGS` in
+`Kernel/IOKitUser/Makefile`; kept `-lcc_kext` and `-lkxld`.
+
+Evidence: the top level is `SUBDIR ?= Developer .WAIT Kernel Libraries
+Frameworks BSD` (Makefile:168), so Kernel completes before Libraries starts, and
+`libkernel.a` is only ever written by
+`Libraries/Libsystem/libsystem_kernel/Makefile:289-290` into
+`${RAVYN_SDKROOT}/usr/local/lib/kernel/libkernel.a`. At the moment IOKitUser
+links, that file cannot exist. Nor is it wanted: `libkernel.a` is the libsyscall
+wrapper archive (`legacy/accept.c`, `legacy/bind.c`, `cancelable/pselect*.c`,
+`custom/errno.c`, ...) consumed when `libsystem_kernel.dylib` is linked, whereas
+what kext.subproj genuinely calls is `kxld_*`, which
+`Kernel/IOKitUser/Makefile:465` builds locally from `Makefile.kxld` and copies to
+the same directory — the same pattern this tree already uses. A grep of every
+IOKitUser source for libsyscall-only entry points (`__semwait_signal`,
+`__disable_threadsignal`, `mach_msg_trap`, `semaphore_wait_trap`,
+`__psynch_*`, `__thread_selfid`, `__sysctl`) returned nothing, so the flag was
+inert even in a tree where the archive was present.
+`-lcc_kext` is a different case and stays: it is LLVM's compiler support
+runtime, staged by `Kernel/Makefile:103-109` (`compiler_rt`) during the same
+Kernel pass, not a syscall library.
+Cites: Kernel/IOKitUser/Makefile:277-288; Makefile:168;
+Libraries/Libsystem/libsystem_kernel/Makefile:276-290; Kernel/Makefile:103-110,138-141.
+Note: upstream ravynsoft/ravynos carries the same `-lkernel` on that line
+(`gh api repos/ravynsoft/ravynos/contents/Kernel/IOKitUser/Makefile?ref=darwin`,
+line 280), so this is upstream's defect rather than a local divergence; Apple
+publishes no makefile for IOKitUser (Xcode-only), so there is no upstream
+reference to compare against.
+Next: rerun `./tools/darwin-gate.sh xnu`.
