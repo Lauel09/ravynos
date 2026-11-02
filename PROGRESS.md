@@ -319,6 +319,18 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 23) — the header-glob shortcut was reverted.**
+  Replacing IOKitUser's per-file header lists with `cp dir/*.h` (rev 22) was a
+  regression: the tree has two `IOHIDEvent.h` files -- the user-space C API in
+  `hid.subproj` and the kernel C++ class `class IOHIDEvent : public OSObject`
+  in `IOHIDFamily/IOHIDFamily` -- and the glob put the class header last, so it
+  won the `<IOKit/hid/IOHIDEvent.h>` lookup and `.m` sources failed to compile.
+  Eight basenames collide this way, and `hid.subproj/IOHIDTypes.h` is a 0-byte
+  placeholder that was overwriting the real one. The validated per-file list is
+  restored, plus `IOHIDLibObsolete.h` and the real `hidsystem/IOHIDTypes.h`.
+  A checker now enforces: nothing empty staged, no kernel-class header reached
+  from a pure `.c`/`.m`, no unsatisfied `<IOKit/...>` include. Still needs a
+  real `D1 GATE PASSED`.
 - **2026-11-02 (rev 22) — IOKit headers staged as trees, not lists.**
   Runs 13-14 fixed one missing `IOKit/hid` header per build; run 15 hit
   `IOHIDParameter.h`. The enumeration in `copy_headers` was simply never

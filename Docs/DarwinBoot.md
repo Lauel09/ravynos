@@ -839,3 +839,45 @@ Next: rerun `./tools/darwin-gate.sh xnu`. The header question is now answered by
 construction for `hid`, `hidsystem`, `kext`, `graphics` and `i2c`; anything still
 missing would have to come from a subdirectory not staged here, and the model
 would name it.
+
+### 2026-11-02 — D1 run 16: the glob copied a kernel C++ class over the C API
+Output (verbatim):
+```
+IOKit.framework/Headers/hid/IOHIDEvent.h:47:1: error: unknown type name 'class'
+   47 | class IOHIDEvent : public OSObject
+      | ^
+IOHIDEventObjc.m:9:9: note: in file included from ...
+15 warnings and 4 errors generated.
+```
+The run-15 directory copy was wrong, and this shows why. Two different headers
+are called `IOHIDEvent.h`: `Kernel/IOKitUser/hid.subproj/IOHIDEvent.h` is the
+user-space C API (`IOHIDEventRef`, `IOHIDEventGetType`, ...), while
+`Extensions/IOHIDFamily/IOHIDFamily/IOHIDEvent.h` declares the kernel C++ class
+`class IOHIDEvent : public OSObject`. Copying the whole directory put the class
+header in `Headers/hid/` *after* the C one, so it won the lookup. The same
+mistake occurred with seven other basenames, and `hid.subproj/IOHIDTypes.h`,
+which the glob also copied, is a **0-byte placeholder** that overwrote the real
+182-line `IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h`.
+
+Did (run-16 candidate, not a gate pass): remove the directory globs and restore
+the per-file list that the compiler had already validated, which is what
+actually ships a userspace ABI; add only the two files that were genuinely
+missing from it -- `IOHIDFamily/IOHIDLib/IOHIDLibObsolete.h` (included by both
+`IOHIDLib.h` and `IOHIDDevicePlugIn.h`) and the real
+`IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h`. A comment records why
+`IOHIDFamily/IOHIDFamily/IOHIDEvent.h` must never be listed.
+
+Evidence: the header sets of the four candidate directories were diffed by
+basename — eight collide, and in every case `hid.subproj` holds the C API and
+`IOHIDFamily/IOHIDFamily` the kernel class. A model of the staged set now
+checks three invariants: no staged source is empty, no staged source is a
+kernel-class header reachable from a pure `.c`/`.m` consumer (0 violations; the
+two class headers that remain, `IOHIDLibUserClient.h` and
+`IOHIDResourceUserClient.h`, are included only from `.cpp` files), and no
+`<IOKit/...>` include reachable from the 303 files scanned is unsatisfied
+(0 violations). `git diff --check` passes.
+Cites: Kernel/IOKitUser/hid.subproj/IOHIDEvent.h; Kernel/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEvent.h:44-47;
+Kernel/IOKitUser/hid.subproj/IOHIDTypes.h (empty);
+Kernel/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h;
+Kernel/IOKitUser/Makefile:340-345,382-404.
+Next: rerun `./tools/darwin-gate.sh xnu`.
