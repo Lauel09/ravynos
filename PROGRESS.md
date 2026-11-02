@@ -319,6 +319,28 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 35) — the DriverKit generator never saw `NATIVE` classes.**
+  Run 28 failed at `EXPORT_HDRS/iokit/DriverKit/OSAction.h:61:14: expected
+  unqualified-id` on `class NATIVE KERNEL OSAction`, with the compiler noting
+  `expanded from macro 'KERNEL'` = `1`. That note is the answer, and it inverts
+  rev 30's reading: `NATIVE` goes through `IIG_NATIVE` and becomes empty, but
+  `KERNEL` is `-DKERNEL`, i.e. `1`, so the line preprocessed to `class 1
+  OSAction` and column 14 was the `1`. Reproduced and then eliminated. Three
+  defects stacked up: `findMainClass()` allowed only one optional `KERNEL`, so
+  every `NATIVE` class failed to match, `buildHeader()` fell through to its
+  not-found path, and the definition was emitted *verbatim* — unsanitised, which
+  is why rev 30's correct regex had no effect; those six headers also carried 22
+  unguarded `LOCALONLY` method specifiers, so the class line alone was not the
+  end of it; and `%.h : %.iig` had no `${IIG}` prerequisite, so a tool fix could
+  never invalidate stale output. Verified by building iig and running it over all
+  fourteen `.iig` files: 23 defective lines in `-DKERNEL=1` mode before, 0 after,
+  0 consumer-mode residue, all fourteen preprocess cleanly, and the eight
+  already-working headers byte-identical. The class stays out of the
+  `#if KERNEL` branch on purpose — `iokit/IOKit/IOService.h` includes
+  `<DriverKit/IOService.h>` under `KERNEL`, so declaring it twice would collide,
+  and `IOService` already proves the shape. MIG has the same `%.h : %.defs`
+  pattern without `${MIG}`, left alone because those directories build today.
+  Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 34) — plktool stays Linux-only; Extensions skips the cache.**
   Rev 33 enabled plktool's build rule on Darwin on the assumption that its
   absence was an oversight. It is not: plktool is a Linux port of kextcache
@@ -367,8 +389,11 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 - **2026-11-02 (rev 30) — iig stops emitting `NATIVE` into DriverKit headers.**
   IOHIDSystem failed to compile because the *generated*
   `EXPORT_HDRS/iokit/DriverKit/OSAction.h` contained
-  `class NATIVE KERNEL OSAction : public OSObject`, and `NATIVE` is only defined
-  inside the IIG phase. The header is generated from `OSAction.iig` by the
+  `class NATIVE KERNEL OSAction : public OSObject`. (Rev 35 corrects the cause
+  given here: `NATIVE` was *not* the problem — it maps to `IIG_NATIVE`, which is
+  empty outside the IIG phase. `KERNEL` was, because `-DKERNEL` makes it `1`.
+  The patch below was also inert, because the class never reached this code.)
+  The header is generated from `OSAction.iig` by the
   in-tree `iig` tool, whose `sanitizeDocumentationText()` stripped `LOCAL`/
   `LOCALONLY` and `class KERNEL` but not `NATIVE` — and its `class\s+KERNEL`
   pattern could not match when `NATIVE` sat in between. Fixed in the generator

@@ -1134,6 +1134,34 @@ generated file. `sanitizeDocumentationText()` in
 `Developer/Default.xctoolchain/iig/iig.cpp` now strips `NATIVE`, and its KERNEL
 pattern matches any run of `KERNEL` after `class` instead of exactly one.
 
+**Correction (rev 35).** That patch was right and completely inert, and the
+reasoning above points at the wrong token. `NATIVE` is not undefined — it maps
+to `IIG_NATIVE`, which the non-IIG branch defines as empty. `KERNEL` is the
+problem: `-DKERNEL` makes it `1`, so the line preprocessed to
+`class 1 OSAction : public OSObject` and column 14 is that `1`. The compiler
+said so in the note.
+
+The patch did nothing because it never ran. `findMainClass()` allowed a single
+optional `KERNEL` before the class name, so `class NATIVE KERNEL OSAction`
+matched nothing, it returned false, and `buildHeader()` took its not-found path
+— which emits the `.iig` text *verbatim*. Six of the fourteen DriverKit classes
+are `NATIVE` and all six bypassed the sanitiser entirely. Those headers also
+carry 22 `LOCALONLY` method specifiers outside any `__IIG` guard, so fixing the
+class line alone would have moved the error to `OSAction.h:100`.
+
+The rule had the second half of the bug: `%.h : %.iig` had no `${IIG}`
+prerequisite, so rebuilding the tool could never invalidate the output it had
+already produced. An iig fix that is correct and still has no effect is the
+signature to look for here.
+
+Fixed: the class-name pattern accepts any run of attribute keywords,
+`sanitizeTypeText()` drops `NATIVE`/`REMOTE`, the method specifiers are
+stripped, and `${IIG}` is a prerequisite. Verified by building iig here and
+running it over all fourteen `.iig` files — 23 defective lines in `-DKERNEL=1`
+mode before, 0 after; 0 consumer-mode residue; all fourteen preprocess cleanly;
+and the eight headers that already worked are byte-identical, so the classes
+that were fine cannot regress.
+
 Evidence: `EXPORT_HDRS/iokit/DriverKit/OSAction.h` is not a checked-in file. It
 is produced by iig from `Kernel/xnu/iokit/DriverKit/OSAction.iig`
 (`DriverKit/Makefile:25,34`: `GENERATED_HEADERS = $(patsubst %.iig,%.h,...)`,
