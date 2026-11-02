@@ -319,6 +319,19 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 33) — audited the whole remaining Kernel path.**
+  Instead of chasing the next failing line, swept the remaining stages at once.
+  Found and fixed one more blocker: `plktool` had no build rule on Darwin
+  (`.else` / `all: .PHONY`) though `Kernel/Extensions:kernelcache` runs it, so
+  every kext could build and the prelinked cache would then fail with
+  "plktool: command not found"; it now builds on both hosts from the same rule.
+  Also gave its objects real header dependencies so a header fix is not silently
+  linked against stale objects (the defect that made the iig fix look inert).
+  Cleared as already-correct: all 16 Extensions makefiles exist, every `SRCS`
+  resolves (three apparent misses are `.PATH` lookups), no other tool builds
+  nothing on Darwin, and no code depends on the old `__mb_state_t`. Left alone:
+  IOUSBFamily/HID/tests, which are in no `SUBDIR`. Still needs a real
+  `D1 GATE PASSED`; a static audit cannot substitute for compiling 16 kexts.
 - **2026-11-02 (rev 32) — `__mb_state_t` renamed to `__mbstate_t`.**
   Rev 31 blamed iig's missing deployment target; the undefined symbol actually
   named the type `__mb_state_t`, and that spelling existed in only two files:

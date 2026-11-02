@@ -1255,3 +1255,50 @@ and the recipe itself sets none), so I fixed the divergence in the headers rathe
 than removing the include path. Both are defensible; renaming the type restores
 consistency with every other copy in the tree either way.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 26: full audit of the remaining Kernel path
+Rather than wait for the next failing line, the whole remaining path was audited
+at once. What was checked, and the result:
+
+1. **Every `SUBDIR` in the tree names a real build directory.** Rescanned all
+   2400 makefiles (`Makefile|makefile|GNUmakefile`) across Kernel, Libraries,
+   Frameworks, BSD and Developer. One hit, already fixed (corecrypto/user). All
+   16 `Kernel/Extensions` entries have a makefile.
+2. **Every `SRCS` entry in every kext resolves.** The three apparent misses
+   (`IOGraphics`, `msdosfs`, and the `lzvn_decode.c` inside IOGraphics) all
+   resolve through each makefile's own `.PATH`.
+3. **Link inputs.** Only host-tool makefiles reference libraries the SDK lacks,
+   and all of them are genuinely host-side except one: **plktool built nothing on
+   Darwin**. `Developer/Default.xctoolchain/plktool/Makefile` had
+   `.if "${.MAKE.OS}" == "Linux"` for the real rule and `.else` /
+   `${TOOLS}/plktool: .PHONY` for everything else, yet
+   `Kernel/Extensions/Makefile:20` runs `${TOOLS}/plktool` from `kernelcache`.
+   Every kext would have built and then the prelinked cache step would have
+   failed with `plktool: command not found`. Fixed: one rule for both hosts. The
+   two branches differed only in how `libkxld.a` was obtained, and xnu's kxld is
+   always built earlier (`Kernel/Makefile:139` precedes `Extensions`) and writes
+   `${TOOLCHAIN}/usr/lib/libkxld.a` on both. Its `SRCS` all resolve
+   (`plktool.c`/`macho.c`/`kext.c` locally, `IOCFSerialize.c` via `.PATH` into
+   `Kernel/IOKitUser`).
+4. **Stale-object class.** plktool's objects are compiled with four `-include`
+   headers plus `plktool.h`, none of them known to bmake; they now depend on
+   them, so a header change cannot be silently linked against old objects. This
+   is the same defect that made the iig fix appear to do nothing.
+5. **"Tool that builds nothing" class.** Swept the 14 tool makefiles that are
+   actually built: `plktool` was the only one with an `all: .PHONY` branch.
+6. **`_types.h` divergence.** After renaming `__mb_state_t`, checked that no code
+   depends on the old spelling anywhere in the tree; only comments and these
+   build logs mention it. `mig`, the other host-`CC` tool, is pure C and includes
+   none of the affected headers.
+
+Deliberately not changed: `Kernel/Extensions/IOUSBFamily` and
+`IOHIDFamily/HID` are listed in no `SUBDIR` (both commented out), so their
+missing `IOKit/usb`/`IOKit/hid` staging cannot be reached; `Kernel/xnu/tests`
+and `Kernel/IOKitUser/tests` reference frameworks that do not exist, but neither
+is built. Guessing at those would have been the same mistake as the earlier
+"stage the whole directory" change.
+Caveat: this is a static audit. It removes the known classes, not every possible
+error -- it cannot compile C++, so a genuine source-level error in one of the 16
+kexts would still surface on the next run, one kext at a time, and no audit can
+pre-empt that.
+Next: rerun `./tools/darwin-gate.sh xnu`.
