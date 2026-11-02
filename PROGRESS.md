@@ -319,6 +319,14 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 19) — the kernel links.** `Kernel` now gets past
+  `kernel.unstripped` (the freestanding profiling runtime works) and proceeds to
+  IOKitUser, where it hit a pre-existing defect: `SUBDIR = kext.subproj` in
+  `Kernel/IOKitUser/Makefile` recursed into a directory that has no Makefile
+  (`bmake[3]: don't know how to make all`). `kext.subproj` is a source
+  directory compiled by the parent's `SRCS`; the file is byte-identical to
+  upstream, so nothing had ever reached that line — the kernel link always
+  failed first. `SUBDIR` is now empty. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 18) — the kernel was linking the *userspace* PGO runtime.**
   D1's link failure after run 9 was `___stderrp`/`_fprintf` from
   `libclang_rt.profile_osx.a(InstrProfilingWriter.c.o)`. The CLT archive is the

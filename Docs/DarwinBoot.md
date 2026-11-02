@@ -675,3 +675,45 @@ Kernel/xnu/makedefs/MakeInc.kernel:154.
 Next: rerun `./tools/darwin-gate.sh xnu`. Expect the archive step to succeed,
 then the real test — whether the kernel link resolves without
 `___stderrp`/`_fprintf`.
+
+### 2026-11-02 — D1 run 12: the kernel links; IOKitUser recursed into a source dir
+Output (verbatim):
+```
+cp -f .../Kernel/IOKitUser/libkxld.a .../usr/local/lib/kernel
+===> Kernel/IOKitUser/kext.subproj (all)
+bmake[3]: don't know how to make all. Stop
+bmake[3]: stopped making "all" in .../Kernel/IOKitUser/kext.subproj
+*** Error code 2
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+```
+The profiling-runtime work is done: `libclang_rt_profile` built, the kernel
+staged and linked, and the build moved on to the next `Kernel` target. This
+failure is unrelated and pre-existing — `Kernel/IOKitUser/Makefile` is
+byte-identical to upstream ravynsoft's, and it lists `SUBDIR = kext.subproj`
+for a directory that has no Makefile. Because the kernel link failed on every
+previous run, `Kernel` never got this far, so the defect had never surfaced.
+`kext.subproj` is a *source* directory: `OSKext.c`, `OSKextVersion.c`,
+`misc_util.c`, `printPList_new.c`, `cross_link.c`, `fat_util.c`,
+`macho_util.c` and the headers are all compiled by the parent's `SRCS`
+(`:29-83`), and the only thing generated from it is
+`kextmanager_mig.[ch]`, which already has its own rule (`:422-424`).
+
+Did (run-12 candidate, not a gate pass): set `SUBDIR =` (the file already
+carried an empty one; the later assignment at `:438` overrode it) and leave the
+MIG rule untouched, so `bsd.subdir.mk` no longer tries to build a directory
+that has no build description.
+
+Evidence: the sweep over every `SUBDIR` assignment under `Kernel`,
+`Libraries`, `Frameworks`, `BSD` and `Developer` found this as the only such
+directory whose build is reached on the `Kernel` path — the four other
+cases are `makefile`-spelled (lower case, found case-insensitively on macOS)
+or `#`-commented entries. `grep` confirms exactly one
+`kextmanager_mig.c kextmanager_mig.h:` rule remains, so no duplicate-target
+warning is introduced, and the parent's `SRCS` still contains all nine
+`kext.subproj/*.c` entries, so no source is dropped from IOKitUser.
+Cites: Kernel/IOKitUser/Makefile:7-83,422-424,438-445;
+BSD/share/mk/bsd.subdir.mk:9-20,41-52;
+upstream comparison: ravynsoft/ravynos `Kernel/IOKitUser/Makefile@darwin` (diff empty).
+Next: rerun `./tools/darwin-gate.sh xnu`. The kernel link is now the last known
+obstacle cleared; what remains is whatever `Kernel`'s remaining targets do, then
+the staged-kernel check.

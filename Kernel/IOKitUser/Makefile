@@ -435,7 +435,14 @@ libkxld.a:
 	${MAKE} -C${.CURDIR} -f Makefile.kxld all
 	cp -f ${.OBJDIR}/${.TARGET} ${RAVYN_SDKROOT}/usr/local/lib/kernel
 
-SUBDIR = kext.subproj
+# kext.subproj is a source directory, not a build directory: it has no
+# Makefile of its own, and its sources are compiled here (see SRCS above:
+# OSKext.c, OSKextVersion.c, misc_util.c, printPList_new.c, cross_link.c, ...).
+# Listing it in SUBDIR made bsd.subdir.mk recurse into it once the rest of
+# IOKitUser had finished, which failed with
+#   bmake[3]: don't know how to make all. Stop
+#   bmake[3]: stopped making "all" in .../Kernel/IOKitUser/kext.subproj
+SUBDIR =
 
 .include <rvn.framework.mk>
 .include <bsd.subdir.mk>
