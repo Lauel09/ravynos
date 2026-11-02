@@ -103,9 +103,9 @@ typedef int			__darwin_ct_rune_t;	/* ct_rune_t */
 typedef union {
 	char		__mbstate8[128];
 	long long	_mbstateL;			/* for alignment */
-} __mb_state_t;
+} __mbstate_t;
 
-typedef __mb_state_t		__darwin_mbstate_t;	/* mbstate_t */
+typedef __mbstate_t		__darwin_mbstate_t;	/* mbstate_t */
 
 #if defined(__GNUC__) && defined(__PTRDIFF_TYPE__)
 typedef __PTRDIFF_TYPE__	__darwin_ptrdiff_t;	/* ptr1 - ptr2 */

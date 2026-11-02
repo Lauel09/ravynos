@@ -319,6 +319,17 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 32) — `__mb_state_t` renamed to `__mbstate_t`.**
+  Rev 31 blamed iig's missing deployment target; the undefined symbol actually
+  named the type `__mb_state_t`, and that spelling existed in only two files:
+  the host toolchain's `include/{arm,i386}/_types.h`. Apple, xnu's own
+  `bsd/{arm,i386}/_types.h`, the cctools ppc copy, the SDK's System.framework
+  and the consumers `BSD/include/{stdio,wchar,uchar}.h` all use `__mbstate_t`.
+  iig was compiled against the divergent copy while linking against the host
+  libc++, so it instantiated `codecvt<char, char, mbstate_t>` on a type the
+  dylib never saw. Renamed both copies; `iig.o` now depends on the headers so it
+  is actually rebuilt (the failing run relinked without recompiling). Still needs
+  a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 31) — iig built with a deployment target.**
   The host tool `iig` failed to link on arm64 with
   `std::__1::codecvt<char, char, __mb_state_t>::id` undefined. It is a host C++

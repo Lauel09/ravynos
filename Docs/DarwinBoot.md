@@ -1209,3 +1209,49 @@ the `abi:ne200100` tag in the symbol name and the missing flag.
 Cites: Developer/Default.xctoolchain/iig/Makefile:5-22;
 Makefile:154,168-174; BSD/share/mk/rvn.kext.mk:41-42; BSD/share/mk/rvn.framework.mk:12-13.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 25: the tree spelled mbstate_t differently from Apple
+Output (verbatim, after run 24 added the deployment target):
+```
+/usr/bin/clang++ -o .../Toolchains/Default.xctoolchain/usr/bin/iig iig.o -mmacos-version-min=10.15
+Undefined symbols for architecture arm64:
+  "std::__1::codecvt<char, char, __mb_state_t>::id", referenced from:
+      std::__1::has_facet[abi:ne200100]<std::__1::codecvt<char, char, __mb_state_t>>...
+```
+Run 24's diagnosis was wrong, and the way it was wrong is visible in the
+symbol name: the type is `__mb_state_t`, with an underscore after `mb`.
+
+Did (run-25 candidate, not a gate pass): `Developer/Default.xctoolchain/include/
+{arm,i386}/_types.h` renamed their union from `__mb_state_t` to `__mbstate_t`,
+matching Apple; `iig/Makefile` now depends `iig.o` on those headers so an
+existing object is rebuilt instead of being relinked.
+
+Evidence: the failing symbol mangles the type as `__mb_state_t`, a spelling that
+exists in exactly two files in the whole tree --
+`Developer/Default.xctoolchain/include/arm/_types.h:106` and
+`.../i386/_types.h:106`. Apple's spelling is `__mbstate_t`, and so is every other
+copy in this tree: `Kernel/xnu/bsd/arm/_types.h`,
+`Kernel/xnu/bsd/i386/_types.h`,
+`Developer/Default.xctoolchain/cctools/include/foreign/ppc/_types.h`, and the
+SDK's `System.framework/Versions/B/PrivateHeaders/i386/_types.h`. The consumers
+also expect the Apple name -- `BSD/include/stdio.h:160`, `BSD/include/wchar.h:70`
+and `BSD/include/uchar.h:46` all reference `__mbstate_t`. iig is a host C++
+program including <sstream>, and its recipe adds `-I
+${ROOT_SOURCE_DIR}/Developer/Default.xctoolchain/include`-derived paths, so it
+was compiled against the two bad copies while linking against the host libc++:
+instantiating `codecvt<char, char, mbstate_t>` on a type the dylib was never
+compiled with, under a mangled name it cannot export. That is why adding
+`-mmacos-version-min` changed nothing -- the ABI tag was never the problem.
+The build also demonstrated why the header fix alone would not have taken
+effect: the failing run printed a bare link, no compile, so `iig.o` was reused
+from before the change. Hence the explicit header dependencies.
+Cites: Developer/Default.xctoolchain/include/arm/_types.h:102-108;
+.../i386/_types.h:102-108; Kernel/xnu/bsd/arm/_types.h;
+Developer/Default.xctoolchain/cctools/include/foreign/ppc/_types.h:91-93;
+BSD/include/{stdio,wchar,uchar}.h; Developer/Default.xctoolchain/iig/Makefile.
+Caveat: the `-I` that pulls the toolchain include directory into the host-tool
+compile was not located in the mk files (it is not in bsd.sys.mk's flag assembly
+and the recipe itself sets none), so I fixed the divergence in the headers rather
+than removing the include path. Both are defensible; renaming the type restores
+consistency with every other copy in the tree either way.
+Next: rerun `./tools/darwin-gate.sh xnu`.
