@@ -1165,3 +1165,47 @@ Cites: Developer/Default.xctoolchain/iig/iig.cpp:132-158;
 Kernel/xnu/iokit/DriverKit/OSAction.iig:59;
 Kernel/xnu/iokit/DriverKit/Makefile:25,34; BSD/share/mk/sys.mk:228; Kernel/Makefile:16-18.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 24: iig, a host C++ tool, had no deployment target
+Output (verbatim):
+```
+/usr/bin/clang++  -Wno-incompatible-sysroot -fno-common -I.../Default.xctoolchain/include
+  -fno-common -std=gnu++17 -c .../iig/iig.cpp -o iig.o
+/usr/bin/clang++ -o .../Toolchains/Default.xctoolchain/usr/bin/iig iig.o
+Undefined symbols for architecture arm64:
+  "std::__1::codecvt<char, char, __mb_state_t>::id", referenced from:
+      bool std::__1::has_facet[abi:ne200100]<std::__1::codecvt<char, char, __mb_state_t>>...
+ld: symbol(s) not found for architecture arm64
+```
+Important: this is not a regression from run 23. `iig.cpp` has used
+`std::ostringstream` since before that change (verified against
+`git show 5e2639958:.../iig.cpp`), so this link would have failed whenever the
+object was rebuilt; run 23's edit to the source only forced the rebuild.
+
+Did (run-24 candidate, not a gate pass): `Developer/Default.xctoolchain/iig/Makefile`
+now adds `-mmacos-version-min=${MACOS_VERSION_MIN}` to `CXXFLAGS` and `LDFLAGS`,
+guarded by `.if defined(...)`, and passes `${LDFLAGS}` to the link.
+
+Evidence: libc++'s `codecvt<char, char, mbstate_t>` facet is declared as an
+extern template whose mangled name carries an ABI tag (`abi:ne200100`)
+selected by the deployment target. Compiling with the compiler's default target
+and linking against the SDK's libc++ therefore asks for a symbol that dylib does
+not export. The flag is the tree's own convention and the top level already
+exports `MACOS_VERSION_MIN = 10.15` (Makefile:154,168-174): `rvn.kext.mk:41-42`
+and `rvn.framework.mk:12-13` both apply it to CFLAGS and LDFLAGS, and the SDK
+recipe's `CLT_LIBSYSTEM_COPY` note leans on the same baseline. iig was the one
+host tool compiled with no minimum at all.
+Scope check: mig, unifdef, rpcgen, plktool and lzvndecode also omit the flag,
+but none of them instantiate `std::ostringstream` (they are C or link
+`-lc++` only incidentally), and plktool is a no-op on Darwin
+(`.else`/`all: .PHONY`). iig is the only host C++ tool that actually links
+libc++ templates here, so the fix is applied where the defect bites rather than
+across all six.
+Caveat: not reproducible in this sandbox. It has no clang, and a g++/libstdc++
+standalone build of the same translation unit (with and without the run-23
+regex) compiles and links on Linux, which is consistent with this being a
+libc++ ABI-tag issue rather than anything in the source. The diagnosis rests on
+the `abi:ne200100` tag in the symbol name and the missing flag.
+Cites: Developer/Default.xctoolchain/iig/Makefile:5-22;
+Makefile:154,168-174; BSD/share/mk/rvn.kext.mk:41-42; BSD/share/mk/rvn.framework.mk:12-13.
+Next: rerun `./tools/darwin-gate.sh xnu`.

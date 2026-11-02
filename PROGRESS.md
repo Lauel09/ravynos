@@ -319,6 +319,17 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 31) — iig built with a deployment target.**
+  The host tool `iig` failed to link on arm64 with
+  `std::__1::codecvt<char, char, __mb_state_t>::id` undefined. It is a host C++
+  program instantiating `std::ostringstream`, built with no
+  `-mmacos-version-min`, so it compiled against libc++ headers configured for the
+  compiler's default target and asked for an ABI-tagged (`abi:ne200100`) symbol
+  the SDK's libc++ does not export. Every other target in the tree passes the
+  flag (`rvn.kext.mk`, `rvn.framework.mk`) and `MACOS_VERSION_MIN` is already
+  exported by the top level; the host tools were simply missed. Not a regression
+  from rev 30 — `iig.cpp` used `std::ostringstream` before that change, which
+  only forced the rebuild. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 30) — iig stops emitting `NATIVE` into DriverKit headers.**
   IOHIDSystem failed to compile because the *generated*
   `EXPORT_HDRS/iokit/DriverKit/OSAction.h` contained
