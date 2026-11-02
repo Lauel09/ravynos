@@ -61,11 +61,16 @@ ifeq ($(LOGCOLORS),y)
         ifeq ($(CURRENT_MACHINE_CONFIG),NONE)
             export _MACHINE := $(subst Mac,,$(PLATFORM))
         endif
+        # Apple's original computes the padding with sh's ${#__A}; GNU make
+        # keeps the backslash in "\#" that upstream uses to escape it for
+        # make's comment stripping, so every build printed
+        #   /bin/sh: 6-${\#__A}: bad substitution
+        # and CMD_MC came out empty.  %-6.6s already left-justifies and
+        # truncates to the same six columns, so drop the arithmetic entirely
+        # (output verified byte-identical for x86_64 and arm64).
         export CMD_MC := $(shell __A="$(CURRENT_ARCH_CONFIG_LC)"; \
-                                         __As=$$((6-$${\#__A})); \
-                                         printf "\\033[1m%-.6s%*.*s %9.9s\\033[m" \
+                                         printf "\\033[1m%-6.6s %9.9s\\033[m" \
                                                 "$${__A}" \
-                                                $${__As} $${__As} " " \
                                                 "$(_MACHINE)")
     endif
     # Turn off colored output

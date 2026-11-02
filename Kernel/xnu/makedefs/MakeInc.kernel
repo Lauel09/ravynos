@@ -26,13 +26,15 @@ ifeq ($(filter $(PLATFORM),$(SUPPORTED_PLATFORMS)),)
 $(error Unsupported PLATFORM $(PLATFORM))
 endif
 
-# macOS builds stage the profiling runtime beside the other kernel archives.
-# Keep the original Libraries build path on other hosts.
-ifeq ($(OPSYS),Darwin)
+# The kernel links the LLVM instrumentation runtime (-lclang_rt.profile_osx)
+# for its PGO support.  That archive must be the *kernel* variant: the
+# userspace libclang_rt.profile_osx.a contains InstrProfilingFile.o and
+# PROF_ERR/PROF_WARN expansions to fprintf(stderr, ...), which cannot resolve
+# in a kernel linked with -nostdlib -fapple-kext.  Libraries/libclang_rt_profile
+# builds the freestanding subset (the same sources Apple bundles in
+# libclang_rt.cc_kext.a) and stages it beside libcc_kext.a, which is already
+# on this search path, on every host.
 XNU_PROFILE_RT_DIR = $(RAVYN_SDKROOT)/usr/local/lib/kernel
-else
-XNU_PROFILE_RT_DIR = $(OBJROOT)/../../Libraries/llvm_target/compiler-rt/lib/ravynos
-endif
 
 ifeq ($(BUILD_JSON_COMPILATION_DATABASE),1)
 do_build_setup::

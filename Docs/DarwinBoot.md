@@ -55,9 +55,10 @@ that you MUST confirm by reading the cited file before relying on it.
   `No rule to make target 'installfile.o'` (also kextsymboltool, decomment,
   setsegname, replacecontents) in `xnu/SETUP/*`, then
   `cp: …/xnu/sym/kernel.dSYM: No such file or directory`.
-* Noise, not a cause: `/bin/sh: 6-${\#__A}: bad substitution` comes from
-  `Kernel/xnu/makedefs/MakeInc.rule:65` (GNU make 4.4 keeps the `\` in `\#`).
-  It only builds a log-line prefix (`CMD_MC`). Fix only if it blocks something.
+* Noise, not a cause: `/bin/sh: 6-${\#__A}: bad substitution` came from
+  `Kernel/xnu/makedefs/MakeInc.rule:65` (GNU make keeps the `\` in `\#` that
+  upstream uses to escape `#` for make). Fixed in the run-10 candidate by
+  dropping the `sh` padding arithmetic for an equivalent `%-6.6s` format.
 * No Mach-O loader exists anywhere in the repo yet (grep for `MH_MAGIC_64`
   outside `Kernel/xnu`, `Developer`, `BSD`, `GNU` finds nothing).
 
@@ -579,3 +580,60 @@ Developer/ravynOS.sdk/Makefile:53-55; tools/darwin-gate.sh:24-27.
 Next: update the Mac and rerun `./tools/darwin-gate.sh xnu`. A successful SDK
 refresh must be followed by the still-unverified profiling-runtime link and the
 fresh x86_64 Mach-O artifact check before D1 can pass.
+
+### 2026-11-02 — D1 run 10: the kernel linked the *userspace* profiling runtime
+Output (verbatim, from the run-9 candidate's build):
+```
+ld: warning: ignoring file .../usr/local/lib/kernel/libclang_rt.profile_osx.a,
+    building for macOS-arm64 but attempting to link with file built for macOS-x86_64
+Undefined symbols for architecture x86_64:
+  "___stderrp", referenced from:
+      _lprofBufferWriter in InstrProfilingWriter.c.o
+      _lprofBufferWriteHeader in InstrProfilingWriter.c.o
+  "_fprintf", referenced from:
+      _lprofBufferWriter in InstrProfilingWriter.c.o
+ld: symbol(s) not found for architecture x86_64
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+D1: XNU build failed; full log: .../ravynos/build-xnu.log
+/bin/sh: 6-${\#__A}: bad substitution
+```
+The run-8 copy made the library *findable*, which exposed the real defect: the
+CLT `libclang_rt.profile_osx.a` is the **userspace** archive. `PROF_ERR`/
+`PROF_WARN`/`PROF_NOTE` in `InstrProfilingPort.h` expand unconditionally to
+`fprintf(stderr, …)`, so any object carrying them (`InstrProfilingWriter.c.o`,
+`InstrProfilingBuffer.c.o`) needs `___stderrp`, and `InstrProfilingFile.c.o`
+additionally wants `getenv`/`open`/`mmap`. The kernel link is
+`-nostdlib -fapple-kext`, so no libc exists to satisfy them. LLVM never links
+that archive into the kernel: `darwin_add_builtin_libraries` compiles a
+six-file freestanding subset into `libclang_rt.cc_kext.a` with
+`-mkernel -DKERNEL_USE`.
+
+Did (run-10 candidate, not a gate pass): build that same six-file subset in a
+new `Libraries/libclang_rt_profile` (staged as
+`${RAVYN_SDKROOT}/usr/local/lib/kernel/libclang_rt.profile_osx.a`, beside
+`libcc_kext.a`), drop the CLT profile-archive copy, and make
+`XNU_PROFILE_RT_DIR` that one directory on every host instead of only Darwin.
+Also replace the `sh` padding arithmetic in `MakeInc.rule` — GNU make keeps the
+backslash in upstream's `\#`, so every build printed
+`/bin/sh: 6-${\#__A}: bad substitution` and `CMD_MC` came out empty.
+
+Evidence: compiling the six sources freestanding leaves exactly two external
+references, `memcpy`/`memset` (both exported by `config/Libkern.exports`) plus
+`_GLOBAL_OFFSET_TABLE_`; every `__llvm_profile_*` symbol is resolved inside the
+set, and both `__llvm_profile_get_size_for_buffer{,_internal}` and
+`__llvm_profile_write_buffer{,_internal}` are defined there, so
+`profile_runtime.c` and `OSKext.cpp` are satisfied without touching their call
+sites. `InstrProfilingWriter.c` only includes `<malloc.h>` under `_MSC_VER`.
+The new `CMD_MC` was diffed against the old one under GNU make for `x86_64` and
+`arm64`: byte-identical (`ESC [1m x86_64` padded to six columns), and the new
+fragment no longer prints the bad-substitution line, which the old one does.
+Cites: Developer/Default.xctoolchain/llvm/compiler-rt/cmake/Modules/CompilerRTDarwinUtils.cmake:412-424,480-487;
+Developer/Default.xctoolchain/llvm/compiler-rt/lib/profile/InstrProfilingPort.h:119-130;
+Libraries/libclang_rt_profile/Makefile; Kernel/Makefile:92-108;
+Kernel/xnu/makedefs/MakeInc.kernel:29-37,147;
+Kernel/xnu/makedefs/MakeInc.rule:59-73;
+Kernel/xnu/config/Libkern.exports:691,693.
+Next: pull on the Mac and rerun `./tools/darwin-gate.sh xnu`. The acceptance bar
+is unchanged: `D1 GATE PASSED`, a fresh staged
+`.../sysroot/System/Library/Kernels/kernel`, and genuine
+`Mach-O 64-bit executable x86_64`.

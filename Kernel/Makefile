@@ -92,18 +92,22 @@ installhdrs: .PHONY xnu_devdir
 libfirehose_kernel: .PHONY
 	${MAKE} -C ${ROOT_SOURCE_DIR}/Libraries/libfirehose_kernel all
 
+# XNU's PGO support needs the LLVM instrumentation runtime, but only the
+# freestanding subset Apple also puts in libclang_rt.cc_kext.a; the userspace
+# libclang_rt.profile_osx.a drags in libc (fprintf/__stderrp).  Build the
+# kernel-safe subset from the vendored compiler-rt sources instead of copying
+# the CLT archive.  See Libraries/libclang_rt_profile/Makefile.
+libclang_rt_profile: .PHONY
+	${MAKE} -C ${ROOT_SOURCE_DIR}/Libraries/libclang_rt_profile all
+
 compiler_rt: .PHONY
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib ${RAVYN_SDKROOT}/usr/local/lib/kernel
 	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a \
 	  ${RAVYN_SDKROOT}/usr/lib/libclang_rt.osx.a
 	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.cc_kext.a \
 	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libcc_kext.a
-.if "${.MAKE.OS}" == "Darwin"
-	cp -f /Library/Developer/CommandLineTools/usr/lib/clang/17/lib/darwin/libclang_rt.profile_osx.a \
-	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libclang_rt.profile_osx.a
-.endif
 
-xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt
+xnu_all: xnu_devdir installhdrs libfirehose_kernel compiler_rt libclang_rt_profile
 	PATH="${PATH}" SHELL=/bin/bash ${GMAKE} -C ${.CURDIR}/xnu LOGCOLORS=y \
 		PLATFORM=MacOSX BUILD_LTO=0 BUILD_WERROR=0 DO_CTFMERGE=0 \
 		SDKVERSION=${MACOS_VERSION_MIN} SRCROOT=${.CURDIR}/xnu \

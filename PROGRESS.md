@@ -319,6 +319,20 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 18) — the kernel was linking the *userspace* PGO runtime.**
+  D1's link failure after run 9 was `___stderrp`/`_fprintf` from
+  `libclang_rt.profile_osx.a(InstrProfilingWriter.c.o)`. The CLT archive is the
+  userspace runtime: `PROF_ERR`/`PROF_WARN` expand to `fprintf(stderr, …)` and
+  `InstrProfilingFile.c` wants `getenv`/`open`/`mmap`, none of which exist in a
+  `-nostdlib -fapple-kext` kernel link. New `Libraries/libclang_rt_profile`
+  builds the six-file freestanding subset LLVM itself puts in
+  `libclang_rt.cc_kext.a` (`-mkernel -DKERNEL_USE`) and stages it as
+  `libclang_rt.profile_osx.a` beside `libcc_kext.a`; the CLT profile copy is
+  gone and `XNU_PROFILE_RT_DIR` is that directory on every host. Also fixed the
+  long-standing `/bin/sh: 6-${\#__A}: bad substitution` — GNU make keeps the
+  backslash in upstream's `\#`, so `CMD_MC` always came out empty; it is now
+  one `printf %-6.6s` whose output is byte-identical to the old expansion.
+  **Unverified on hardware: still needs a real `D1 GATE PASSED`.**
 - **2026-10-31 (rev 17) — the chain exists; firmware still won't start it.**
   (1) *Chain*: loader → kernel console → prompt, plus an independent shell, all
   built and verified, with `verify.py` parsing the kernel *inside* the finished
