@@ -1114,3 +1114,54 @@ cross a newline; the corrected line-anchored scan reports one hit, and
 IOHIDFamily's live `SUBDIR` is `IOHIDSystem`, which does have a makefile.
 Cites: Kernel/Extensions/corecrypto/makefile:2,66; .../corecrypto/user/dummy.c.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-02 — D1 run 23: iig left NATIVE in the header it generates
+Output (verbatim):
+```
+In file included from .../IOHIDSystem/IOKit/hidsystem/IOHIDSystem.h:44:
+In file included from .../EXPORT_HDRS/iokit/IOKit/IOUserClient.h:39:
+In file included from .../EXPORT_HDRS/iokit/DriverKit/IOUserClient.h:40:
+.../EXPORT_HDRS/iokit/DriverKit/OSAction.h:61:14: error: expected unqualified-id
+   61 | class NATIVE KERNEL OSAction : public OSObject
+<command line>:7:16: note: expanded from macro 'KERNEL'
+    7 | #define KERNEL 1
+```
+IOHIDFamily now builds and fails inside IOHIDSystem, on the DriverKit headers
+that `IOHIDSystem.h` pulls in through `IOKit/IOUserClient.h`.
+
+Did (run-23 candidate, not a gate pass): fixed the generator rather than the
+generated file. `sanitizeDocumentationText()` in
+`Developer/Default.xctoolchain/iig/iig.cpp` now strips `NATIVE`, and its KERNEL
+pattern matches any run of `KERNEL` after `class` instead of exactly one.
+
+Evidence: `EXPORT_HDRS/iokit/DriverKit/OSAction.h` is not a checked-in file. It
+is produced by iig from `Kernel/xnu/iokit/DriverKit/OSAction.iig`
+(`DriverKit/Makefile:25,34`: `GENERATED_HEADERS = $(patsubst %.iig,%.h,...)`,
+`EXPORT_MI_GEN_LIST = $(GENERATED_HEADERS) ...`), which is why the installed copy
+places the class at line 61 while the checked-in `OSAction.h` has it at 67 --
+editing the checked-in header would have had no effect. The toolchain builds
+iig on Darwin (`Developer/Default.xctoolchain/Makefile:46`) and
+`BSD/share/mk/sys.mk:228` sets `IIG ?= ${TOOLS}/iig`; `Kernel/Makefile:18`
+stubs it to `/bin/true` for Linux only, so on macOS the real generator runs.
+`OSAction.iig:59` declares `class NATIVE KERNEL OSAction : public OSObject`, and
+the previous sanitizer only removed `LOCAL`/`LOCALONLY` and rewrote
+`class\s+KERNEL\s+` -> `class `. Because `NATIVE` sits between `class` and
+`KERNEL`, that pattern never matched, so the emitted documentation copy of the
+class kept `NATIVE`, a macro that only exists during IIG processing.
+Verified by compiling the old and new functions standalone with g++-17 and
+running the four declaration forms found in the DriverKit `.iig` files:
+`class NATIVE KERNEL X`, `class KERNEL X`, `class NATIVE X`, `class X`. The old
+function returned its input unchanged for the first form; the new one yields
+`class OSAction : public OSObject` for all four. The seven `.iig` files that use
+NATIVE (OSAction, OSObject, IODispatchQueue, IODispatchSource,
+IODataQueueDispatchSource, IOInterruptDispatchSource,
+IOServiceNotificationDispatchSource) all depend on this fix; only OSAction was
+reached in this run because it is the first one included.
+Caveat: `__DOCUMENTATION__` is never defined in this build, so these class bodies
+sit in a dead `#if __DOCUMENTATION__` branch -- but they must still *parse*,
+which is what failed. The correction is upstream-correct even though nothing
+compiles the branch.
+Cites: Developer/Default.xctoolchain/iig/iig.cpp:132-158;
+Kernel/xnu/iokit/DriverKit/OSAction.iig:59;
+Kernel/xnu/iokit/DriverKit/Makefile:25,34; BSD/share/mk/sys.mk:228; Kernel/Makefile:16-18.
+Next: rerun `./tools/darwin-gate.sh xnu`.

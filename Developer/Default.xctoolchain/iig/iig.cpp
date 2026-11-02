@@ -135,7 +135,18 @@ sanitizeDocumentationText(const std::string &input)
     std::string out = input;
     out = std::regex_replace(out, std::regex(R"(\bLOCALONLY\b)"), "");
     out = std::regex_replace(out, std::regex(R"(\bLOCAL\b)"), "");
-    out = std::regex_replace(out, std::regex(R"(class\s+KERNEL\s+)"), "class ");
+    // The IIG attributes are only meaningful while iig itself is running; the
+    // header it emits is compiled as ordinary C++ where NATIVE, KERNEL and
+    // friends are undefined.  Drop NATIVE too: the previous pattern only
+    // matched a bare "class KERNEL", so the valid declaration form
+    //   class NATIVE KERNEL OSAction : public OSObject
+    // kept its NATIVE token and consumers failed with
+    //   OSAction.h:61:14: error: expected unqualified-id
+    //     class NATIVE KERNEL OSAction : public OSObject
+    // Strip every trace of the three keywords wherever they appear before the
+    // class keyword, in either order and with any spacing.
+    out = std::regex_replace(out, std::regex(R"(\bNATIVE\b)"), "");
+    out = std::regex_replace(out, std::regex(R"(class\s+(?:\bKERNEL\b\s*)+)"), "class ");
     out = std::regex_replace(out, std::regex(R"(\n\s*#\s*undef\s+KERNEL\s*\n)"), "\n");
     return out;
 }

@@ -319,6 +319,17 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-02 (rev 30) — iig stops emitting `NATIVE` into DriverKit headers.**
+  IOHIDSystem failed to compile because the *generated*
+  `EXPORT_HDRS/iokit/DriverKit/OSAction.h` contained
+  `class NATIVE KERNEL OSAction : public OSObject`, and `NATIVE` is only defined
+  inside the IIG phase. The header is generated from `OSAction.iig` by the
+  in-tree `iig` tool, whose `sanitizeDocumentationText()` stripped `LOCAL`/
+  `LOCALONLY` and `class KERNEL` but not `NATIVE` — and its `class\s+KERNEL`
+  pattern could not match when `NATIVE` sat in between. Fixed in the generator
+  (not the exported copy, which would be overwritten). Verified by compiling the
+  old and new regex chains against all four declaration forms present in the
+  DriverKit `.iig` files. Still needs a real `D1 GATE PASSED`.
 - **2026-11-02 (rev 29) — corecrypto stops recursing into `user/`.**
   The Kernel pass reached `Kernel/Extensions` and failed with
   `bmake[4]: don't know how to make all` in `corecrypto/user`, which holds only
