@@ -3,8 +3,9 @@
 # consolidate-branches.sh - fold agent-created branches into the integration
 # branch of both ravynos repos, then delete the folded branches.
 #
-# Defaults to a dry run.  A branch is deleted only when its tip is already an
-# ancestor of the target branch or when it merges cleanly.  Conflicting merges
+# Defaults to a dry run.  A branch is deleted only when its local and remote
+# tips are already ancestors of the target branch or merge cleanly.  If the
+# local and remote tips have diverged, the branch is kept.  Conflicting merges
 # are aborted, the branch is kept, and the script continues with the next one.
 #
 # Branches are selected by glob.  The defaults cover the names produced by the
@@ -13,12 +14,13 @@
 # Usage:
 #   tools/consolidate-branches.sh                  # dry run, both repos
 #   tools/consolidate-branches.sh --apply          # merge + delete locally
-#   tools/consolidate-branches.sh --apply --push   # also update GitHub
+#   tools/consolidate-branches.sh --apply --push   # also push + delete remotely
 #
 # Options:
 #   --apply                  perform merges and local branch deletion
 #   --push                   push the target and delete remote branches
-#                            (implies --apply)
+#                            (implies --apply); without it remote branches
+#                            are left in place
 #   --on-conflict=abort|ours|theirs
 #                            conflict policy (default: abort)
 #   --pattern GLOB           add a branch glob (repeatable)
@@ -53,7 +55,7 @@ SLIM=${SLIM:-${WORKSPACE:+$WORKSPACE/ravynos-slim}}
 FULL=${FULL:-${WORKSPACE:+$WORKSPACE/ravynos}}
 
 usage() {
-  sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -94,6 +96,34 @@ has_ref() {
   git -C "$1" show-ref --verify --quiet "$2"
 }
 
+delete_plan() {
+  local repo=$1 remote=$2 branch=$3
+  local local_ref="refs/heads/$branch"
+  local remote_ref="refs/remotes/$remote/$branch"
+  local have_local=0 have_remote=0
+
+  if has_ref "$repo" "$local_ref"; then have_local=1; fi
+  if has_ref "$repo" "$remote_ref"; then have_remote=1; fi
+
+  if [ "$have_local" -eq 1 ] && [ "$have_remote" -eq 1 ]; then
+    if [ "$PUSH" -eq 1 ]; then
+      echo "delete local and remote $remote/$branch"
+    else
+      echo "delete local; remote $remote/$branch kept (use --push)"
+    fi
+  elif [ "$have_local" -eq 1 ]; then
+    echo "delete local"
+  elif [ "$have_remote" -eq 1 ]; then
+    if [ "$PUSH" -eq 1 ]; then
+      echo "delete remote $remote/$branch"
+    else
+      echo "remote $remote/$branch kept (use --push)"
+    fi
+  else
+    echo "nothing to delete"
+  fi
+}
+
 repo_branches() {
   local repo=$1 remote=$2
   {
@@ -106,7 +136,8 @@ repo_branches() {
 consolidate() {
   local label=$1 repo=$2 remote=$3 target=$4
   local branch merge_ref current tmp wt names
-  local merged=() kept=()
+  local local_ref remote_ref have_local have_remote all_merged
+  local merged=() kept=() remaining=
 
   echo
   echo "=== $label: $repo (target $target) ==="
@@ -162,24 +193,52 @@ consolidate() {
     matches_pattern "$branch" || continue
     [ "$branch" = "$target" ] && continue
 
-    if has_ref "$repo" "refs/remotes/$remote/$branch"; then
-      merge_ref="refs/remotes/$remote/$branch"
-    else
-      merge_ref="refs/heads/$branch"
-    fi
+    local_ref="refs/heads/$branch"
+    remote_ref="refs/remotes/$remote/$branch"
+    have_local=0
+    have_remote=0
+    if has_ref "$repo" "$local_ref"; then have_local=1; fi
+    if has_ref "$repo" "$remote_ref"; then have_remote=1; fi
 
-    if ! has_ref "$repo" "$merge_ref"; then
+    if [ "$have_local" -eq 0 ] && [ "$have_remote" -eq 0 ]; then
       continue
     fi
 
-    if git -C "$repo" merge-base --is-ancestor "$merge_ref" "$target"; then
-      echo "  $branch: already merged -> delete"
+    all_merged=1
+    if [ "$have_local" -eq 1 ] &&
+       ! git -C "$repo" merge-base --is-ancestor "$local_ref" "$target"; then
+      all_merged=0
+    fi
+    if [ "$have_remote" -eq 1 ] &&
+       ! git -C "$repo" merge-base --is-ancestor "$remote_ref" "$target"; then
+      all_merged=0
+    fi
+
+    if [ "$all_merged" -eq 1 ]; then
+      echo "  $branch: already merged -> $(delete_plan "$repo" "$remote" "$branch")"
       merged+=("$branch")
       continue
     fi
 
+    merge_ref=
+    if [ "$have_local" -eq 1 ] && [ "$have_remote" -eq 1 ]; then
+      if git -C "$repo" merge-base --is-ancestor "$local_ref" "$remote_ref"; then
+        merge_ref=$remote_ref
+      elif git -C "$repo" merge-base --is-ancestor "$remote_ref" "$local_ref"; then
+        merge_ref=$local_ref
+      else
+        echo "  $branch: local and $remote/$branch have diverged - branch kept" >&2
+        kept+=("$branch")
+        continue
+      fi
+    elif [ "$have_local" -eq 1 ]; then
+      merge_ref=$local_ref
+    else
+      merge_ref=$remote_ref
+    fi
+
     if [ "$APPLY" -eq 0 ]; then
-      echo "  $branch: would merge into $target, then delete"
+      echo "  $branch: would merge into $target, then $(delete_plan "$repo" "$remote" "$branch")"
       continue
     fi
 
@@ -227,12 +286,25 @@ consolidate() {
     fi
   done
 
+  if [ "$PUSH" -eq 0 ]; then
+    remaining=
+    for branch in "${merged[@]:-}"; do
+      [ -n "$branch" ] || continue
+      if has_ref "$repo" "refs/remotes/$remote/$branch"; then
+        remaining="${remaining}${remaining:+, }$branch"
+      fi
+    done
+    if [ -n "$remaining" ]; then
+      echo "remote branches kept (rerun with --push to delete): $remaining" >&2
+    fi
+  fi
+
   if [ "$PUSH" -eq 1 ]; then
     git -C "$repo" fetch --prune "$remote" >/dev/null 2>&1 || true
   fi
 
   if [ ${#kept[@]} -gt 0 ]; then
-    echo "kept conflicted branches: ${kept[*]}" >&2
+    echo "kept branches (conflict or divergence): ${kept[*]}" >&2
   fi
   return 0
 }
