@@ -5,7 +5,7 @@
 > there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
 > not reproduce locally and is deprioritised.**
 
-**Last updated:** 2026-10-31 (rev 17 — loader → kernel → prompt built and verified in-image; CI boots three media under OVMF; the remaining failure is firmware never *starting* the image)
+**Last updated:** 2026-11-03 (rev 36 — the `#UD 0xB0000` blocker does not reproduce locally with current media; two real loader/image defects fixed and boot-verified)
 **Workspace:** `/path/to/test-ravyn-os`
 **Mission:** Improve the RavynOS codebase from our own fork, developed macOS-first on this MacBook (Apple Silicon, macOS 26.3.1), with a **portable** pipeline (macOS + Linux) from source → bootable IMG/ISO → automated boot verdict, and need-driven reverse engineering with [rea](https://github.com/morluto/rea) on this machine when a gap justifies it.
 
@@ -319,6 +319,46 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 36) — the OVMF `#UD 0xB0000` blocker does not reproduce
+  locally; two real defects found while bisecting.** A clean
+  `tools/bootloader/build.sh` produces a 15,872-byte PE32+ EFI application
+  (`x86_64-elf-objdump -x`: Machine 0x8664, Subsystem 10, ImageBase
+  0x140000000, entry RVA 0x12c0, `.reloc` with 10 base fixups). The documented
+  pipeline (`mkimage --root ... --efi-payload ...`, plus the CI kernel/shell)
+  boots under Homebrew QEMU + `edk2-x86_64-code.fd`: the ISO, the GPT/ESP image
+  with a fresh `edk2-i386-vars.fd`, a bare GPT-less FAT16 volume, and a
+  code-only pflash boot all print `RAVYNOS-ENTRY`; the ISO with `KERNEL.ELF`
+  continues through `RAVYNOS-KERNEL-OK` to `RAVYNOS-KSHELL-OK`. The bare volume
+  is announced as `UEFI Non-Block Boot Device` -- the same BDS name rev 17 read
+  as "a device path but no file node" -- and still boots, so that name is not
+  evidence of a missing file node. Packaging the tracked 21 MB Mach-O
+  `BOOT/KERNEL` now succeeds (24 MiB wrapper, `VERIFY OK`); the loader parses
+  its 8 segments and reaches handoff, where the guest `#GP`/`#DF`s, i.e. the
+  remaining work is the Mach-O/XNU handoff (D6), not firmware entry.
+  Reconstructing the pre-rev-16
+  media (a bare PE as the El Torito UEFI entry, `iso9660.py --efi-image
+  EFI/BOOT/BOOTX64.EFI`) reproduces `BdsDxe: failed to load ... Not Found` and
+  falls back to the internal shell, not `#UD`; `verify.py` already rejects that
+  shape. The one local failure that looked like "firmware never starts the
+  image" was the tracked `out/local/vars.fd`: with that NVRAM the GPT/ESP image
+  appears as `FS0:` in the UEFI shell but BDS has no boot entry for it, while a
+  fresh variable store boots it. So the remaining `#UD 0xB0000` is
+  firmware/harness state, not this loader or these writers. Fixed and verified
+  locally: (1) `mkimage` sized the `--efi-payload` FAT wrapper at a fixed 4 MiB
+  while also copying the kernel/shell/extras into it, so the documented build
+  failed on any tree bigger than ~4 MiB (the tracked stage's 21 MB
+  `BOOT/KERNEL`, or a 6 MiB extra, reproduces `fat: staged tree does not fit`);
+  it now lets `fat.py` size itself, and the 6 MiB case builds, verifies and
+  boots to `RAVYNOS-KSHELL-OK`. (2) `EFI_LOADED_IMAGE_PROTOCOL` omitted
+  `Reserved`/`LoadOptionsSize`/`LoadOptions`, shifting every field after
+  `FilePath`; the log read `LoadOptions` as `ImageBase` and printed
+  `image base 0x0 size 0` on every boot. With the UEFI layout restored
+  (`_Static_assert` size 96) the same boot reports
+  `image base 0x000000001dd39000 size 28672` and still reaches
+  `RAVYNOS-KSHELL-OK`. Commits `2ceef99c0e`, `5dce5e36e5`. `run-tests.sh`
+  still reports its two pre-existing failures (symlink-case entry naming and
+  the loader test expecting a 0xEF *section* when xorriso writes the EFI image
+  as the default entry); both reproduce on the unmodified files.
 - **2026-11-02 (rev 35) — the DriverKit generator never saw `NATIVE` classes.**
   Run 28 failed at `EXPORT_HDRS/iokit/DriverKit/OSAction.h:61:14: expected
   unqualified-id` on `class NATIVE KERNEL OSAction`, with the compiler noting
