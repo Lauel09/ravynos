@@ -112,13 +112,24 @@ typedef struct {
     void *SystemTable;
     EFI_HANDLE DeviceHandle;
     EFI_DEVICE_PATH_HEADER *FilePath;
-    void *LoadAddress;
-    UINT32 ImageSize;
+    void *Reserved;
+    UINT32 LoadOptionsSize;
+    void *LoadOptions;
     EFI_PHYSICAL_ADDRESS ImageBase;
+    UINT64 ImageSize;
     EFI_MEMORY_TYPE ImageCodeType;
     EFI_MEMORY_TYPE ImageDataType;
     void *Unload;
 } EFI_LOADED_IMAGE_PROTOCOL;
+
+/* UEFI 2.x: 4 + 4(pad) + 5 pointers, then Reserved/LoadOptionsSize/
+ * LoadOptions before ImageBase/ImageSize.  The earlier declaration omitted
+ * those three fields, so the log read LoadOptions as ImageBase and
+ * LoadOptionsSize as ImageSize ("image base 0x0 size 0" on every boot); every
+ * field after FilePath was shifted.  DeviceHandle/FilePath came before the gap
+ * and stayed correct, which is why the kernel still loaded. */
+_Static_assert(sizeof(EFI_LOADED_IMAGE_PROTOCOL) == 96,
+               "EFI_LOADED_IMAGE_PROTOCOL must match the UEFI layout");
 
 #define EFI_LOADED_IMAGE_PROTOCOL_GUID \
     { 0x5B1B31A1, 0x9562, 0x11D2, { 0x8E, 0x3F, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B } }
