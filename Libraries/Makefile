@@ -169,12 +169,16 @@ compiler_rt: runtime libunwind libcxx
 	  -Wl,-install_name,/usr/lib/system/libcompiler_rt.dylib \
 	  -Wl,-current_version,${LLVM_VERSION}  \
 	  -Wl,-force_load,${RTOBJ} -Wl,-undefined,warning -Wl,-flat_namespace \
-	  -L${RAVYN_SDKROOT}/usr/lib/system -L${RAVYN_SDKROOT}/usr/lib -lsystem_platform \
-	  -lsystem_c -lsystem_malloc -lsystem_m -ldispatch -ldyld -lsystem_kernel \
-	  -lsystem_pthread -lunwind
+	  -L${RAVYN_SDKROOT}/usr/lib -lSystem -lunwind
 	@echo after making dylib, copying to SDK
 	cp -f ${.OBJDIR}/libcompiler_rt.dylib ${RTLIB}
 	cp -f ${.OBJDIR}/libcompiler_rt.dylib ${RTLIB2}
+
+# libSystem.B re-exports libcompiler_rt and libc++, so those must exist before
+# the Libsystem subtree links its umbrella dylib.  The individual libsystem_*
+# sub-libraries compiler_rt used to link are built by that subtree and are not
+# available yet; the libSystem TBD carries the same symbols.
+Libsystem: compiler_rt libcxx
 
 # We want a combined libc++ and libc++abi as our dylib. It needs libSystem
 # for _dlopen and _dlsym. We do not link directly to libdyld.
