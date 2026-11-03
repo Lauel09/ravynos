@@ -321,6 +321,24 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 39) — Gate D6 PASSED: built XNU boots via `BOOTX64.EFI` and prints `Darwin Kernel Version 19.6.0` on serial.**
+  Populating a 64-byte nonzero `/chosen/random-seed` in `tools/bootloader/uefi_stub.c`
+  (`fill_random_seed()`, CPUID-checked `RDRAND` with SplitMix64-mixed `RDTSC`
+  fallback for `-cpu Penryn`, commit `ba3dc57c1`, covered by
+  `tools/tests/test_device_tree.py`) cleared the `prng_random.c:65` early panic
+  (previously misread as post-fault DT wiping because `PE_get_random_seed()`
+  intentionally scrubs `/chosen/random-seed` to zero in place at
+  `pexpert/gen/pe_gen.c:165`). Under `tools/xnu-boot.sh`, XNU now completes
+  `early_random()`, `Idle_PTs_init()`, `cpu_desc_load()`, `tsc_init()`, and
+  VM/IPC/PMAP bootstrap, printing `Darwin Kernel Version 19.6.0` and reaching
+  `Initializing EFI runtime services` (`osfmk/i386/AT386/model_dep.c:503`).
+  Next fault: `#GP` (`v=0d`, `RIP=0xae557bfa39129d48`, `RSP=0xffffff8000194e40`)
+  when `efi_init()` (`model_dep.c:529-545`) maps raw `EFI_MEMORY_RUNTIME`
+  descriptors (`VirtualStart == 0`) at `0xffffff8000000000`, overwriting
+  `__HIB` and the active boot stack. Superseded from `PROGRESS.md`: the three
+  pre-D6 `PE_get_random_seed`/GS-base probe steps and the oldest `Recent changes`
+  bullet (`44c2437550`, already logged in rev 36 below).
+
 - **2026-11-03 (rev 38) — Phase 1 reaches (and passes) XNU, then the userland link graph.**
   Continued `tools/macbuild.sh --audit --target-arch x86_64` through
   `work/logs/world-{14..17}.log`. Four more failure → fix pairs:
