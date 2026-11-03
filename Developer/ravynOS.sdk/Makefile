@@ -11,8 +11,18 @@ objc_path = ${ROOT_SOURCE_DIR}/Libraries/objc4
 # CLT SDK's libSystem TBDs -- same precedent as Kernel/Makefile's
 # compiler_rt copy from /Library/Developer/CommandLineTools.
 CLTSDK = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+# libdyld and Libsystem itself link against the individual libsystem_* dylibs
+# before Libraries/Libsystem has produced them.  Seed the CLT text stubs for
+# the ones they name, alongside libSystem.tbd, so the bootstrap can link.
+CLT_STUB_SYSLIBS = libsystem_platform.tbd libsystem_malloc.tbd \
+	libsystem_c.tbd libsystem_pthread.tbd libsystem_kernel.tbd \
+	libsystem_blocks.tbd libdispatch.tbd libxpc.tbd
 .if "${.MAKE.OS}" == "Darwin" && exists(${CLTSDK}/usr/lib/libSystem.tbd) && exists(${CLTSDK}/usr/lib/libSystem.B.tbd)
-CLT_LIBSYSTEM_COPY = cp -f ${CLTSDK}/usr/lib/libSystem.tbd ${CLTSDK}/usr/lib/libSystem.B.tbd ${RAVYN_SDKROOT}/usr/lib/
+CLT_LIBSYSTEM_COPY = mkdir -p ${RAVYN_SDKROOT}/usr/lib/system && \
+	cp -f ${CLTSDK}/usr/lib/libSystem.tbd ${CLTSDK}/usr/lib/libSystem.B.tbd ${RAVYN_SDKROOT}/usr/lib/ && \
+	for lib in ${CLT_STUB_SYSLIBS}; do \
+		cp -f ${CLTSDK}/usr/lib/system/$$lib ${RAVYN_SDKROOT}/usr/lib/system/; \
+	done
 .else
 CLT_LIBSYSTEM_COPY = :
 .endif
