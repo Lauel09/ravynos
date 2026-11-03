@@ -282,10 +282,12 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## 6. Current blocker / work list (ordered)
 
-1. **[Phase 1, in flight]** `bmake world` on both runners, first attempt that
-   gets past the first five minutes (driver fixes above). Until it reports,
-   every statement about LLVM, the SDK, XNU or the userland is inherited from
-   earlier notes rather than observed.
+1. **[Phase 1, in flight]** `bmake world` on the macOS host now builds the
+   full toolchain, **XNU and every kernel extension**, `IOKitUser`,
+   `libc++`/`libc++abi`, compiler-rt and objc4; the current stop is the
+   `Libraries/dyld` bootstrap (rev 38, `libdyld.dylib` then the `dyld`
+   executable). The Linux runner still needs its own observed attempt. Until
+   the remaining userland links, no claim is made about the BSD stage.
 
 0. **[Phase 1, next]** `bmake world` on a macOS runner with the cached toolchain,
    then a real staging root through `mkimage.sh --root` — the first time the
@@ -318,6 +320,35 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 ---
 
 ## Changelog
+
+- **2026-11-03 (rev 38) — Phase 1 reaches (and passes) XNU, then the userland link graph.**
+  Continued `tools/macbuild.sh --audit --target-arch x86_64` through
+  `work/logs/world-{14..17}.log`. Four more failure → fix pairs:
+  1. `libCrashReporterClient.dylib` had duplicate `CRClient.o` members and
+     objc4 referenced C++-mangled `__Z20CRGetCrashLogMessagev`: the SDK header
+     lacked `__BEGIN_DECLS` and the C++ TU duplicated the C implementation →
+     add C linkage and build only `CRClient.c` with a local `CRC_OBJS`
+     (`0b3d7f8fce`).
+  2. `libcxx_dylib` then still saw the stale C++-mangled reference because
+     CMake missed the `__has_include(<CrashReporterClient.h>)` dependency
+     behind `--sysroot` → enable `CMAKE_DEPENDS_USE_COMPILER`
+     (`55bb508aba`).
+  3. `libobjc.A.dylib` referenced the now-correct C symbols but linked before
+     `Libsystem`, and the seeded `libSystem` TBD has no CR exports:
+     `Undefined symbols ... _CRGet/CRSetCrashLogMessage` → link the static
+     `libCrashReporterClient.a` by path (`7098d71464`).
+  4. `libdyld.dylib` linked unbuilt individual `-lsystem_malloc` et al.:
+     `ld: library not found for -lsystem_malloc` → use the existing upward
+     links, seed the CLT TBDs for `libsystem_*`/dispatch/xpc, and link the
+     static CrashReporterClient (`76918cbcec`).
+  The macOS host now builds the entire toolchain (LLVM, cctools, xcbuild,
+  iig), XNU and all kernel extensions, `IOKitUser`, `libc++`/`libc++abi`,
+  compiler-rt and objc4. The last full log, `work/logs/world-17.log`, stops
+  at `Libraries/dyld` target `libdyld.dylib` with
+  `ld: library not found for -lsystem_malloc`; that fix is committed and a
+  targeted `libdyld.dylib` build now succeeds. The next targeted step exposes
+  the `Libraries/dyld/dyld` executable failing on `ld: library not found
+  for -lc`, not yet confirmed by a full world run.
 
 - **2026-11-03 (rev 37) — Phase 1 `bmake world` reaches the userland libraries.**
   Continued the same documented command, `tools/macbuild.sh --audit
