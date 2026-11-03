@@ -319,6 +319,36 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 36) — Phase 1 `bmake world` runs past the toolchain.**
+  Installed the documented Homebrew prerequisites (`bmake`, `cmake`, `ninja`,
+  `make`, `bison`, `flex`, `libxml2`, `zlib`, `xorriso`, `mtools`, `nasm`) and
+  ran the command from `Docs/macOS-Host.md`, `tools/macbuild.sh --audit
+  --target-arch x86_64` (which is `bmake TARGET_ARCH=x86_64 world`), logging to
+  `work/logs/world-{1..5}.log`. Four distinct failures fixed:
+  1. LLVM invoked `${TOOLS}/gmake`, but `gmake` was dropped from the toolchain
+     `SUBDIR` list: `.../Toolchains/Default.xctoolchain/usr/bin/gmake: No such
+     file or directory` → use the host Homebrew `gmake` on Darwin
+     (`045a360367`).
+  2. bmake exported its jobserver as `MAKEFLAGS="-j N -J fd,fd"` and GNU make
+     rejected the BSD-only flag: `: invalid option -- J` → clear `MAKEFLAGS`
+     for the LLVM `gmake` call (`93d2ae28dd`).
+  3. `Kernel/Makefile` used the same missing `${TOOLS}/gmake` for `installhdrs`
+     and the xnu build: `*** [installhdrs] Error code 1` → resolve `GMAKE` to
+     the host `gmake` in `sys.mk` on Darwin only; Linux keeps
+     `${TOOLS}/gmake` (`814ff5999e`).
+  4. `libclang_rt_profile` raced `installhdrs` under `-j` and compiled before
+     the staged SDK had `<machine/_types.h>`: `.../usr/include/sys/_types.h:33:10:
+     fatal error: 'machine/_types.h' file not found` → make `installhdrs` an
+     explicit prerequisite (`44c2437550`).
+  The build now completes the whole `Developer` stage (LLVM, cctools, xcbuild,
+  iig), `libfirehose_kernel`, kernel header installation and reaches
+  `Kernel/IOKitUser`. It stops at
+  `.../ravynOS.sdk/System/Library/Frameworks/IOKit.framework/Headers/hid/IOHIDKeys.h:29:10:
+  fatal error: 'IOKit/hidsystem/IOHIDParameter.h' file not found`, included
+  from `Kernel/IOKitUser/hid.subproj/IOHIDEventObjc.m` via `IOHIDElement.h`.
+  Best hypothesis: the IOKit header staging does not copy the `hidsystem`
+  subtree into the SDK. Not fixed here (four-failure limit).
+
 - **2026-11-02 (rev 35) — the DriverKit generator never saw `NATIVE` classes.**
   Run 28 failed at `EXPORT_HDRS/iokit/DriverKit/OSAction.h:61:14: expected
   unqualified-id` on `class NATIVE KERNEL OSAction`, with the compiler noting
