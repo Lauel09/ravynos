@@ -31,7 +31,7 @@ RUNTIME_FLAGS = "--sysroot=${RAVYN_SDKROOT} -B${TOOLCHAIN}/usr/bin \
 
 runtime:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	SDKROOT=${RAVYN_SDKROOT} CFLAGS=${RUNTIME_FLAGS} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/compiler-rt \
 	-B ${.OBJDIR}/llvm_target/compiler-rt -Wno-dev \
@@ -77,7 +77,7 @@ LLVM_DIR = ${ROOT_BINARY_DIR}${DEVEL}/Default.xctoolchain/llvm_host/lib/cmake/ll
 
 libunwind: runtime
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	SDKROOT=${RAVYN_SDKROOT} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/runtimes \
 	-B ${.OBJDIR}/llvm_target/libunwind -Wno-dev \
@@ -121,7 +121,7 @@ LIBCXX_FLAGS = --target=${CpuArch}-apple-darwin \
     -Wno-nullability-completeness -Wno-expansion-to-defined
 
 libcxx: libunwind
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
 	SDKROOT=${RAVYN_SDKROOT} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/runtimes \
