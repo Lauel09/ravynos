@@ -1465,3 +1465,47 @@ Cites: `tools/bootloader/uefi_stub.c:1160-1210`;
 `Kernel/xnu/osfmk/i386/tsc.c:204-212,312`;
 `Kernel/xnu/pexpert/i386/pe_init.c:136`.
 Next: D6 — stage the D1 kernel and boot it under OVMF.
+
+## D6 handoff status (2026-11-03)
+
+**Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
+firmware identity map, copies all `LC_SEGMENT_64` payloads after
+`ExitBootServices` (physical = `vmaddr - 0xffffff8000000000`, kslide 0), then
+jumps to the physical `LC_UNIXTHREAD` RIP with `EAX` = physical `boot_args`.
+Observed values for the freshly built kernel: entry `0x196000`, `boot_args`
+`0x1B0000`, device tree `0x1A0000`/`0x194` bytes, `kaddr=0x100000`,
+`ksize=0x14aa000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
+
+**Attempts -> first fault.**
+
+| Change | First exception | Where |
+|---|---|---|
+| old 32-bit trampoline | `v=0d` `RIP=0x196039` | `_pstart+0x39`, `CS=0x8` CS32, `CR0=0x10033` (PG off), `EFER=0x800`. Instruction is `mov %ax,%ss` with AX=0 after `lgdt`; legal in long mode, illegal in 32-bit. |
+| stay in 64-bit mode (commit `cc832cf4eb`) | `v=0e` `RIP=0xffffff8000481cc4`, `CR2=0xffffdeadbeefee00` | `_current_cpu_datap+0x14` (`mov %gs:0,%rax`), `CS=0x8` CS64, `CR0=0x80010033`, `CR3=0x100000`, `EFER=0xd00`. GS base is XNU's `EARLY_GSBASE_MAGIC`. |
+
+**Current fault.** `_current_cpu_datap` was called from `_current_processor`
+(return `0xffffff80004820a9`), which was called from
+`panic_trap_to_debugger` (`0xffffff80002ef0f4`), itself called by `panic`
+(`0xffffff8000cd6ec3`). The panic frame holds `RSI=64`, `RDX=0`, and RDI points
+at `"Expected 64 seed bytes from bootloader, but got 0"` (`prng_random.c:65`),
+so `bootseed_init_bootloader()` is the original failure: `PE_get_random_seed()`
+returned 0. Because GS is still poisoned, `panic()` faults in
+`current_processor()` before it can print, which is why serial shows no panic
+text.
+
+**Not committed.** Supplying `/chosen/random-seed` (64 bytes, RDRAND with a
+TSC fallback) was tested: the loader logs a nonzero seed both when building the
+tree and again after `ExitBootServices`, but the first fault stayed exactly the
+same, and the property is zero when inspected after the fault. That experiment
+was reverted rather than committed.
+
+**Next probes.**
+1. Break at `PE_get_random_seed`/`DTGetProperty` with lldb over the QEMU gdbstub
+   (`-S -s`, hardware breakpoint) and read the returned size and the property
+   bytes at the actual call, before the kernel can zero them.
+2. If the boot window (`0x1A0000-0x1E0000`) is being wiped before
+   `early_random()`, move/reserve device tree + boot_args above
+   `kaddr+ksize` or in a region XNU will not reclaim.
+3. For diagnostics only, point `MSR_IA32_GS_BASE` at a zeroed page before the
+   jump so `panic()` can print; then fix the next boot_args/device-tree fault
+   and only afterwards revisit `cpu_desc_load()` GS setup.

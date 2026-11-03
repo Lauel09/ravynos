@@ -319,6 +319,21 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 37) — XNU now executes in 64-bit long mode; first failure
+  mapped to the boot random seed.** This tree's `_pstart` is entered from UEFI
+  in long mode (`osfmk/x86_64/start.s:149`, `.code64` at `L_pstart_common`),
+  so the loader's 32-bit trampoline was wrong. Commit `cc832cf4eb` keeps long
+  mode/paging, copies the Mach-O segments, and jumps with `EAX=boot_args`.
+  First fault moved from `v=0d` at `_pstart+0x39` (`mov %ax,%ss`, CS32, PG off)
+  to `v=0e` at `0xffffff8000481cc4` (`_current_cpu_datap`, CS64, PG on),
+  with `CR2=0xffffdeadbeefee00` (GS poison). The call chain is
+  `panic -> panic_trap_to_debugger -> _current_processor -> _current_cpu_datap`;
+  the panic frame carries `RSI=64`, `RDX=0`, so the root cause is
+  `PE_get_random_seed()` returning 0 (`prng_random.c:65`), not the handoff.
+  A 64-byte `/chosen/random-seed` experiment logged nonzero at handoff but did
+  not move the fault and was reverted; next is to inspect `DTGetProperty` at
+  the actual call. Details in `Docs/DarwinBoot.md` § "D6 handoff status
+  (2026-11-03)".
 - **2026-11-03 (rev 36) — the OVMF `#UD 0xB0000` blocker does not reproduce
   locally; two real defects found while bisecting.** A clean
   `tools/bootloader/build.sh` produces a 15,872-byte PE32+ EFI application
