@@ -6,6 +6,14 @@ CXX := ${HOST_CXX}
 CFLAGS := ${CFLAGS:N-I*Default.xctoolchain/include}
 CXXFLAGS := ${CXXFLAGS:N-I*Default.xctoolchain/include}
 
+# sys.mk points GMAKE at ${TOOLS}/gmake, the in-tree GNU make that used to be
+# built before llvm.  gmake is no longer part of the toolchain SUBDIR list on
+# Darwin, so use the host's Homebrew gmake (the documented prerequisite)
+# instead of a path that is never populated.
+.if "${.MAKE.OS}" == "Darwin"
+GMAKE = gmake
+.endif
+
 # LLVM is the long pole; build it with every available core instead of
 # serially.  .MAKE.JOBS carries an explicit -j from the top-level build.
 .if defined(.MAKE.JOBS) && !empty(.MAKE.JOBS)
