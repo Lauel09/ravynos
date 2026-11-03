@@ -801,5 +801,3 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 - **2026-10-30 (rev 1):** Initial audit: repo, build system, macOS host, ISO pipeline, RE workspace assessed; first macOS build failure captured; blockers enumerated; `progress.md` and `roadmap.md` created.
 
 *Next actions live in [`roadmap.md`](roadmap.md). Update this file whenever a blocker clears or a new one is found.*
-EOF
-echo written
