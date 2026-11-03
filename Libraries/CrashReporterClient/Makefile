@@ -1,7 +1,10 @@
 MK_WERROR = no
 LIB = CrashReporterClient
-SRCS = CRClient.c CRClientCPP.cpp
-OBJS = ${SRCS:S/.c$/.o/:S/.cpp$/.o/}
+# CrashReporterClient.h declares the API with C linkage (__BEGIN_DECLS), so
+# the C++ translation unit that used to supply C++-mangled entry points would
+# define the same symbols as CRClient.c.  Build the C implementation alone.
+SRCS = CRClient.c
+CRC_OBJS = ${SRCS:S/.c$/.o/}
 CFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
         -Wno-nullability-completeness
 LDFLAGS =
@@ -9,10 +12,10 @@ SUBDIR =
 
 all: ${.OBJDIR}/lib${LIB}.dylib
 
-${.OBJDIR}/lib${LIB}.a: ${OBJS}
+${.OBJDIR}/lib${LIB}.a: ${CRC_OBJS}
 	rm -f ${.TARGET}
 	mkdir -p ${.TARGET:H} ${RAVYN_SDKROOT}/usr/lib
-	${AR} rcs ${.TARGET} CRClientCPP.o CRClient.o
+	${AR} rcs ${.TARGET} ${CRC_OBJS}
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
 
 ${.OBJDIR}/lib${LIB}.dylib: ${.OBJDIR}/lib${LIB}.a
