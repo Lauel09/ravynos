@@ -29,6 +29,24 @@ CLT_LIBSYSTEM_COPY = :
 CLT_STUB_LIBS = libobjc.tbd libc++.tbd libz.tbd
 CLT_STUB_FMWKS = CoreFoundation Foundation
 
+# IOKitUser stages the user-space <IOKit/hid/IOHIDElement.h>, which includes
+# <CoreFoundation/CoreFoundation.h>, and Kernel/Extensions/IOHIDFamily then
+# compiles <IOKit/hid/IOHIDEventService.h> against it during the same Kernel
+# pass.  Frameworks/CoreFoundation is built later (and `world` does not list
+# Frameworks at all), so seed the public headers from this tree now, as the
+# .tbd stubs above are seeded.  The framework build replaces the bundle and
+# installs the same list from Frameworks/CoreFoundation/Makefile.
+CF_SOURCE = ${ROOT_SOURCE_DIR}/Frameworks/CoreFoundation
+CF_HEADERS = CFArray.h CFBag.h CFBase.h CFBinaryHeap.h CFBitVector.h \
+	CFBundle.h CFByteOrder.h CFCalendar.h CFCharacterSet.h CFData.h \
+	CFDate.h CFDateFormatter.h CFDictionary.h CFError.h CFLocale.h \
+	CFMessagePort.h CFMachPort.h CFNumber.h CFNumberFormatter.h CFPlugIn.h \
+	CFPlugInCOM.h CFPreferences.h CFPropertyList.h CFRunLoop.h CFSet.h \
+	CFSocket.h CFStream.h CFString.h CFStringEncodingExt.h CFTimeZone.h \
+	CFTree.h CFURL.h CFURLAccess.h CFURLEnumerator.h CFUUID.h \
+	CFUserNotification.h CFXMLNode.h CFXMLParser.h CFXPCBridge.h \
+	CFAvailability.h CFUtilities.h CoreFoundation.h
+
 all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	mkdir -p ${RAVYN_SDKROOT}${FPATH}/Versions/B
 	mkdir -p ${RAVYN_SDKROOT}/usr/local/include
@@ -77,6 +95,11 @@ all: ${PLATFORM_DIR} ${TOOLS}/unifdef .EXEC
 	fi
 .endfor
 .endif
+	mkdir -p ${RAVYN_SDKROOT}/System/Library/Frameworks/CoreFoundation.framework/Headers
+.for hdr in ${CF_HEADERS}
+	cp -f ${CF_SOURCE}/${hdr} \
+		${RAVYN_SDKROOT}/System/Library/Frameworks/CoreFoundation.framework/Headers/
+.endfor
 	# sys/cdefs.h:806 does #include <sys/_posix_availability.h> for
 	# non-KERNEL compiles.  The only copies in this tree are under
 	# System.framework PrivateHeaders (identical to

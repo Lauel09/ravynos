@@ -1367,3 +1367,101 @@ Honest limit: this removes the plktool failure from the D1 path; it does not mak
 a Darwin prelinked cache. Booting on Darwin still needs Apple's kextcache or a
 real port, which is out of scope for D1 and not attempted here.
 Next: rerun `./tools/darwin-gate.sh xnu`.
+
+### 2026-11-03 — D1 GATE PASSED (CoreFoundation headers seeded)
+Output (verbatim):
+```
+D1: refreshing Developer/ravynOS.sdk (build-sdk.log)
+D1: building Kernel (build-xnu.log)
+.../build/sysroot/System/Library/Kernels/kernel: Mach-O 64-bit executable x86_64
+D1 GATE PASSED: .../build/sysroot/System/Library/Kernels/kernel
+```
+Did: run 29 (`build-xnu.log`, 2026-11-03) got past run 28's iig fix and stopped
+in `IOHIDSystem.cpp` with
+`IOHIDElement.h:27:10: fatal error: 'CoreFoundation/CoreFoundation.h' file not found`.
+That header is the user-space `Kernel/IOKitUser/hid.subproj/IOHIDElement.h`
+(line 27), which IOKitUser stages into the SDK (`Makefile:382`); IOHIDFamily
+reaches it through `IOHIDEventService.h:35` in the same Kernel pass. The SDK
+had only CoreFoundation's `.tbd` stub because Frameworks builds after Kernel
+(and `world` does not list Frameworks at all). Seeded the tree's public
+CoreFoundation headers into the SDK next to the existing TBD seeding; no
+binary or Apple header is involved.
+Cites: `Kernel/IOKitUser/hid.subproj/IOHIDElement.h:27`;
+`Kernel/IOKitUser/Makefile:382`;
+`Kernel/Extensions/IOHIDFamily/IOHIDFamily/IOHIDEventService.h:35`;
+`Developer/ravynOS.sdk/Makefile:32-51,98-102`;
+`Frameworks/CoreFoundation/Makefile:8-16`.
+Next: D2.
+
+### 2026-11-03 — D2 GATE PASSED
+Image: `../build/sysroot/System/Library/Kernels/kernel`, `MH_EXECUTE`
+(`filetype 2`), no `LC_MAIN`, entry from `LC_UNIXTHREAD`
+(`x86_THREAD_STATE64`, `rip 0xffffff8000196000`).
+
+| Segment | vmaddr | vmsize | fileoff | filesize | physical |
+|---|---|---|---|---|---|
+| `__TEXT` | `0xffffff8000200000` | `0xc00000` | 0 | 12582912 | `0x200000` |
+| `__DATA` | `0xffffff8000e00000` | `0x25d000` | 12582912 | 2478080 | `0xe00000` |
+| `__DATA_CONST` | `0xffffff800105d000` | `0x35000` | 15060992 | 217088 | `0x105d000` |
+| `__HIB` | `0xffffff8000100000` | `0x9e000` | 15278080 | 647168 | `0x100000` |
+| `__VECTORS` | `0xffffff8001092000` | `0x1000` | 15925248 | 4096 | `0x1092000` |
+| `__KLD` | `0xffffff8001093000` | `0x3000` | 15929344 | 12288 | `0x1093000` |
+| `__LAST` | `0xffffff8001096000` | `0x1000` | 15941632 | 4096 | `0x1096000` |
+| `__PRELINK_TEXT` | `0xffffff8001097000` | 0 | 15945728 | 0 | — |
+| `__PRELINK_INFO` | `0xffffff8001097000` | 0 | 15945728 | 0 | — |
+| `__BUILTIN` | `0xffffff8001097000` | 0 | 15945728 | 0 | — |
+| `__LINKEDIT` | `0xffffff8001097000` | `0x513000` | 15945728 | 5319952 | `0x1097000` |
+
+Checks: `pstart` is `.code32` and documents "protected mode, no paging, flat
+32-bit address space", with `%eax` pointing at `kernbootstruct`; it saves that
+to `%edi` and `vstart` receives it there. Physical rule in the loader is
+`phys = vmaddr - VM_MIN_KERNEL_ADDRESS`, which the table above confirms places
+`__HIB` at 1 MiB and `__TEXT` at 2 MiB, and makes the entry physical
+`0x196000`. `__HIB` is intentionally below `__TEXT`; `i386_lowmem.h`'s
+`+0x100000` comment matches the HIB base, not `__TEXT`.
+Cites: `tools/bootloader/uefi_stub.c:598,1007,1063,1097`;
+`Kernel/xnu/osfmk/x86_64/start.s:127-141,164,233-243`;
+`Kernel/xnu/osfmk/mach/i386/vm_param.h:197`;
+`Kernel/xnu/osfmk/i386/i386_lowmem.h:36`.
+Next: D3.
+
+### 2026-11-03 — D3 GATE PASSED
+Output (verbatim):
+```
+tools/bootloader/BOOTX64.EFI: PE32+ executable (EFI application) x86-64
+  entry       0x1000 in .text
+  image       24576 bytes (4 sections)
+```
+Did: confirmed the loader's `boot_args_t` is the header's field order with
+`_Static_assert(sizeof(boot_args_t) == 4096)`; `tools/bootloader/build.sh -q`
+exits 0 and `tools/image/pe.py --require-subsystem 10` accepts the output.
+The handoff fills Revision/Version/efiMode/CommandLine/MemoryMap/device tree/
+kaddr/ksize/efiSystemTable/PhysicalMemorySize/FSBFrequency; runtime-services
+defragmentation fields remain zero, which D6 will test.
+Cites: `Kernel/xnu/pexpert/pexpert/i386/boot.h:76,130,134,147-210`;
+`tools/bootloader/uefi_stub.c:725-780,1213-1275`;
+`tools/bootloader/xnu_handoff.S:55-63`.
+Next: D5 gate (device-tree unit test), then D6.
+
+### 2026-11-03 — D5 GATE PASSED
+Output (verbatim):
+```
+test_loader_blob_is_exact_and_round_trips ... ok
+test_node_counts_and_root_name ... ok
+test_truncated_value_is_rejected ... ok
+test_unterminated_name_is_rejected ... ok
+Ran 4 tests ... OK
+```
+Did: added `tools/tests/test_device_tree.py` and wired it into
+`tools/tests/run-tests.sh`. Its writer mirrors `build_device_tree()` and its
+reader mirrors `Device_tree.c`'s `skipProperties`/`skipTree`/`FindChild`: node
+header, 32-byte NUL-padded property names, 4-byte value lengths, 4-byte value
+padding, and the node name taken from the *value* of the first `name`
+property. It asserts `/chosen`, `/chosen/memory-map`, `/efi`,
+`/efi/platform` and `FSBFrequency = 100000000` survive the round trip.
+Cites: `tools/bootloader/uefi_stub.c:1160-1210`;
+`Kernel/xnu/pexpert/gen/device_tree.c:70-172`;
+`Kernel/xnu/pexpert/pexpert/device_tree.h:51-70,93-106`;
+`Kernel/xnu/osfmk/i386/tsc.c:204-212,312`;
+`Kernel/xnu/pexpert/i386/pe_init.c:136`.
+Next: D6 — stage the D1 kernel and boot it under OVMF.

@@ -20,9 +20,17 @@ gdt_ptr:
 	.extern	gHandoffEntry
 	.extern	gHandoffBootArgs
 	.extern	gHandoffRsp
+	.extern	xnu_copy_kernel
 
 xnu_handoff:
 	cli
+
+	/* Boot services are gone.  Copy the kernel segments on the high boot
+	 * stack, so firmware stack memory inside the kernel's span cannot be
+	 * overwritten under the call. */
+	movl	gHandoffRsp(%rip), %esp
+	call	xnu_copy_kernel
+
 	lgdt	gdt_ptr(%rip)
 
 	/* far jump into 32-bit code segment */

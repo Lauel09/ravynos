@@ -75,7 +75,7 @@ done
 # --------------------------------------------------------------------------
 banner "2. python unit tests"
 for suite in test_images.py test_pe.py test_elf.py test_stub_kernel.py \
-             test_postmortem.py; do
+             test_device_tree.py test_postmortem.py; do
     log="$TMP/unit-$suite.log"
     if [ "$VERBOSE" = 1 ]; then
         if "$PYTHON" "$HERE/$suite" -v; then ok "$suite"; else bad "$suite"; fi

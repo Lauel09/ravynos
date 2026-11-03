@@ -602,6 +602,15 @@ typedef struct {
 #define KERNEL_MIN_ADDR 0x100000ULL
 #define KERNEL_MAX_END  0x100000000ULL
 
+/* XNU's D2 link layout leaves this gap between __HIB (ends 0x19e000) and
+ * __TEXT (starts 0x200000).  XNU's low linear map only covers
+ * [0, kaddr+ksize), so the device tree, boot_args and EFI memory map must
+ * live in this gap rather than in pool allocated at the top of RAM. */
+#define XNU_DT_ADDR          0x1A0000ULL
+#define XNU_BA_ADDR          0x1B0000ULL
+#define XNU_BAMAP_ADDR       0x1B1000ULL
+#define XNU_BOOT_WINDOW_END  0x1E0000ULL
+
 typedef struct { UINT64 base; UINT64 pages; } kern_memdesc_t;
 typedef struct {
     UINT32 magic;
@@ -619,12 +628,37 @@ UINT32 gHandoffEntry = 0;
 UINT32 gHandoffBootArgs = 0;
 UINT32 gHandoffRsp = 0;
 
-/* Read the whole file at `path` (relative to volume root) into an
- * allocated pool buffer.  On EFI_SUCCESS, buf_out/size_out receive the
- * data pointer and byte count. */
+/* Mach-O segments are recorded, not copied, while boot services are alive:
+ * part of the kernel's physical span is firmware EfiBootServicesCode, which
+ * cannot be reserved until ExitBootServices.  xnu_copy_kernel() replays these
+ * from the payload on the boot stack after boot services are gone. */
+#define MAX_KERNEL_SEGS 32
+typedef struct {
+    UINT64 phys;
+    UINT64 fileoff;
+    UINT64 filesize;
+    UINT64 vmsize;
+} kernel_seg_t;
+static kernel_seg_t gKernelSegs[MAX_KERNEL_SEGS];
+static UINTN gKernelSegCount;
+static const UINT8 *gKernelPayload;
+
+/* The real XNU kernel is ~20 MiB with its __LINKEDIT, so the reader must
+ * accept more than the old 8 MiB cap while still refusing an absurd file
+ * that would exhaust memory. */
+#define MAX_KERNEL_PAYLOAD (64u << 20)
+
+/* Stage the payload at the top of the firmware's identity-mapped range.
+ * An ~20 MiB pool allocation lands at 2 MiB, which is exactly where the
+ * kernel's __TEXT segment wants to be, so it cannot stay in low pool. */
+#define KERNEL_PAYLOAD_MAX_ADDR 0xFFFFFFFFULL
+
+/* Read the whole file at `path` (relative to volume root) into pages below
+ * KERNEL_PAYLOAD_MAX_ADDR.  On EFI_SUCCESS, buf_out/size_out/pages_out
+ * receive the data pointer, byte count and allocated page count. */
 static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
                                 const CHAR16 *path, void **out_buf,
-                                UINTN *out_size)
+                                UINTN *out_size, UINTN *out_pages)
 {
     static EFI_GUID sfs_guid = SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
     static EFI_GUID file_guid = EFI_FILE_PROTOCOL_GUID;
@@ -637,6 +671,7 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
 
     *out_buf = 0;
     *out_size = 0;
+    *out_pages = 0;
 
     if (!dev_handle) {
         return EFI_UNSUPPORTED;
@@ -658,7 +693,7 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
     /* Chunked read until EOF.  EFI_FILE_PROTOCOL.Read shrinks *BufferSize to
      * the number of bytes actually transferred and returns 0 bytes at end of
      * file, which is the exit condition.  The buffer grows with the file
-     * instead of being a fixed 8 MiB pool allocation: the old code silently
+     * instead of being a fixed pool allocation: the old code silently
      * truncated anything larger and burned 8 MiB of pool for every probe. */
     (void)file_guid;
     {
@@ -667,36 +702,42 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
         for (;;) {
             if (total == cap) {
                 UINTN newcap = cap ? cap * 2 : (16u << 10);
-                UINT8 *grown;
-                if (newcap > (8u << 20)) {
-                    say("kernel: payload larger than 8 MiB, refusing\n");
+                EFI_PHYSICAL_ADDRESS addr = KERNEL_PAYLOAD_MAX_ADDR;
+                if (newcap > MAX_KERNEL_PAYLOAD) {
+                    say("kernel: payload larger than 64 MiB, refusing\n");
                     if (buf) {
-                        bs->FreePool(buf);
+                        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                                      cap >> EFI_PAGE_SHIFT);
                     }
                     f->Close(f);
                     root->Close(root);
                     return EFI_UNSUPPORTED;
                 }
-                if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, newcap,
-                                               (void **)&grown))) {
+                if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress,
+                                                EfiLoaderData,
+                                                newcap >> EFI_PAGE_SHIFT,
+                                                &addr))) {
                     if (buf) {
-                        bs->FreePool(buf);
+                        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                                      cap >> EFI_PAGE_SHIFT);
                     }
                     f->Close(f);
                     root->Close(root);
                     return EFI_UNSUPPORTED;
                 }
                 if (buf) {
-                    bs->CopyMem(grown, buf, total);
-                    bs->FreePool(buf);
+                    bs->CopyMem((void *)(UINTN)addr, buf, total);
+                    bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                                  cap >> EFI_PAGE_SHIFT);
                 }
-                buf = grown;
+                buf = (UINT8 *)(UINTN)addr;
                 cap = newcap;
             }
             sz = cap - total;
             stt = f->Read(f, &sz, buf + total);
             if (EFI_ERROR(stt)) {
-                bs->FreePool(buf);
+                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                              cap >> EFI_PAGE_SHIFT);
                 f->Close(f);
                 root->Close(root);
                 return stt;
@@ -710,12 +751,14 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
         root->Close(root);
         if (total == 0) {
             if (buf) {
-                bs->FreePool(buf);
+                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                              cap >> EFI_PAGE_SHIFT);
             }
             return EFI_UNSUPPORTED;
         }
         *out_buf = buf;
         *out_size = total;
+        *out_pages = cap >> EFI_PAGE_SHIFT;
         gFs = fs;
         return EFI_SUCCESS;
     }
@@ -778,6 +821,42 @@ typedef struct boot_args {
 } boot_args_t;
 
 _Static_assert(sizeof(boot_args_t) == 4096, "boot_args size mismatch");
+
+/* On a failed fixed-address reservation, print every firmware memory-map
+ * descriptor that overlaps [addr, addr+len) so the occupying type is visible
+ * in the serial log instead of just the address. */
+static void say_memmap_covering(EFI_BOOT_SERVICES *bs, UINT64 addr, UINT64 len)
+{
+    UINTN mapsize = 0, descsize = 0, key = 0, off;
+    UINT32 descver = 0;
+    EFI_MEMORY_DESCRIPTOR *map = 0;
+    UINT64 end = addr + len;
+
+    (void)bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
+    mapsize += 2 * descsize;
+    if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map))) {
+        return;
+    }
+    if (EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize,
+                                   &descver))) {
+        bs->FreePool(map);
+        return;
+    }
+    for (off = 0; off < mapsize; off += descsize) {
+        EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + off);
+        UINT64 dend = d->PhysicalStart + d->NumberOfPages * EFI_PAGE_SIZE;
+        if (d->PhysicalStart < end && addr < dend) {
+            say("kernel: memmap type ");
+            say_dec(d->Type);
+            say(" at 0x");
+            say_hex(d->PhysicalStart, 16);
+            say("-0x");
+            say_hex(dend, 16);
+            say("\n");
+        }
+    }
+    bs->FreePool(map);
+}
 
 /* Parse + stage the kernel image.  On success returns entry point and
  * allocates a boot stack; rsp_out receives its top. */
@@ -894,6 +973,7 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
             say(" (");
             say_dec(pages);
             say(" pages)\n");
+            say_memmap_covering(bs, lo_page, hi_page - lo_page);
             return 0;
         }
     }
@@ -935,9 +1015,12 @@ static int load_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
     return 1;
 }
 
-/* Parse + stage a Mach-O 64 kernel (XNU).  On success returns the physical
- * entry point and allocates a boot stack; rsp_out receives its top.  Also
- * reports the physical base and span of the loaded image for boot_args. */
+/* Parse a Mach-O 64 kernel (XNU) and record its segments.  The actual copy
+ * into the kernel's fixed physical addresses is deferred to
+ * xnu_copy_kernel() after ExitBootServices, because OVMF keeps its own
+ * boot-services code inside the kernel's span.  On success returns the
+ * physical entry point and allocates a boot stack; also reports the physical
+ * base and span of the image for boot_args. */
 static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN size,
                                    UINT64 *entry_out, UINT64 *rsp_out,
                                    UINT64 *kphys_base_out, UINT64 *kphys_size_out)
@@ -950,6 +1033,9 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
     UINT64 have_entry = 0;
     UINT64 min_phys = ~0ULL, max_phys = 0;
     UINT64 ncmds = 0;
+
+    gKernelSegCount = 0;
+    gKernelPayload = 0;
 
     if (size < sizeof(mach_header_64_t) || mh->magic != MH_MAGIC_64 ||
         mh->cputype != CPU_TYPE_X86_64) {
@@ -975,8 +1061,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
         if (cmd->cmd == LC_SEGMENT_64) {
             segment_command_64_t *seg = (segment_command_64_t *)lc;
             UINT64 vmaddr, vmsize, fileoff, filesize;
-            UINT64 phys, pages;
-            UINTN s;
+            UINT64 phys;
 
             if (lc + sizeof(segment_command_64_t) > base + size) {
                 say("kernel: truncated LC_SEGMENT_64\n");
@@ -995,7 +1080,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
                 say("kernel: Mach-O segment below kernel base, refusing\n");
                 return 0;
             }
-            if (fileoff + filesize > size) {
+            if (fileoff > size || filesize > size - fileoff) {
                 say("kernel: Mach-O segment file extent past EOF\n");
                 return 0;
             }
@@ -1009,34 +1094,23 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
                 say("kernel: Mach-O segment overflow\n");
                 return 0;
             }
+            if (phys < XNU_BOOT_WINDOW_END &&
+                XNU_DT_ADDR < phys + vmsize) {
+                say("kernel: Mach-O segment overlaps the boot-data window\n");
+                return 0;
+            }
+            if (gKernelSegCount >= MAX_KERNEL_SEGS) {
+                say("kernel: too many Mach-O segments\n");
+                return 0;
+            }
+            gKernelSegs[gKernelSegCount].phys = phys;
+            gKernelSegs[gKernelSegCount].fileoff = fileoff;
+            gKernelSegs[gKernelSegCount].filesize = filesize;
+            gKernelSegs[gKernelSegCount].vmsize = vmsize;
+            gKernelSegCount++;
+
             if (phys < min_phys) { min_phys = phys; }
             if (phys + vmsize > max_phys) { max_phys = phys + vmsize; }
-
-            {
-                UINT64 lo_page = phys & ~(EFI_PAGE_SIZE - 1);
-                UINT64 hi_page = (phys + vmsize + EFI_PAGE_SIZE - 1) &
-                                 ~(EFI_PAGE_SIZE - 1);
-                pages = (hi_page - lo_page) >> EFI_PAGE_SHIFT;
-                {
-                    UINT64 addr = lo_page;
-                    EFI_STATUS stt = bs->AllocatePages(AllocateAddress,
-                                                       EfiLoaderCode,
-                                                       (UINTN)pages, &addr);
-                    if (EFI_ERROR(stt) || addr != lo_page) {
-                        say("kernel: cannot reserve Mach-O segment 0x");
-                        say_hex(lo_page, 16);
-                        say("\n");
-                        return 0;
-                    }
-                }
-            }
-            bs->CopyMem((void *)(UINTN)phys,
-                        base + fileoff, filesize);
-            if (vmsize > filesize) {
-                bs->SetMem((void *)(UINTN)(phys + filesize),
-                           (UINTN)(vmsize - filesize), 0);
-            }
-            (void)s;
         }
         if (cmd->cmdsize == 0) {
             break;
@@ -1083,25 +1157,54 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
         return 0;
     }
 
-    /* Boot stack. */
+    /* Boot stack: high, because the copy after ExitBootServices must not run
+     * on firmware stack memory that lies inside the kernel's span. */
     {
-        UINT64 stk = 0;
-        if (EFI_ERROR(bs->AllocatePages(AllocateAnyPages, EfiLoaderData,
+        EFI_PHYSICAL_ADDRESS stk = KERNEL_PAYLOAD_MAX_ADDR;
+        if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
                                         BOOTKSTACK_SIZE / EFI_PAGE_SIZE, &stk))) {
             say("kernel: boot stack allocation failed\n");
             return 0;
         }
-        *rsp_out = stk + BOOTKSTACK_SIZE;
+        *rsp_out = (UINT64)stk + BOOTKSTACK_SIZE;
     }
 
+    gKernelPayload = base;
     *entry_out = entry_vm - VM_MIN_KERNEL_ADDRESS;
     if (kphys_base_out) { *kphys_base_out = min_phys; }
     if (kphys_size_out) { *kphys_size_out = max_phys - min_phys; }
 
     say("RAVYNOS-KERNEL-LOAD (macho) entry 0x");
     say_hex(*entry_out, 16);
-    say("\n");
+    say(" (");
+    say_dec(gKernelSegCount);
+    say(" segments deferred)\n");
     return 1;
+}
+
+/* Called from xnu_handoff.S after ExitBootServices, already on the high boot
+ * stack.  Boot services are gone, so this must use plain memory operations
+ * only -- no CopyMem/SetMem. */
+void xnu_copy_kernel(void)
+{
+    UINTN i;
+
+    serial_puts("handoff: copying kernel segments\n");
+    for (i = 0; i < gKernelSegCount; i++) {
+        volatile UINT8 *dst = (volatile UINT8 *)(UINTN)gKernelSegs[i].phys;
+        const volatile UINT8 *src =
+            (const volatile UINT8 *)(gKernelPayload + gKernelSegs[i].fileoff);
+        UINTN n = (UINTN)gKernelSegs[i].filesize;
+
+        while (n--) {
+            *dst++ = *src++;
+        }
+        n = (UINTN)(gKernelSegs[i].vmsize - gKernelSegs[i].filesize);
+        while (n--) {
+            *dst++ = 0;
+        }
+    }
+    serial_puts("handoff: kernel segments copied\n");
 }
 
 /* Harvest conventional memory into the bootinfo block at BOOTINFO_ADDR.
@@ -1161,14 +1264,17 @@ static int write_bootinfo(EFI_BOOT_SERVICES *bs)
 /* ---------------------------------------------------------------------- */
 static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 {
-    UINT64 phys = 0;
+    EFI_PHYSICAL_ADDRESS phys = XNU_DT_ADDR;
     UINTN cap = 64 * 1024;
     UINT8 *buf, *p;
     EFI_STATUS stt;
 
-    stt = bs->AllocatePages(AllocateAnyPages, EfiLoaderData,
+    stt = bs->AllocatePages(AllocateAddress, EfiLoaderData,
                              (cap + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE, &phys);
-    if (EFI_ERROR(stt)) {
+    if (EFI_ERROR(stt) || phys != XNU_DT_ADDR) {
+        say("kernel: cannot reserve device-tree window at 0x");
+        say_hex(XNU_DT_ADDR, 16);
+        say("\n");
         return 0;
     }
     buf = (UINT8 *)(UINTN)phys;
@@ -1213,7 +1319,7 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
                               UINT64 kphys_base, UINT64 kphys_size)
 {
-    UINT64 ba_phys = 0;
+    EFI_PHYSICAL_ADDRESS ba_phys = XNU_BA_ADDR;
     boot_args_t *ba;
     UINTN mapsize = 0, descsize = 0, key = 0;
     UINT32 descver = 0;
@@ -1221,20 +1327,39 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     UINT64 total_mem = 0;
     UINTN off;
 
-    if (EFI_ERROR(bs->AllocatePages(AllocateAnyPages, EfiLoaderData, 1, &ba_phys))) {
+    if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1,
+                                    &ba_phys)) ||
+        ba_phys != XNU_BA_ADDR) {
+        say("kernel: cannot reserve boot_args window at 0x");
+        say_hex(XNU_BA_ADDR, 16);
+        say("\n");
         return 0;
     }
     ba = (boot_args_t *)(UINTN)ba_phys;
     bs->SetMem(ba, sizeof(*ba), 0);
 
-    /* Memory map. */
+    /* Memory map.  XNU reads it through its low linear map, so it has to live
+     * below kaddr+ksize together with boot_args and the device tree. */
     bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
     mapsize += 2 * descsize;
-    if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map))) {
+    if (mapsize > (UINTN)(XNU_BOOT_WINDOW_END - XNU_BAMAP_ADDR)) {
+        say("kernel: EFI memory map does not fit the boot-data window\n");
         return 0;
     }
+    {
+        EFI_PHYSICAL_ADDRESS map_phys = XNU_BAMAP_ADDR;
+        UINTN map_pages = (mapsize + EFI_PAGE_SIZE - 1) >> EFI_PAGE_SHIFT;
+        if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData,
+                                        map_pages, &map_phys)) ||
+            map_phys != XNU_BAMAP_ADDR) {
+            say("kernel: cannot reserve EFI memory map window at 0x");
+            say_hex(XNU_BAMAP_ADDR, 16);
+            say("\n");
+            return 0;
+        }
+        map = (EFI_MEMORY_DESCRIPTOR *)(UINTN)map_phys;
+    }
     if (EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver))) {
-        bs->FreePool(map);
         return 0;
     }
 
@@ -1507,7 +1632,9 @@ static void handoff_to_xnu(EFI_BOOT_SERVICES *bs, EFI_HANDLE image_handle,
         say("handoff: final GetMemoryMap failed\n");
         return;
     }
-    say("handoff: ExitBootServices...\n");
+    say("handoff: ExitBootServices... (");
+    say_dec(gKernelSegCount);
+    say(" kernel segments copied after it)\n");
     stt = bs->ExitBootServices(image_handle, key);
     if (EFI_ERROR(stt)) {
         say("handoff: ExitBootServices refused (stale key?)\n");
@@ -1564,13 +1691,19 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
             !EFI_ERROR(bs->HandleProtocol(image_handle, &lifo_guid,
                                           (void **)&li)) && li) {
             UINTN k;
+            say("loader: image base 0x");
+            say_hex(li->ImageBase, 16);
+            say(" size ");
+            say_dec(li->ImageSize);
+            say("\n");
             for (k = 0; k < KERNEL_PATH_COUNT; k++) {
                 void *data = 0;
-                UINTN size = 0;
+                UINTN size = 0, data_pages = 0;
                 UINT64 entry = 0, rsp = 0;
 
                 if (EFI_ERROR(esp_read_file(bs, li->DeviceHandle,
-                                            gKernelPaths[k], &data, &size))) {
+                                            gKernelPaths[k], &data, &size,
+                                            &data_pages))) {
                     continue;
                 }
                 tried = 1;
@@ -1587,7 +1720,9 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                 }
                 say(" (");
                 say_dec(size);
-                say(" bytes)\n");
+                say(" bytes at 0x");
+                say_hex((UINT64)(UINTN)data, 16);
+                say(")\n");
                 {
                     UINT64 kphys_base = 0, kphys_size = 0;
                     int is_macho = (size >= 4 && *(UINT32 *)data == MH_MAGIC_64);
@@ -1600,16 +1735,28 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                                               &kphys_base, &kphys_size);
                     }
                     if (ok) {
-                        bs->FreePool(data);
                         if (is_macho) {
-                            build_device_tree(bs);
+                            /* The payload must stay live until the post-EBS
+                             * copy in xnu_handoff has replayed its segments. */
+                            if (!build_device_tree(bs)) {
+                                say("loader: no device tree, not handing off\n");
+                                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
+                                              data_pages);
+                                break;
+                            }
                             UINT32 bargs = build_boot_args(bs, st, kphys_base, kphys_size);
                             if (!bargs) {
                                 say("loader: no boot_args, not handing off\n");
+                                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
+                                              data_pages);
                                 break;
                             }
                             handoff_to_xnu(bs, image_handle, entry, bargs, rsp);
+                            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
+                                          data_pages);
                         } else {
+                            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
+                                          data_pages);
                             if (!write_bootinfo(bs)) {
                                 say("loader: no bootinfo block, not handing off\n");
                                 break;
@@ -1619,7 +1766,8 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                         /* only reached if ExitBootServices refused */
                         say("loader: handoff failed, falling back to shell\n");
                     } else {
-                        bs->FreePool(data);
+                        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
+                                      data_pages);
                         say("loader: kernel payload rejected, falling back to shell\n");
                     }
                 }
