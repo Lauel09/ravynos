@@ -319,6 +319,46 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 37) — Phase 1 `bmake world` reaches the userland libraries.**
+  Continued the same documented command, `tools/macbuild.sh --audit
+  --target-arch x86_64`, through `work/logs/world-{6..11}.log`. Six more
+  distinct failures:
+  1. `IOHIDKeys.h` includes `<IOKit/hidsystem/IOHIDParameter.h>`, but
+     `copy_headers` staged only the five `hidsystem.subproj` headers:
+     `fatal error: 'IOKit/hidsystem/IOHIDParameter.h' file not found` → stage
+     the public `HID_IOKITSYS` set (`IOHIDParameter`, `IOHIDShared`,
+     `IOHIDTypes`, `IOLLEvent`, `ev_keymap`) from
+     `IOHIDSystem/IOKit/hidsystem` (`209dd80149`).
+  2. The `runtime` recipe left `PATH=...` unquoted; a host PATH containing a
+     space (VMware Fusion) became a command:
+     `sh: line 1: Fusion.app/Contents/Public:/Library/TeX/texbin: No such file
+     or directory` → quote the assignment in the runtime/libunwind/libcxx
+     recipes (`081338826a`).
+  3. `libcxx_dylib` needed `CRSetCrashLogMessage` but the SDK `libSystem` did
+     not provide it: `Undefined symbols ... CRSetCrashLogMessage(char const*)`
+     → build `CrashReporterClient` first and link it (`2c635fb627`).
+  4. `CrashReporterClient`'s dylib linked `-lsystem_c/-lsystem_platform/-ldyld`
+     before `Libsystem` built them: `ld: library not found for -lsystem_c` →
+     drop the unnecessary flags; the source references no libc/dyld symbols
+     (`195e1614b0`).
+  5. `compiler_rt` linked the same unbuilt `libsystem_*` sub-libraries:
+     `ld: library not found for -lsystem_platform` → link the `libSystem` TBD
+     instead, and make `Libsystem` wait for `libcompiler_rt` and `libc++.a`
+     (`1611ccc38c`).
+  6. `-lCrashReporterClient` then selected the dylib, which `ld` rejects:
+     `cannot link directly with ...libCrashReporterClient.dylib. Link against
+     the umbrella framework 'System.framework' instead` → link the static
+     `.a` by path (`78043ebe03`).
+  `world-11` now builds the whole `Developer` stage, XNU and every kext,
+  `IOKitUser`, `libc++`/`libc++abi`, compiler-rt, and reaches
+  `Libraries/objc4`. It stops linking `Libraries/objc4/libobjc.A.dylib`:
+  `Undefined symbols ... "CRGetCrashLogMessage()"` and
+  `"CRSetCrashLogMessage(char const*)"`, referenced from `_objc_crashlog` in
+  `runtime/objc-errors.o` (declared at `runtime/objc-os.h:242-243`). Best
+  hypothesis: objc4's `LDFLAGS` only adds `-lSystem`, and `System.B` has not
+  been built/re-exported at that point, so the CR entry points are absent.
+  Not fixed here (six-failure limit).
+
 - **2026-11-03 (rev 36) — Phase 1 `bmake world` runs past the toolchain.**
   Installed the documented Homebrew prerequisites (`bmake`, `cmake`, `ninja`,
   `make`, `bison`, `flex`, `libxml2`, `zlib`, `xorriso`, `mtools`, `nasm`) and
