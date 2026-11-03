@@ -120,6 +120,9 @@ LIBCXX_FLAGS = --target=${CpuArch}-apple-darwin \
     -Wno-incompatible-sysroot -Wno-user-defined-literals \
     -Wno-nullability-completeness -Wno-expansion-to-defined
 
+# The SDK headers (notably CrashReporterClient.h) live behind --sysroot, and
+# CMake's own scanner misses some __has_include() branches.  Use clang's -MD
+# dependency files so a header change recompiles the libc++ objects that use it.
 libcxx: libunwind
 	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
@@ -136,6 +139,7 @@ libcxx: libunwind
         -DCMAKE_INSTALL_PREFIX=${RAVYN_SDKROOT}/usr -DCMAKE_BUILD_TYPE=Release \
         "-DCMAKE_SHARED_LINKER_FLAGS=-nodefaultlibs -Wl,-install_name,/usr/lib/libc++.1.dylib -L${RAVYN_SDKROOT}/usr/lib -L${ROOT_BINARY_DIR}/Libraries/llvm_target/libunwind/lib -lunwind -lSystem" \
         -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+	-DCMAKE_DEPENDS_USE_COMPILER=ON \
         -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
         -DLLVM_ENABLE_LIBCXX=ON \
         -DLLVM_ENABLE_LTO=OFF -DLLVM_BUILD_DOCS=OFF -DLLVM_INCLUDE_TESTS=OFF \
