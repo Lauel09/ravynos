@@ -180,7 +180,11 @@ compiler_rt: runtime libunwind libcxx
 # for _dlopen and _dlsym. We do not link directly to libdyld.
 
 CXXOBJ = ${.OBJDIR}/llvm_target/libcxx/lib/libc++.a
-libcxx_dylib: libcxx
+# libc++abi's abort_message and libc++'s verbose_abort reference
+# CRSetCrashLogMessage.  Its CMake looks for libCrashReporterClient.a under
+# <sysroot>/usr/local/lib, which this tree does not populate, so link the
+# tree's CrashReporterClient (staged in /usr/lib/system) explicitly.
+libcxx_dylib: libcxx CrashReporterClient
 	mkdir -p ${CXXLIB:H} ${CXXOBJ:H}
 	rm -f ${.OBJDIR}/libc++.1.dylib
 	${CC} -o ${.OBJDIR}/libc++.1.dylib -dylib -shared \
@@ -191,7 +195,9 @@ libcxx_dylib: libcxx
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++.a \
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++abi.a \
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++experimental.a \
-	  ${RTOBJ} -L${RAVYN_SDKROOT}/usr/lib -lSystem #2>&1 | grep -v "addend too large"
+	  ${RTOBJ} -L${RAVYN_SDKROOT}/usr/lib \
+	  -L${RAVYN_SDKROOT}/usr/lib/system -lCrashReporterClient \
+	  -lSystem #2>&1 | grep -v "addend too large"
 	cp -f ${.OBJDIR}/libc++.1.dylib ${CXXLIB}
 	ln -sf libc++.1.dylib ${RAVYN_SDKROOT}/usr/lib/libc++.dylib
 
