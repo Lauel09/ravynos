@@ -18,6 +18,7 @@ import unittest
 
 PROP_NAME_LEN = 32
 FSB_FREQUENCY = 100000000
+RANDOM_SEED_LEN = 64
 
 
 def pad4(n):
@@ -42,10 +43,18 @@ def node(properties, children):
     return out
 
 
-def build_loader_blob():
+def build_loader_blob(seed=None):
     """The exact node/property layout of build_device_tree()."""
+    if seed is None:
+        seed = bytes((i + 1) & 0xFF for i in range(RANDOM_SEED_LEN))
     memory_map = node([("name", b"memory-map\0")], [])
-    chosen = node([("name", b"chosen\0")], [memory_map])
+    chosen = node(
+        [
+            ("name", b"chosen\0"),
+            ("random-seed", seed),
+        ],
+        [memory_map],
+    )
     platform = node(
         [
             ("name", b"platform\0"),
@@ -114,6 +123,8 @@ class DeviceTreeTests(unittest.TestCase):
         )
         self.assertEqual(nodes["/"]["name"], b"\0")
         self.assertEqual(nodes["/chosen"]["name"], b"chosen\0")
+        self.assertEqual(len(nodes["/chosen"]["random-seed"]), RANDOM_SEED_LEN)
+        self.assertTrue(any(nodes["/chosen"]["random-seed"]))
         self.assertEqual(nodes["/chosen/memory-map"]["name"], b"memory-map\0")
         self.assertEqual(nodes["/efi"]["name"], b"efi\0")
         self.assertEqual(nodes["/efi/platform"]["name"], b"platform\0")

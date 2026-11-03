@@ -1273,11 +1273,67 @@ static int write_bootinfo(EFI_BOOT_SERVICES *bs)
 /* ---------------------------------------------------------------------- */
 /* Minimal flattened device tree (D5)                                       */
 /* ---------------------------------------------------------------------- */
+#define XNU_RANDOM_SEED_SIZE 64u
+
+/* Populate 64 bytes for /chosen/random-seed (Kernel/xnu/osfmk/prng/prng_random.c:56-65,
+ * Kernel/xnu/pexpert/gen/pe_gen.c:141-172).  Uses RDRAND when CPUID.1:ECX[30]
+ * advertises it, with a SplitMix64-mixed RDTSC fallback for CPUs without RDRAND
+ * (such as QEMU -cpu Penryn). */
+static void fill_random_seed(UINT8 out[XNU_RANDOM_SEED_SIZE])
+{
+    UINT32 eax = 1, ebx = 0, ecx = 0, edx = 0;
+    int have_rdrand;
+    UINT64 state;
+    UINT32 lo = 0, hi = 0;
+    UINTN i;
+    UINT8 nonzero = 0;
+
+    __asm__ volatile("cpuid"
+                     : "+a"(eax), "=b"(ebx), "+c"(ecx), "=d"(edx));
+    have_rdrand = (ecx & (1u << 30)) != 0;
+
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    state = (((UINT64)hi << 32) | lo) ^ 0xA5A55A5AF0F00F0FULL;
+
+    for (i = 0; i < XNU_RANDOM_SEED_SIZE / sizeof(UINT64); i++) {
+        UINT64 v = 0;
+        UINT8 ok = 0;
+        if (have_rdrand) {
+            UINTN tries;
+            for (tries = 0; tries < 16 && !ok; tries++) {
+                /* rdrand %rax */
+                __asm__ volatile(".byte 0x48, 0x0f, 0xc7, 0xf0; setc %1"
+                                 : "=a"(v), "=qm"(ok)
+                                 :
+                                 : "cc");
+            }
+        }
+        if (!ok) {
+            __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+            state ^= ((UINT64)hi << 32) | lo;
+            state += 0x9E3779B97F4A7C15ULL;
+            v = state;
+            v = (v ^ (v >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            v = (v ^ (v >> 27)) * 0x94D049BB133111EBULL;
+            v ^= (v >> 31);
+        }
+        ((UINT64 *)(void *)out)[i] = v;
+    }
+
+    for (i = 0; i < XNU_RANDOM_SEED_SIZE; i++) {
+        nonzero |= out[i];
+    }
+    if (!nonzero) {
+        out[0] = 1;
+    }
+}
+
 static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 {
     EFI_PHYSICAL_ADDRESS phys = XNU_DT_ADDR;
     UINTN cap = 64 * 1024;
     UINT8 *buf, *p;
+    UINT8 seed[XNU_RANDOM_SEED_SIZE];
     EFI_STATUS stt;
 
     stt = bs->AllocatePages(AllocateAddress, EfiLoaderData,
@@ -1290,6 +1346,7 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
     }
     buf = (UINT8 *)(UINTN)phys;
     bs->SetMem(buf, cap, 0);
+    fill_random_seed(seed);
     p = buf;
 
 #define WU32(x) do { *(UINT32 *)p = (x); p += 4; } while (0)
@@ -1297,14 +1354,17 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 #define WPROP_NAME(nm) do { WNAME(nm); } while (0)
 #define WPROP_STR(pname, sval) do {         WNAME(pname);         *(UINT32 *)p = (UINT32)(sizeof(sval)); p += 4;         bs->CopyMem(p, (sval), sizeof(sval));         p += ((sizeof(sval) + 3) & ~3u);     } while (0)
 #define WPROP_U64(pname, val) do {         WNAME(pname);         *(UINT32 *)p = 8; p += 4;         *(UINT64 *)p = (val); p += 8;     } while (0)
+#define WPROP_BYTES(pname, ptr, len) do {         WNAME(pname);         *(UINT32 *)p = (UINT32)(len); p += 4;         bs->CopyMem(p, (ptr), (len));         p += (((UINTN)(len) + 3u) & ~3u);     } while (0)
 
     /* root: 1 prop (name), 2 children */
     WU32(1); WU32(2);
     WPROP_STR("name", "");
 
-    /* chosen */
-    WU32(1); WU32(1);
+    /* chosen: PE_get_random_seed (pexpert/gen/pe_gen.c:147-170) reads
+     * /chosen/random-seed and zeroes its bytes in place. */
+    WU32(2); WU32(1);
     WPROP_STR("name", "chosen");
+    WPROP_BYTES("random-seed", seed, sizeof(seed));
     /* memory-map */
     WU32(1); WU32(0);
     WPROP_STR("name", "memory-map");
@@ -1321,6 +1381,7 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 #undef WNAME
 #undef WPROP_STR
 #undef WPROP_U64
+#undef WPROP_BYTES
 
     gDTPhys = (UINT32)phys;
     gDTSize = (UINT32)(p - buf);
