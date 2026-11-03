@@ -6,14 +6,6 @@ CXX := ${HOST_CXX}
 CFLAGS := ${CFLAGS:N-I*Default.xctoolchain/include}
 CXXFLAGS := ${CXXFLAGS:N-I*Default.xctoolchain/include}
 
-# sys.mk points GMAKE at ${TOOLS}/gmake, the in-tree GNU make that used to be
-# built before llvm.  gmake is no longer part of the toolchain SUBDIR list on
-# Darwin, so use the host's Homebrew gmake (the documented prerequisite)
-# instead of a path that is never populated.
-.if "${.MAKE.OS}" == "Darwin"
-GMAKE = gmake
-.endif
-
 # bmake exports its own jobserver as MAKEFLAGS="-j N -J fd,fd"; GNU make
 # rejects -J outright ("invalid option -- J").  Clear the inherited flags and
 # pass -j explicitly instead; gmake then starts its own jobserver for children.

@@ -223,7 +223,13 @@ FFLAGS		?=	-O
 .endif
 EFLAGS		?=
 
+.if "${.MAKE.OS}" == "Darwin"
+# gmake is no longer built as part of the in-tree toolchain; the documented
+# Homebrew prerequisite is the host's gmake.
+GMAKE		?=	gmake
+.else
 GMAKE		?=	${TOOLS}/gmake
+.endif
 
 IIG		?=	${TOOLS}/iig
 
