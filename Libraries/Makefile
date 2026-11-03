@@ -186,8 +186,9 @@ Libsystem: compiler_rt libcxx
 CXXOBJ = ${.OBJDIR}/llvm_target/libcxx/lib/libc++.a
 # libc++abi's abort_message and libc++'s verbose_abort reference
 # CRSetCrashLogMessage.  Its CMake looks for libCrashReporterClient.a under
-# <sysroot>/usr/local/lib, which this tree does not populate, so link the
-# tree's CrashReporterClient (staged in /usr/lib/system) explicitly.
+# <sysroot>/usr/local/lib, which this tree does not populate.  Link the .a
+# directly: the .dylib is a System umbrella re-export, and ld refuses a direct
+# link to it ("cannot link directly with ...libCrashReporterClient.dylib").
 libcxx_dylib: libcxx CrashReporterClient
 	mkdir -p ${CXXLIB:H} ${CXXOBJ:H}
 	rm -f ${.OBJDIR}/libc++.1.dylib
@@ -200,7 +201,7 @@ libcxx_dylib: libcxx CrashReporterClient
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++abi.a \
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++experimental.a \
 	  ${RTOBJ} -L${RAVYN_SDKROOT}/usr/lib \
-	  -L${RAVYN_SDKROOT}/usr/lib/system -lCrashReporterClient \
+	  ${RAVYN_SDKROOT}/usr/lib/system/libCrashReporterClient.a \
 	  -lSystem #2>&1 | grep -v "addend too large"
 	cp -f ${.OBJDIR}/libc++.1.dylib ${CXXLIB}
 	ln -sf libc++.1.dylib ${RAVYN_SDKROOT}/usr/lib/libc++.dylib
