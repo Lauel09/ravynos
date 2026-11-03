@@ -203,6 +203,8 @@ typedef struct {
     UINT64 Attribute;
 } EFI_MEMORY_DESCRIPTOR;
 
+#define EFI_MEMORY_RUNTIME 0x8000000000000000ULL /* pexpert/i386/efi.h:232 */
+
 #define EVT_TIMER 0x80000000
 typedef void (*EFI_EVENT_NOTIFY)(EFI_EVENT Event, void *Context);
 
@@ -615,11 +617,13 @@ typedef struct {
 
 /* XNU's D2 link layout leaves this gap between __HIB (ends 0x19e000) and
  * __TEXT (starts 0x200000).  XNU's low linear map only covers
- * [0, kaddr+ksize), so the device tree, boot_args and EFI memory map must
- * live in this gap rather than in pool allocated at the top of RAM. */
+ * [0, kaddr+ksize), so the device tree, boot_args, zeroed EFI system-table
+ * stub, and EFI memory map must live in this gap rather than in pool
+ * allocated at the top of RAM. */
 #define XNU_DT_ADDR          0x1A0000ULL
 #define XNU_BA_ADDR          0x1B0000ULL
-#define XNU_BAMAP_ADDR       0x1B1000ULL
+#define XNU_EFISTUB_ADDR     0x1B1000ULL
+#define XNU_BAMAP_ADDR       0x1B2000ULL
 #define XNU_BOOT_WINDOW_END  0x1E0000ULL
 
 typedef struct { UINT64 base; UINT64 pages; } kern_memdesc_t;
@@ -1392,12 +1396,15 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
                               UINT64 kphys_base, UINT64 kphys_size)
 {
     EFI_PHYSICAL_ADDRESS ba_phys = XNU_BA_ADDR;
+    EFI_PHYSICAL_ADDRESS efistub_phys = XNU_EFISTUB_ADDR;
     boot_args_t *ba;
     UINTN mapsize = 0, descsize = 0, key = 0;
     UINT32 descver = 0;
     EFI_MEMORY_DESCRIPTOR *map = 0;
     UINT64 total_mem = 0;
     UINTN off;
+
+    (void)st;
 
     if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1,
                                     &ba_phys)) ||
@@ -1409,6 +1416,21 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     }
     ba = (boot_args_t *)(UINTN)ba_phys;
     bs->SetMem(ba, sizeof(*ba), 0);
+
+    /* Zeroed EFI_SYSTEM_TABLE_64 stub inside [kaddr, kaddr+ksize): efi_init()
+     * (osfmk/i386/AT386/model_dep.c:376-379,554) dereferences
+     * ml_static_ptovirt(args->efiSystemTable), sees Hdr.Signature == 0, and
+     * leaves gPEEFISystemTable/gPEEFIRuntimeServices NULL cleanly
+     * (osfmk/i386/pal_routines.c:171, IOACPIFamily/EFINVRAM.cpp:126). */
+    if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1,
+                                    &efistub_phys)) ||
+        efistub_phys != XNU_EFISTUB_ADDR) {
+        say("kernel: cannot reserve EFI stub page at 0x");
+        say_hex(XNU_EFISTUB_ADDR, 16);
+        say("\n");
+        return 0;
+    }
+    bs->SetMem((void *)(UINTN)efistub_phys, EFI_PAGE_SIZE, 0);
 
     /* Memory map.  XNU reads it through its low linear map, so it has to live
      * below kaddr+ksize together with boot_args and the device tree. */
@@ -1456,14 +1478,30 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     ba->deviceTreeLength = gDTSize;
     ba->kaddr = (UINT32)kphys_base;
     ba->ksize = (UINT32)kphys_size;
-    ba->efiSystemTable = (UINT32)(UINTN)st;
+    ba->efiSystemTable = (UINT32)efistub_phys;
     ba->PhysicalMemorySize = 0; /* filled below */
     ba->FSBFrequency = 100000000ULL;
 
     for (off = 0; off < mapsize; off += descsize) {
         EFI_MEMORY_DESCRIPTOR *d = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + off);
-        if (d->Type == EfiConventionalMemory) {
+        if (d->Type == EfiConventionalMemory &&
+            (d->Attribute & EFI_MEMORY_RUNTIME) == 0) {
             total_mem += d->NumberOfPages * EFI_PAGE_SIZE;
+        }
+        if (d->Attribute & EFI_MEMORY_RUNTIME) {
+            /* Without SetVirtualAddressMap(), VirtualStart == 0 makes
+             * efi_init() (model_dep.c:529-545) map runtime pages over
+             * VM_MIN_KERNEL_ADDRESS (0xffffff8000000000), clobbering __HIB
+             * and the boot stack.  Preserve non-conventional memory types so
+             * i386_vm_init() (i386_vm_init.c:460-470,529-532) still excludes
+             * firmware runtime physical pages from usable RAM. */
+            if (d->Type == EfiLoaderCode || d->Type == EfiLoaderData ||
+                d->Type == EfiBootServicesCode ||
+                d->Type == EfiBootServicesData ||
+                d->Type == EfiConventionalMemory) {
+                d->Type = EfiReservedMemoryType;
+            }
+            d->Attribute &= ~EFI_MEMORY_RUNTIME;
         }
     }
     ba->PhysicalMemorySize = total_mem;
