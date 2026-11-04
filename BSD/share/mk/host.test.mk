@@ -73,7 +73,7 @@ run-tests: ${RUN_TESTS_LOG}
 # so tests for things like cat, cp, cmp etc can find the one we just built
 # rather than the one from the host.
 ${RUN_TESTS_LOG}: ${_TESTS} Kyuafile
-	@( export PATH=${.OBJDIR}:${.OBJDIR:H}:${PATH}; \
+	@( export PATH="${.OBJDIR}:${.OBJDIR:H}:${PATH}"; \
 	rm -f ${KYUA_RESULTS}; \
 	${KYUA_ENV} ${KYUA} ${KYUA_FLAGS} test ${KYUA_ARGS} -k ${.OBJDIR}/Kyuafile --build-root=${.OBJDIR} && \
 	${KYUA_ENV} ${KYUA} ${KYUA_FLAGS} report ${KYUA_ARGS} ) > ${.TARGET} || \
@@ -83,7 +83,7 @@ ${RUN_TESTS_LOG}: ${_TESTS} Kyuafile
 
 # make kyua-debug KYUA_DEBUG_ARGS=app:test
 kyua-debug:
-	@(export PATH=${.OBJDIR}:${.OBJDIR:H}:${PATH}; \
+	@(export PATH="${.OBJDIR}:${.OBJDIR:H}:${PATH}"; \
 	${KYUA_ENV} ${KYUA} ${KYUA_FLAGS} debug ${KYUA_DEBUG_ARGS}) || true
 
 .endif

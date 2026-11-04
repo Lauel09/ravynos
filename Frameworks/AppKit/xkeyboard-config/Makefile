@@ -13,7 +13,7 @@ all: build
 build:
 	LD_LIBRARY_PATH=${OBJTOP}/tmp/usr/lib:${OBJTOP}/tmp/lib \
         PYTHONPATH=${OBJTOP}/tmp/usr/lib/python3.10 \
-        PATH=${OBJTOP}/tmp/usr/bin:${OBJTOP}/tmp/legacy/bin:$${PATH} \
+        PATH="${OBJTOP}/tmp/usr/bin:${OBJTOP}/tmp/legacy/bin:$${PATH}" \
 	CFLAGS="${CFLAGS:C/-Werror=.* //g}" \
         ${MESON} setup --reconfigure -Dprefix=${PREFIX} \
         -Dc_args="${CFLAGS}" -Dcpp_args="${CFLAGS}" \

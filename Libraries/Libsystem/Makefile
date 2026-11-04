@@ -54,7 +54,7 @@ all: lib${LIB}.dylib
 ${.OBJDIR}/config.${CpuArch}.normal.h:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
 	RUNTIME_SPEC_PATH=${TOOLCHAIN}/Library/Xcode/Specifications \
-	PATH=${TOOLS}:${PATH} \
+	PATH="${TOOLS}:${PATH}" \
 	${.CURDIR}/xcodescripts/linker_arguments.sh \
 	${CpuArch} normal ${.OBJDIR} ${RAVYN_SDKROOT} ${.CURDIR}
 

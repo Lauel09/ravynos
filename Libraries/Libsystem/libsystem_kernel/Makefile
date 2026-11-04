@@ -231,14 +231,14 @@ ${.OBJDIR}/libsyscalls.a: ${XNU}/bsd/kern/syscalls.master copy_defs
 	mkdir -p ${.OBJDIR}/sys
 	env SDKROOT=${RAVYN_SDKROOT} BUILT_PRODUCTS_DIR=${.OBJDIR} \
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	PATH=${TOOLS}:${PATH} ARCHS=${CpuArch} SRCROOT=${XNU}/libsyscall \
+	PATH="${TOOLS}:${PATH}" ARCHS=${CpuArch} SRCROOT=${XNU}/libsyscall \
 	OBJROOT=${.OBJDIR} \
 	${XNU}/libsyscall/xcodescripts/create-syscalls.pl \
 	  ${XNU}/bsd/kern/syscalls.master ${XNU}/libsyscall/custom \
 	  ${XNU}/libsyscall/Platforms MacOSX ${.OBJDIR}/sys
 	env SDKROOT=${RAVYN_SDKROOT} SDK_INSTALL_HEADERS_ROOT=. \
 	BUILT_PRODUCTS_DIR=${.OBJDIR} \
-	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer PATH=${TOOLS}:${PATH} \
+	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer PATH="${TOOLS}:${PATH}" \
 	ARCHS=${CpuArch} SRCROOT=${XNU}/libsyscall OBJROOT=${.OBJDIR} \
 	${XNU}/libsyscall/xcodescripts/compile-syscalls.pl \
 	  ${.OBJDIR}/sys/stubs.list ${.TARGET}
@@ -251,7 +251,7 @@ ${.OBJDIR}/libmach.a: ${MACH_DEFS}
 	SDKROOT=${RAVYN_SDKROOT} PLATFORM_NAME=MacOSX ARCHS=${CpuArch} \
 	SRCROOT=${XNU}/libsyscall OBJROOT=${.OBJDIR}/obj \
 	BUILT_PRODUCTS_DIR=${.OBJDIR} \
-	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer PATH=${TOOLS}:${PATH} \
+	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer PATH="${TOOLS}:${PATH}" \
 	CFLAGS="${CFLAGS}" ${XNU}/libsyscall/xcodescripts/mach_install_mig.sh
 	set -e; for f in ${.OBJDIR}/obj/*User.c; \
 	do \
