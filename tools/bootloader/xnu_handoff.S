@@ -1,22 +1,23 @@
-/* xnu_handoff.S -- drop from 64-bit UEFI long mode to 32-bit protected mode
- * and jump to the XNU kernel entry.  Globals are filled by the C side. */
+/* xnu_handoff.S -- copy the kernel segments and jump to XNU _pstart.
+ *
+ * This tree's XNU enters from UEFI in 64-bit long mode, not 32-bit protected
+ * mode.  osfmk/x86_64/start.s says so directly ("When entering from UEFI
+ * (i.e. ravynOS) we are already in 64bit long mode"), has .code64 at
+ * L_pstart_common, and its SWITCH_TO_64BIT_MODE macro is commented out.  The
+ * old trampoline here dropped to a 32-bit compatibility segment before the
+ * jump; _pstart's first .code64 block then executed `mov %ax,%ss` with a null
+ * selector, which is legal in long mode but raises #GP in 32-bit mode (the
+ * kernel entry + 0x39 fault seen in work/logs/qemu-d6-1.log).
+ *
+ * Keep the firmware's long mode and identity-mapped paging alive: _pstart
+ * rebases its own BootPML4 and installs its own GDT, so the loader only has
+ * to copy the segments and arrive with EAX = physical boot_args. */
+
 	.text
 
 	.globl	xnu_handoff
 
 	.align	8
-gdt:
-	.quad	0
-	/* 32-bit flat code segment, D=1, L=0 */
-	.quad	0x00CF9A000000FFFF
-	/* 32-bit flat data segment */
-	.quad	0x00CF92000000FFFF
-gdt_end:
-
-gdt_ptr:
-	.word	gdt_end - gdt - 1
-	.quad	gdt
-
 	.extern	gHandoffEntry
 	.extern	gHandoffBootArgs
 	.extern	gHandoffRsp
@@ -24,48 +25,16 @@ gdt_ptr:
 
 xnu_handoff:
 	cli
+	cld
 
-	/* Boot services are gone.  Copy the kernel segments on the high boot
-	 * stack, so firmware stack memory inside the kernel's span cannot be
-	 * overwritten under the call. */
+	/* Copy the kernel segments on the high boot stack, still in 64-bit mode
+	 * with the firmware identity map active. */
 	movl	gHandoffRsp(%rip), %esp
 	call	xnu_copy_kernel
 
-	lgdt	gdt_ptr(%rip)
-
-	/* far jump into 32-bit code segment */
-	pushq	$0x08
-	leaq	1f(%rip), %rax
-	pushq	%rax
-	lretq
-
-1:
-	.code32
-	/* disable paging */
-	movl	%cr0, %eax
-	andl	$0x7FFFFFFF, %eax
-	movl	%eax, %cr0
-
-	/* clear EFER.LME */
-	movl	$0xC0000080, %ecx
-	rdmsr
-	andl	$~0x00000100, %eax
-	wrmsr
-
-	/* data segments */
-	movw	$0x10, %ax
-	movw	%ax, %ds
-	movw	%ax, %es
-	movw	%ax, %ss
-	movw	%ax, %fs
-	movw	%ax, %gs
-
-	/* stack */
-	movl	gHandoffRsp, %esp
-
-	/* boot_args pointer in eax */
-	movl	gHandoffBootArgs, %eax
-
-	/* jump to entry */
-	movl	gHandoffEntry, %edx
-	jmp	*%edx
+	/* XNU _pstart contract: EAX = physical address of boot_args.  A 32-bit
+	 * move zero-extends, and every address here is below 4 GiB.  The kernel
+	 * immediately moves EAX to EDI and switches to its own stack. */
+	movl	gHandoffBootArgs(%rip), %eax
+	movl	gHandoffEntry(%rip), %edx
+	jmp	*%rdx

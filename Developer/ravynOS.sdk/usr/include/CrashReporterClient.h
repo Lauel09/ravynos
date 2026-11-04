@@ -27,9 +27,11 @@
 
 #include <mach/mach_types.h>
 
+__BEGIN_DECLS
 extern const char *CRGetCrashLogMessage(void);
 extern void CRSetCrashLogMessage(const char *crashString);
 extern void CRSetCrashLogMessage2(const char *crashString);
+__END_DECLS
 
 #define CRASHREPORTER_ANNOTATIONS_SECTION "__crash_info"
 #define CRASHREPORTER_ANNOTATIONS_VERSION 5

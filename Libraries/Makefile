@@ -31,7 +31,7 @@ RUNTIME_FLAGS = "--sysroot=${RAVYN_SDKROOT} -B${TOOLCHAIN}/usr/bin \
 
 runtime:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	SDKROOT=${RAVYN_SDKROOT} CFLAGS=${RUNTIME_FLAGS} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/compiler-rt \
 	-B ${.OBJDIR}/llvm_target/compiler-rt -Wno-dev \
@@ -77,7 +77,7 @@ LLVM_DIR = ${ROOT_BINARY_DIR}${DEVEL}/Default.xctoolchain/llvm_host/lib/cmake/ll
 
 libunwind: runtime
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	SDKROOT=${RAVYN_SDKROOT} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/runtimes \
 	-B ${.OBJDIR}/llvm_target/libunwind -Wno-dev \
@@ -120,8 +120,11 @@ LIBCXX_FLAGS = --target=${CpuArch}-apple-darwin \
     -Wno-incompatible-sysroot -Wno-user-defined-literals \
     -Wno-nullability-completeness -Wno-expansion-to-defined
 
+# The SDK headers (notably CrashReporterClient.h) live behind --sysroot, and
+# CMake's own scanner misses some __has_include() branches.  Use clang's -MD
+# dependency files so a header change recompiles the libc++ objects that use it.
 libcxx: libunwind
-	PATH=${TOOLCHAIN}/usr/bin:${PATH} \
+	PATH="${TOOLCHAIN}/usr/bin:${PATH}" \
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
 	SDKROOT=${RAVYN_SDKROOT} \
 	cmake -S ${DEVEL}/Default.xctoolchain/llvm/runtimes \
@@ -136,6 +139,7 @@ libcxx: libunwind
         -DCMAKE_INSTALL_PREFIX=${RAVYN_SDKROOT}/usr -DCMAKE_BUILD_TYPE=Release \
         "-DCMAKE_SHARED_LINKER_FLAGS=-nodefaultlibs -Wl,-install_name,/usr/lib/libc++.1.dylib -L${RAVYN_SDKROOT}/usr/lib -L${ROOT_BINARY_DIR}/Libraries/llvm_target/libunwind/lib -lunwind -lSystem" \
         -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+	-DCMAKE_DEPENDS_USE_COMPILER=ON \
         -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=OFF \
         -DLLVM_ENABLE_LIBCXX=ON \
         -DLLVM_ENABLE_LTO=OFF -DLLVM_BUILD_DOCS=OFF -DLLVM_INCLUDE_TESTS=OFF \
@@ -169,18 +173,27 @@ compiler_rt: runtime libunwind libcxx
 	  -Wl,-install_name,/usr/lib/system/libcompiler_rt.dylib \
 	  -Wl,-current_version,${LLVM_VERSION}  \
 	  -Wl,-force_load,${RTOBJ} -Wl,-undefined,warning -Wl,-flat_namespace \
-	  -L${RAVYN_SDKROOT}/usr/lib/system -L${RAVYN_SDKROOT}/usr/lib -lsystem_platform \
-	  -lsystem_c -lsystem_malloc -lsystem_m -ldispatch -ldyld -lsystem_kernel \
-	  -lsystem_pthread -lunwind
+	  -L${RAVYN_SDKROOT}/usr/lib -lSystem -lunwind
 	@echo after making dylib, copying to SDK
 	cp -f ${.OBJDIR}/libcompiler_rt.dylib ${RTLIB}
 	cp -f ${.OBJDIR}/libcompiler_rt.dylib ${RTLIB2}
+
+# libSystem.B re-exports libcompiler_rt and libc++, so those must exist before
+# the Libsystem subtree links its umbrella dylib.  The individual libsystem_*
+# sub-libraries compiler_rt used to link are built by that subtree and are not
+# available yet; the libSystem TBD carries the same symbols.
+Libsystem: compiler_rt libcxx
 
 # We want a combined libc++ and libc++abi as our dylib. It needs libSystem
 # for _dlopen and _dlsym. We do not link directly to libdyld.
 
 CXXOBJ = ${.OBJDIR}/llvm_target/libcxx/lib/libc++.a
-libcxx_dylib: libcxx
+# libc++abi's abort_message and libc++'s verbose_abort reference
+# CRSetCrashLogMessage.  Its CMake looks for libCrashReporterClient.a under
+# <sysroot>/usr/local/lib, which this tree does not populate.  Link the .a
+# directly: the .dylib is a System umbrella re-export, and ld refuses a direct
+# link to it ("cannot link directly with ...libCrashReporterClient.dylib").
+libcxx_dylib: libcxx CrashReporterClient
 	mkdir -p ${CXXLIB:H} ${CXXOBJ:H}
 	rm -f ${.OBJDIR}/libc++.1.dylib
 	${CC} -o ${.OBJDIR}/libc++.1.dylib -dylib -shared \
@@ -191,7 +204,9 @@ libcxx_dylib: libcxx
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++.a \
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++abi.a \
 	  -Wl,-force_load,${.OBJDIR}/llvm_target/libcxx/lib/libc++experimental.a \
-	  ${RTOBJ} -L${RAVYN_SDKROOT}/usr/lib -lSystem #2>&1 | grep -v "addend too large"
+	  ${RTOBJ} -L${RAVYN_SDKROOT}/usr/lib \
+	  ${RAVYN_SDKROOT}/usr/lib/system/libCrashReporterClient.a \
+	  -lSystem #2>&1 | grep -v "addend too large"
 	cp -f ${.OBJDIR}/libc++.1.dylib ${CXXLIB}
 	ln -sf libc++.1.dylib ${RAVYN_SDKROOT}/usr/lib/libc++.dylib
 

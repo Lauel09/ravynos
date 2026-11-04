@@ -103,3 +103,6 @@ __pycache__/
 /Kernel/ravynkern/KERNEL.ELF
 /tools/bootloader/BOOTX64.EFI
 /tools/shell/SHELL.EFI
+
+# Remote-model loop outputs (tools/arena-run.sh, tools/xnu-boot.sh)
+/out/arena/

@@ -364,12 +364,15 @@ stage_root() {
             cp "$STAGE/root/$rel" "$wrap/$rel" || die "cannot stage $rel into the EFI volume"
             log "  efi volume: $rel"
         done
-        # Smallest legal FAT16 volume: FAT16 needs 4085 clusters, so 4 MiB at
-        # 512-byte clusters is about as small as this writer can go.
+        # Let the writer size the volume from its contents.  A fixed 4 MiB is
+        # the smallest legal FAT16 shape and works for a bare loader, but the
+        # documented pipeline also puts the kernel and shell in this volume;
+        # with a real payload the build then failed with "staged tree does not
+        # fit" even though fat.py can grow the image.
         EFI_IMAGE=BOOT/EFIBOOT.IMG
         mkdir -p "$STAGE/root/BOOT"
         "$PYTHON" "$SCRIPT_DIR/image/fat.py" build "$wrap" \
-            -o "$STAGE/root/$EFI_IMAGE" --no-gpt --size-mb 4 \
+            -o "$STAGE/root/$EFI_IMAGE" --no-gpt \
             --label EFIBOOT --timestamp "$EPOCH" >/dev/null ||
             die "could not build the FAT boot image for --efi-payload"
         log "  efi payload: $EFI_PAYLOAD -> $EFI_IMAGE ($(human_size "$(file_size "$STAGE/root/$EFI_IMAGE")"), FAT16)"

@@ -97,7 +97,12 @@ libfirehose_kernel: .PHONY
 # libclang_rt.profile_osx.a drags in libc (fprintf/__stderrp).  Build the
 # kernel-safe subset from the vendored compiler-rt sources instead of copying
 # the CLT archive.  See Libraries/libclang_rt_profile/Makefile.
-libclang_rt_profile: .PHONY
+# The profile runtime is compiled against the SDK that installhdrs stages, so
+# it must wait for the headers.  Without this, xnu_all's prerequisites run in
+# parallel under -j and the compile races the header install:
+#   .../ravynOS.sdk/usr/include/sys/_types.h:33:10: fatal error:
+#   'machine/_types.h' file not found
+libclang_rt_profile: installhdrs .PHONY
 	${MAKE} -C ${ROOT_SOURCE_DIR}/Libraries/libclang_rt_profile all
 
 compiler_rt: .PHONY

@@ -346,10 +346,17 @@ copy_headers: .PHONY
 		${.CURDIR}/hidsystem.subproj/IOHIDLib.h \
 		${.CURDIR}/hidsystem.subproj/event_status_driver.h \
 		${iokitHdrs}/hidsystem/
-	# event_status_driver.h includes <IOKit/hidsystem/IOHIDTypes.h>.  Take the
-	# real 182-line header from IOHIDSystem/IOKit/hidsystem: the
-	# hid.subproj/IOHIDTypes.h namesake is an empty placeholder file.
-	cp -f ${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h \
+	# event_status_driver.h includes <IOKit/hidsystem/IOHIDTypes.h>, and
+	# IOHIDKeys.h includes <IOKit/hidsystem/IOHIDParameter.h>.  Stage the real
+	# public headers from IOHIDSystem/IOKit/hidsystem (the hid.subproj
+	# IOHIDTypes.h namesake is an empty placeholder).  This mirrors the public
+	# HID_IOKITSYS list in Extensions/IOHIDFamily/HID/Makefile.
+	cp -f \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDParameter.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDShared.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOHIDTypes.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/IOLLEvent.h \
+		${.CURDIR:H}/Extensions/IOHIDFamily/IOHIDSystem/IOKit/hidsystem/ev_keymap.h \
 		${iokitHdrs}/hidsystem/
 	mkdir -p ${iokitHdrs}/hid
 	cp -f \

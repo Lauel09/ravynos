@@ -79,6 +79,13 @@ CFLAGS.ImageLoaderMachOCompressed.o = -O3
 ACFLAGS = ${COMMONFLAGS}
 CFLAGS = ${COMMONFLAGS} ${CFLAGS.${.TARGET:T}}
 CXXFLAGS = ${COMMONFLAGS} -std=c++20 ${C_INCS} ${CFLAGS.${.TARGET:T}}
+# dyld's Array.h calls CRSetCrashLogMessage.  libSystem.B is built later, so
+# link the static CrashReporterClient that Libraries already produced.
+CRLIB = ${RAVYN_SDKROOT}/usr/lib/system/libCrashReporterClient.a
+
+# libdyld is part of the System umbrella.  Its libsystem_* dependencies are
+# upward links: the individual dylibs are built later by Libsystem, and
+# linking them directly here fails with "library not found for -lsystem_malloc".
 LDFLAGS = --target=${CpuArch}-apple-darwin --sysroot=${RAVYN_SDKROOT} \
 	-L${RAVYN_SDKROOT}/usr/lib/system -L${RAVYN_SDKROOT}/usr/lib \
 	-Wl,-no_inits -Wl,-no_warn_unused_dylibs -fuse-ld=${LD} -shared \
@@ -86,19 +93,19 @@ LDFLAGS = --target=${CpuArch}-apple-darwin --sysroot=${RAVYN_SDKROOT} \
 	-mmacos-version-min=${MACOS_VERSION_MIN} \
 	-Wl,-install_name,/usr/lib/system/libdyld.dylib \
 	-Wl,-current_version,732.2 \
-	-lsystem_malloc -lsystem_pthread -lsystem_platform -lsystem_kernel \
 	-Wl,-upward-lsystem_platform -Wl,-upward-lsystem_malloc \
 	-Wl,-upward-lsystem_c -Wl,-upward-lsystem_pthread \
 	-Wl,-upward-lxpc -Wl,-upward-lc++ \
 	-Wl,-upward-lsystem_blocks -Wl,-upward-lsystem_kernel \
-	-Wl,-upward-ldispatch -Wl,-upward-lcompiler_rt 
+	-Wl,-upward-ldispatch -Wl,-upward-lcompiler_rt \
+	${CRLIB}
 
 all: lib${LIB}.dylib
 
 mkdirs: .PHONY
 	mkdir -p ${.OBJDIR}/src ${.OBJDIR}/dyld3/shared-cache
 
-lib${LIB}.dylib: mkdirs lib${LIB}.a
+lib${LIB}.dylib: mkdirs lib${LIB}.a ${CRLIB}
 	${CC} -o ${.TARGET} -Wl,-force_load,lib${LIB}.a ${LDFLAGS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/

@@ -81,6 +81,12 @@ OBJCXXFLAGS = ${COMMONFLAGS} -std=gnu++14 \
 CXXFLAGS = ${COMMONFLAGS} -std=gnu++14 -D_LIBCPP_VISIBLE=""
 ACFLAGS = ${COMMONFLAGS}
 
+# objc4 calls CRGet/CRSetCrashLogMessage.  libSystem.B is not built yet at
+# this point (Libsystem comes later in Libraries), and the seeded libSystem
+# TBD does not export the CR symbols, so link the tree's static
+# CrashReporterClient directly.
+CRLIB = ${RAVYN_SDKROOT}/usr/lib/system/libCrashReporterClient.a
+
 LDFLAGS = --sysroot=${RAVYN_SDKROOT} -L${RAVYN_SDKROOT}/usr/lib \
 	-mmacos-version-min=${MACOS_VERSION_MIN} \
 	-Wl,-install_name,/usr/lib/libobjc.dylib -Wl,-current_version,228 \
@@ -89,7 +95,7 @@ LDFLAGS = --sysroot=${RAVYN_SDKROOT} -L${RAVYN_SDKROOT}/usr/lib \
 	-Wl,-interposable_list,${.CURDIR}/interposable.txt \
 	-Wl,-sectalign,__DATA,__data,0x1000 -lc++ \
 	-Wl,-unexported_symbols_list,${.CURDIR}/unexported_symbols \
-	-lobjc-trampolines -lSystem
+	-lobjc-trampolines ${CRLIB} -lSystem
 
 all: ${.OBJDIR}/libobjc-trampolines.dylib ${.OBJDIR}/libobjc.A.dylib
 
@@ -105,7 +111,7 @@ ${.OBJDIR}/libobjc-trampolines.dylib: ${.CURDIR}/runtime/objc-blocktramps-x86_64
 	cp -f ${.OBJDIR}/libobjc-trampolines.dylib ${RAVYN_SDKROOT}/usr/lib/
 	cp -f ${.OBJDIR}/libobjc-trampolines.dylib ${SYSROOT_DIR}/usr/lib/
 
-${.OBJDIR}/libobjc.A.dylib: lib${LIB}.a ${.OBJDIR}/libobjc-trampolines.dylib
+${.OBJDIR}/libobjc.A.dylib: lib${LIB}.a ${.OBJDIR}/libobjc-trampolines.dylib ${CRLIB}
 	${CC} -fuse-ld=${LD} -shared -o ${.TARGET} ${OBJS} ${LDFLAGS} \
 		-L${RAVYN_SDKROOT}/usr/lib -lobjc-trampolines
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib ${SYSROOT_DIR}/usr/lib

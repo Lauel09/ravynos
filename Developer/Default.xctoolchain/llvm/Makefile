@@ -6,6 +6,10 @@ CXX := ${HOST_CXX}
 CFLAGS := ${CFLAGS:N-I*Default.xctoolchain/include}
 CXXFLAGS := ${CXXFLAGS:N-I*Default.xctoolchain/include}
 
+# bmake exports its own jobserver as MAKEFLAGS="-j N -J fd,fd"; GNU make
+# rejects -J outright ("invalid option -- J").  Clear the inherited flags and
+# pass -j explicitly instead; gmake then starts its own jobserver for children.
+
 # LLVM is the long pole; build it with every available core instead of
 # serially.  .MAKE.JOBS carries an explicit -j from the top-level build.
 .if defined(.MAKE.JOBS) && !empty(.MAKE.JOBS)
@@ -60,7 +64,7 @@ ${TOOLS}/clang ${TOOLS}/clang++: ${TOOLCHAIN}/usr/libexec/migcom ${.CURDIR}/Make
 	-DCLANG_ENABLE_FORMAT=OFF \
 	-DCLANG_INCLUDE_TESTS=OFF \
 	-DTAPI_INCLUDE_TESTS=OFF
-	CC=${HOST_CC} CXX=${HOST_CXX} ${GMAKE} -j${LLVM_BUILD_JOBS} \
+	CC=${HOST_CC} CXX=${HOST_CXX} MAKEFLAGS= ${GMAKE} -j${LLVM_BUILD_JOBS} \
 	   -C${.OBJDIR}/../llvm_host all \
 	   llvm-ar llvm-nm llvm-ranlib llvm-strip dsymutil llvm-lipo \
 	   llvm-libtool-darwin llvm-objdump llvm-otool
