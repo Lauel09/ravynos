@@ -438,6 +438,18 @@ first real gap Phases 1–2 produce. See `work/README.md`.
   Best hypothesis: the IOKit header staging does not copy the `hidsystem`
   subtree into the SDK. Not fixed here (four-failure limit).
 
+- **2026-11-04 (rev 41) — Portable rootless HFSX `/` mounted, `devfs` mounted, and PID 1 `load_init_program` reached.**
+  Added a portable, rootless Python HFS+/HFSX + MBR `0xAF` (`Apple_HFS`) image
+  writer and structural verifier (`tools/image/hfs.py`, `tools/tests/test_hfs.py`,
+  `95762e5ec`, `91a1cc852`) and wired `tools/xnu-boot.sh` (`ac748b4b8`) to stage
+  `/` (`/dev`, `/sbin`, `/bin`, `/usr/lib`, `/private/*`, symlinks, and any
+  sysroot userland) into `$OUT/root.img` on AHCI port 1. `IOFDiskPartitionScheme`
+  published `"Content" = "Apple_HFS"` on `disk1s1` (`IOStorageFamily/Info.plist:139-140`),
+  `IOFindBSDRoot()` matched `BSD root: disk1s1, major 14, minor 3` without
+  `boot-uuid`, `hfs.kext` mounted `/` (`hfs: mounted ravynOS on device b(14, 3)`),
+  `devfs` mounted `/dev`, and PID 1 (`bsdinit_task`) called
+  `load_init_program("/sbin/launchd")` (`kern_exec.c:5968-5977`), stopping only on
+  `errno 2` (`ENOENT`) pending userland build.
 - **2026-11-04 (rev 40) — Live booter-kext linking, ACPI/PCI/AHCI attach, and `IOFindBSDRoot` reached (25s, 0 panics).**
   `BOOTX64.EFI` stages 30 `.kext` bundles (`\System\Library\Extensions\*.kext`
   and `System.kext\PlugIns\*.kext`) as page-aligned `_BooterKextFileInfo`

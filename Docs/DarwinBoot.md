@@ -1548,6 +1548,34 @@ Next: add a portable rootless HFS+ writer (`tools/image/hfs.py`, MBR type
 AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and
 reach `load_init_program("/sbin/launchd")`.
 
+### 2026-11-04 — Post-D6: portable HFSX root mounted (`/`), `devfs` mounted, and PID 1 `load_init_program` reached
+Evidence (verbatim):
+```
+BSD root: disk1s1, major 14, minor 3
+hfs: mounted ravynOS on device b(14, 3)
+bsd_init: calling devfs_kernel_mount
+bsd_init: bsd_do_post - doneload_init_program: attempting to load /sbin/launchd
+load_init_program: failed loading /sbin/launchd: errno 2
+```
+Did: added a portable, rootless Python HFS+/HFSX + MBR `0xAF` (`Apple_HFS`)
+writer and structural verifier (`tools/image/hfs.py`, `tools/tests/test_hfs.py`,
+`95762e5ec`, `91a1cc852`) and wired `tools/xnu-boot.sh` (`ac748b4b8`) to stage
+`/` (`/dev`, `/sbin`, `/bin`, `/usr/lib`, `/private/*`, symlinks, and any built
+sysroot userland) into `$OUT/root.img` on AHCI port 1. `IOFDiskPartitionScheme`
+published `"Content" = "Apple_HFS"` on `disk1s1`, `IOFindBSDRoot()` matched it
+without `boot-uuid`, `hfs.kext` mounted `/` (`ravynOS` on `b(14, 3)`), `devfs`
+mounted `/dev`, and PID 1 (`bsdinit_task`) called `load_init_program()`, stopping
+only on `ENOENT` (`errno 2`) for the not-yet-built `/sbin/launchd`.
+Cites: `tools/image/hfs.py:1-1486`; `tools/tests/test_hfs.py:1-182`;
+`tools/xnu-boot.sh:74-125`;
+`Kernel/Extensions/IOStorageFamily/Info.plist:139-140`;
+`Kernel/Extensions/hfs/core/hfs_vfsutils.c:334-465,668-676`;
+`Kernel/xnu/bsd/kern/bsd_init.c:963-1145`;
+`Kernel/xnu/bsd/kern/kern_exec.c:5968-5977`.
+Next: break the `Libraries/dyld` <-> `Libsystem` `-lc` link cycle
+(`Libraries/Makefile:11`, `Libraries/dyld/Makefile:120`), build `Libraries` +
+`BSD` (`/sbin/launchd`, `/bin/sh`), and boot to a shell in QEMU.
+
 ## Post-D6 handoff status (2026-11-04)
 
 **Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
@@ -1569,14 +1597,7 @@ boot-data window `0x1c75000..0x1cb5000` (above 30 staged booter kexts),
 | relocate boot-data window above kernel (`52d36895fd`) | `v=03` (`int3` in `panic`) | Zero CPU faults; 2.01s uptime; `IOPanicPlatform::start`: `"Unable to find driver for this platform: \"\"."` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`). |
 | stage booter kexts + `/ACPI/RSDP` (`f5ff2c74b`, `d7504302e`) | `v=0e` `CR2=0x16` (`kfree` in `OSKext.cpp:5792`) | `OSKext::loadExecutable()` rejected `kernel_task` (`get_bsdtask_info == NULL`) and freed null `kmod_info` on interface kext `com.apple.kpi.bsd`. |
 | allow `kernel_task` kext linking (`48ca4834c`) | **none** (25s run, 0 panics) | Linked all 30 kexts live via `kxld`; attached `ACPIPlatformExpert`, `AppleAPIC`, PCI (`6 devices`), `RavynAHCIPort`, `IOStorageFamily`; waiting in `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for `Apple_HFS`. |
-
-**Next stage (agreed Option 1).** Build a portable, rootless HFS+/HFSX image
-writer (`tools/image/hfs.py`, MBR partition type `0xAF` so
-`IOFDiskPartitionScheme` publishes `"Content" = "Apple_HFS"` at
-`IOStorageFamily/Info.plist:139-140`, matching `IOFindBSDRoot()` without
-`boot-uuid`) and attach it on AHCI in `tools/xnu-boot.sh` so `hfs.kext` mounts
-`/` (`hfs_vfsops.c:550-635`) and XNU reaches `load_init_program("/sbin/launchd")`
-(`kern_exec.c:5380-5445`). — **Done; see 2026-11-04 Apple_HFS root entry below.**
+| attach portable MBR `0xAF` HFSX `root.img` (`95762e5ec`, `ac748b4b8`, `91a1cc852`) | `v=03` (`int3` in `panic` at `kern_exec.c:5977`) | `BSD root: disk1s1`, `hfs: mounted ravynOS on device b(14, 3)`, `devfs_kernel_mount`, `bsd_do_post - done`, `load_init_program: failed loading /sbin/launchd: errno 2` (`ENOENT`). |
 
 ### 2026-11-05 — Libraries: dyld split landed; libSystem bootstrap fixed (4 runs)
 Goal: `bmake Libraries` after the Apple_HFS mount (`load_init_program` errno 2),
@@ -1606,7 +1627,7 @@ run5: cd: library not found for -llaunch; ld: library not found for -llaunch
 ```
 Cites: Libraries/Libsystem/Makefile:52-90; Libraries/Libsystem/requiredlibs;
 Developer/ravynOS.sdk/Makefile:14-25; BSD/share/mk/bsd.subdir.mk:196-201;
-Libraries/dyld/dyld/makefile:113-125; build-Libraries-{1..5}.log.
+/build-Libraries-{1..5}.log.
 Next: run 5 (build-Libraries-5.log, 2026-11-05): all Libsystem objects
 compiled; the recursion ran but the SDK holds only libcopyfile.dylib as a
 real product, so the final libSystem.B.dylib link fails `ld: library not
@@ -1620,23 +1641,8 @@ missing makefile (liblaunch, libsystem_m, libmacho, libsystem_dnssd,
 corecrypto have no in-subdir dylib rule?). Then `bmake BSD` for
 `/sbin/launchd` + `/bin/sh`, stage into root.img.
 
-### 2026-11-04 — Apple_HFS root image mounted; XNU reaches `load_init_program`
-Evidence (verbatim, `out/arena/boot/serial.log`):
-```
-BSD root: disk1s1, major 14, minor 3
-bsd_init: vfs_mountroot
-hfs: mounted ravynOS on device b(14, 3)
-bsd_init: bsd_do_post - doneload_init_program: attempting to load /sbin/launchd
-load_init_program: failed loading /sbin/launchd: errno 2
-panic(cpu 0 caller 0xffffff8000a5846f): "Process 1 exec of /sbin/launchd failed, errno 2"@…/Kernel/xnu/bsd/kern/kern_exec.c:5977
-```
-Did: `tools/image/hfs.py` writes the rootless MBR `0xAF` image (user-run
-2026-11-04 21:52); `xnu-boot.sh` stages `root.img` on AHCI. `IOFindBSDRoot()`
-matched `IOMedia`/`"Apple_HFS"`, mounted `/` via `hfs.kext`, and executed
-`bsd_init` post-processing up to `load_init_program`. The panic is the *next*
-milestone's trigger, not a handoff defect: `/sbin/launchd` does not exist on
-the image yet.
-Cites: `tools/image/hfs.py:105,701-730,1012`; `tools/xnu-boot.sh:116-118`;
-`Kernel/xnu/bsd/kern/kern_exec.c:5977`.
-Next: build `Libraries` (dyld/Libsystem loop) + `BSD` userland, stage
-`/sbin/launchd` + `/bin/sh` into `root.img`, boot to `load_init_program`.
+**Next stage.** Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`,
+static `/usr/lib/dyld` after `Libsystem` installs
+`/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`) — **done, `8cdd2abafa`** —
+complete `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`) on macOS, and boot
+ravynOS into userland PID 1.
