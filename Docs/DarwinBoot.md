@@ -1646,3 +1646,41 @@ static `/usr/lib/dyld` after `Libsystem` installs
 `/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`) — **done, `8cdd2abafa`** —
 complete `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`) on macOS, and boot
 ravynOS into userland PID 1.
+
+## Boot-spirit policy (agreed 2026-11-05)
+
+RavynOS's soul is Darwin, so the fork mirrors Apple's own boot behavior and
+forbids substitutes. Work the **launchd-faithful track only**:
+
+1. **No static init, no busybox, no sh-as-init — ever.** Even in the first
+   shell we reach, the sequence must be Apple's: `/usr/lib/dyld` loading real
+   dynamic images, `/sbin/launchd` as PID 1.
+2. **The "bootable Darwin shell" milestone is Apple's own single-user mode:**
+   boot with `boot-args=-s`; launchd detects the root flag and execs real
+   `/bin/sh` on the console. That is not a shortcut — it is how macOS itself
+   produces a shell-above-kernel.
+3. **Already spirit-conformant and verified:** real XNU entry ABI
+   (`LC_UNIXTHREAD`, 64-bit handoff); booter kexts staged as `Driver-<addr>`
+   in `/chosen/memory-map` (the Apple `OSKext` booter code path, not a hack);
+   a real HFS+/X root volume via Apple's MBR `0xAF` → `Content=Apple_HFS`
+   recognition in `IOFindBSDRoot()`; real `devfs` on `/dev`.
+4. **Lingering departures to converge later** (the targets are the real Apple
+   mechanisms, never invented intermediates): (a) build a Darwin prelinked
+   kernelcache (Apple's `kextcache`) instead of live `kxld` linking; (b) hand
+   `boot-uuid` in boot args like Apple; (c) Apple GPT partition scheme for the
+   root image; (d) a real dyld shared cache from the in-tree `cachebuilder`
+   (Apple's normal mode is cache-first).
+5. **Estimate** to the Apple single-user shell: P50 ≈ 5 / P90 ≈ 8-9 active
+   sessions (Libsystem recursion unblock 1–2; `BSD` userland + launchd 1–3;
+   runtime debug of boot+dyld+launchd 1–3; unknown-buffer 1–2); roughly
+   +2 more for the shared-cache/normal-mode boot. In-session builds (no
+   user-gate paste) already tripled pace vs. the D1 era.
+6. **Upstream context:** `fork/darwin-dev` tracks upstream ravynsoft's
+   `darwin` branch — the same Darwin-base restructure, with real build
+   infrastructure (e.g. `plktool` is their Linux port of kextcache). The
+   dormant upstream defects (`-lkernel` link flag, `kext.subproj` and
+   `corecrypto/user` recursions into makefile-less dirs) only prove
+   upstream's flow has not executed the kernel-link→IOKitUser→Extensions
+   lines in *our* sequence — do not claim fixes are new without checking
+   their repo/issues first, and keep contributing `macbuild:` fixes back
+   (ROADMAP Phase 5).

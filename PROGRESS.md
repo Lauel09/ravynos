@@ -13,6 +13,7 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 ## Next steps
 1. Diagnose the Libsystem SUBDIR recursion that only entered `copyfile` (19 other members never ran; `libSystem.B.dylib` link fails `-llaunch`), then `bmake Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`).
 2. Stage built userland into `$OUT/root.img` (`tools/xnu-boot.sh` already auto-copies `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib`, and `/usr/lib/system/*.dylib`) and boot ravynOS to a shell in QEMU.
+3. **Boot-spirit policy (agreed 2026-11-05, full text in `Docs/DarwinBoot.md` §"Boot-spirit policy"):** the shell milestone is Apple's single-user mode (`boot-args=-s` → real `/sbin/launchd` → real `/bin/sh`); no static init / busybox substitutes. Deferred convergence: prelinked kernelcache, `boot-uuid` handoff, GPT root, real dyld shared cache. Estimate: P50 ≈ 5 / P90 ≈ 8–9 sessions.
 
 ## Key commands
 - Remote runner: `tools/arena-run.sh <branch> <task> [<task> ...]`
@@ -31,6 +32,7 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - `Docs/PROGRESS-archive.md` — full history and changelog (everything removed from this file)
 
 ## Recent changes
+- 2026-11-05: Boot-spirit policy agreed — launchd-faithful track only (`boot-args=-s` single-user shell; no static init/busybox substitutes), spirit-convergence items deferred (kernelcache, `boot-uuid`, GPT, shared cache); upstream = ravynsoft `darwin` branch, same Darwin-base effort
 - 2026-11-05: dyld split landed; libSystem bootstrap fixed (PATH quoting, `.elif` parse, CLT TBD seeding, config/recursion/dylib ordering) (`c1f73a0133`, `b946210d8d`, `d0ab37b85d`, `8cdd2abafa`, `4a7828d3a0`)
 - 2026-11-04: Portable rootless MBR `0xAF` HFSX `root.img` (`tools/image/hfs.py`) mounts `/` (`hfs: mounted ravynOS`) + `devfs` and reaches PID 1 `load_init_program("/sbin/launchd")` (`95762e5ec`, `ac748b4b8`, `91a1cc852`)
 - 2026-11-04: Live `kxld` linking of 30 booter kexts + `ACPIPlatformExpert` + PCI + `RavynAHCIPort` + `IOStorageFamily` -> `IOFindBSDRoot()`, 25s / 0 panics (`f5ff2c74b`, `d7504302e`, `48ca4834c`)
