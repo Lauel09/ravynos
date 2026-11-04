@@ -49,6 +49,7 @@ typedef enum {
 #define EFI_ERROR(Status)         (((Status) & 0x8000000000000000ULL) != 0)
 #define EFI_BUFFER_TOO_SMALL      EFIERR(5)
 #define EFI_UNSUPPORTED           EFIERR(3)
+#define EFI_NOT_FOUND             EFIERR(14)
 #define EFIAPI                    __attribute__((ms_abi))
 
 #define EFI_PAGE_SHIFT            12
@@ -329,6 +330,20 @@ typedef struct {
     void *ConfigurationTable;
 } EFI_SYSTEM_TABLE;
 
+typedef struct {
+    EFI_GUID VendorGuid;
+    void *VendorTable;
+} EFI_CONFIGURATION_TABLE;
+
+_Static_assert(sizeof(EFI_CONFIGURATION_TABLE) == 24,
+               "EFI_CONFIGURATION_TABLE must match the UEFI 64-bit layout");
+
+/* UEFI 2.x §4.6: ACPI 2.0+ RSDP (XSDT) first, ACPI 1.0 fallback. */
+#define EFI_ACPI_20_TABLE_GUID \
+    { 0x8868e871, 0xe4f1, 0x11d3, { 0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81 } }
+#define EFI_ACPI_TABLE_GUID \
+    { 0xeb9d2d30, 0x2d88, 0x11d3, { 0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d } }
+
 /* BB25CF6F-F1D4-11D2-9A0C-0090273FC1FD */
 static EFI_GUID gSerialIoGuid = {
     0xBB25CF6F, 0xF1D4, 0x11D2,
@@ -551,6 +566,30 @@ struct EFI_SIMPLE_FILE_SYSTEM_PROTOCOL {
     EFI_STATUS (EFIAPI *OpenVolume)(EFI_SIMPLE_FILE_SYSTEM *This, EFI_FILE **Root);
 };
 
+typedef struct {
+    UINT16 Year; UINT8 Month; UINT8 Day; UINT8 Hour; UINT8 Minute;
+    UINT8 Second; UINT8 Pad1; UINT32 Nanosecond; UINT16 TimeZone;
+    UINT8 Daylight; UINT8 Pad2;
+} EFI_TIME;
+
+_Static_assert(sizeof(EFI_TIME) == 16, "EFI_TIME must be 16 bytes");
+
+typedef struct {
+    UINT64 Size;
+    UINT64 FileSize;
+    UINT64 PhysicalSize;
+    EFI_TIME CreateTime;
+    EFI_TIME LastAccessTime;
+    EFI_TIME ModificationTime;
+    UINT64 Attribute;
+    CHAR16 FileName[1];
+} EFI_FILE_INFO;
+
+_Static_assert(__builtin_offsetof(EFI_FILE_INFO, FileName) == 80,
+               "EFI_FILE_INFO.FileName offset must match UEFI spec");
+
+#define EFI_FILE_DIRECTORY 0x0000000000000010ULL
+
 #pragma pack(push, 1)
 typedef struct { UINT8  Ident[16]; UINT16 Type, Machine; UINT32 Version;
                  UINT64 Entry; UINT64 PhOff; UINT64 ShOff; UINT64 Flags;
@@ -651,6 +690,50 @@ UINT32 gHandoffBootArgs = 0;
 UINT32 gHandoffRsp = 0;
 static UINT8 *gBootDataStage = 0;
 static UINT64 gBootDataPhys = 0;
+static UINT64 gPostKernelEnd = 0;
+static UINT64 gLoaderImageBase = 0;
+static UINT64 gLoaderImageSize = 0;
+
+/* /chosen/memory-map "Driver-<hex>" value layout
+ * (Kernel/xnu/libsa/bootstrap.cpp:582-589, 663-695). */
+typedef struct {
+    UINT32 paddr;
+    UINT32 length;
+} dt_memmap_entry_t;
+
+_Static_assert(sizeof(dt_memmap_entry_t) == 8,
+               "dt_memmap_entry_t must match _DeviceTreeBuffer");
+
+/* Header at the start of each booter-staged kext buffer
+ * (Kernel/xnu/libkern/c++/OSKext.cpp:1759-1766). */
+typedef struct {
+    UINT32 infoDictPhysAddr;
+    UINT32 infoDictLength;
+    UINT32 executablePhysAddr;
+    UINT32 executableLength;
+    UINT32 bundlePathPhysAddr;
+    UINT32 bundlePathLength;
+} booter_kext_file_info_t;
+
+_Static_assert(sizeof(booter_kext_file_info_t) == 24,
+               "booter_kext_file_info_t must match _BooterKextFileInfo");
+
+#define MAX_BOOTER_KEXTS 64u
+typedef struct {
+    UINT8 *stage;
+    UINTN  stage_pages;
+    UINT64 dest_phys;
+    UINT32 blob_size;
+    UINT32 plist_off;
+    UINT32 plist_len;
+    UINT32 path_off;
+    UINT32 path_len;
+    UINT32 exec_off;
+    UINT32 exec_len;
+} staged_kext_t;
+
+static staged_kext_t gStagedKexts[MAX_BOOTER_KEXTS];
+static UINTN gStagedKextCount = 0;
 
 /* Mach-O segments are recorded, not copied, while boot services are alive:
  * part of the kernel's physical span is firmware EfiBootServicesCode, which
@@ -679,6 +762,89 @@ static UINT64 gBootStackBase;
  * kernel's __TEXT segment wants to be, so it cannot stay in low pool. */
 #define KERNEL_PAYLOAD_MAX_ADDR 0xFFFFFFFFULL
 
+/* Read the whole file at `rel_path` relative to `base_dir` into pages below
+ * KERNEL_PAYLOAD_MAX_ADDR. */
+static EFI_STATUS efi_read_rel_file(EFI_BOOT_SERVICES *bs, EFI_FILE *base_dir,
+                                    const CHAR16 *rel_path, void **out_buf,
+                                    UINTN *out_size, UINTN *out_pages)
+{
+    EFI_FILE *f = 0;
+    EFI_STATUS stt;
+    UINTN sz;
+    UINT8 *buf = 0;
+    UINTN cap = 0;
+    UINTN total = 0;
+
+    *out_buf = 0;
+    *out_size = 0;
+    *out_pages = 0;
+
+    stt = base_dir->Open(base_dir, &f, (void *)rel_path, 1 /*READ*/, 0);
+    if (EFI_ERROR(stt)) {
+        return stt;
+    }
+    /* Chunked read until EOF.  EFI_FILE_PROTOCOL.Read shrinks *BufferSize to
+     * the number of bytes actually transferred and returns 0 bytes at end of
+     * file, which is the exit condition. */
+    for (;;) {
+        if (total == cap) {
+            UINTN newcap = cap ? cap * 2 : (16u << 10);
+            EFI_PHYSICAL_ADDRESS addr = KERNEL_PAYLOAD_MAX_ADDR;
+            if (newcap > MAX_KERNEL_PAYLOAD) {
+                say("kernel: payload larger than 64 MiB, refusing\n");
+                if (buf) {
+                    bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                                  cap >> EFI_PAGE_SHIFT);
+                }
+                f->Close(f);
+                return EFI_UNSUPPORTED;
+            }
+            if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress,
+                                            EfiLoaderData,
+                                            newcap >> EFI_PAGE_SHIFT,
+                                            &addr))) {
+                if (buf) {
+                    bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                                  cap >> EFI_PAGE_SHIFT);
+                }
+                f->Close(f);
+                return EFI_UNSUPPORTED;
+            }
+            if (buf) {
+                bs->CopyMem((void *)(UINTN)addr, buf, total);
+                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                              cap >> EFI_PAGE_SHIFT);
+            }
+            buf = (UINT8 *)(UINTN)addr;
+            cap = newcap;
+        }
+        sz = cap - total;
+        stt = f->Read(f, &sz, buf + total);
+        if (EFI_ERROR(stt)) {
+            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                          cap >> EFI_PAGE_SHIFT);
+            f->Close(f);
+            return stt;
+        }
+        if (sz == 0) {
+            break;                       /* end of file */
+        }
+        total += sz;
+    }
+    f->Close(f);
+    if (total == 0) {
+        if (buf) {
+            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
+                          cap >> EFI_PAGE_SHIFT);
+        }
+        return EFI_UNSUPPORTED;
+    }
+    *out_buf = buf;
+    *out_size = total;
+    *out_pages = cap >> EFI_PAGE_SHIFT;
+    return EFI_SUCCESS;
+}
+
 /* Read the whole file at `path` (relative to volume root) into pages below
  * KERNEL_PAYLOAD_MAX_ADDR.  On EFI_SUCCESS, buf_out/size_out/pages_out
  * receive the data pointer, byte count and allocated page count. */
@@ -689,12 +855,11 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
     static EFI_GUID sfs_guid = SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
     static EFI_GUID file_guid = EFI_FILE_PROTOCOL_GUID;
     EFI_SIMPLE_FILE_SYSTEM *fs = 0;
-    EFI_FILE *root = 0, *f = 0;
+    EFI_FILE *root = 0;
     EFI_STATUS stt;
-    UINTN sz;
-    UINT8 *buf = 0;
     void *iface = 0;
 
+    (void)file_guid;
     *out_buf = 0;
     *out_size = 0;
     *out_pages = 0;
@@ -711,83 +876,403 @@ static EFI_STATUS esp_read_file(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle,
     if (EFI_ERROR(stt)) {
         return stt;
     }
-    stt = root->Open(root, &f, (void *)path, 1 /*READ*/, 0);
-    if (EFI_ERROR(stt)) {
-        root->Close(root);
-        return stt;
-    }
-    /* Chunked read until EOF.  EFI_FILE_PROTOCOL.Read shrinks *BufferSize to
-     * the number of bytes actually transferred and returns 0 bytes at end of
-     * file, which is the exit condition.  The buffer grows with the file
-     * instead of being a fixed pool allocation: the old code silently
-     * truncated anything larger and burned 8 MiB of pool for every probe. */
-    (void)file_guid;
-    {
-        UINTN cap = 0;
-        UINTN total = 0;
-        for (;;) {
-            if (total == cap) {
-                UINTN newcap = cap ? cap * 2 : (16u << 10);
-                EFI_PHYSICAL_ADDRESS addr = KERNEL_PAYLOAD_MAX_ADDR;
-                if (newcap > MAX_KERNEL_PAYLOAD) {
-                    say("kernel: payload larger than 64 MiB, refusing\n");
-                    if (buf) {
-                        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
-                                      cap >> EFI_PAGE_SHIFT);
-                    }
-                    f->Close(f);
-                    root->Close(root);
-                    return EFI_UNSUPPORTED;
-                }
-                if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress,
-                                                EfiLoaderData,
-                                                newcap >> EFI_PAGE_SHIFT,
-                                                &addr))) {
-                    if (buf) {
-                        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
-                                      cap >> EFI_PAGE_SHIFT);
-                    }
-                    f->Close(f);
-                    root->Close(root);
-                    return EFI_UNSUPPORTED;
-                }
-                if (buf) {
-                    bs->CopyMem((void *)(UINTN)addr, buf, total);
-                    bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
-                                  cap >> EFI_PAGE_SHIFT);
-                }
-                buf = (UINT8 *)(UINTN)addr;
-                cap = newcap;
-            }
-            sz = cap - total;
-            stt = f->Read(f, &sz, buf + total);
-            if (EFI_ERROR(stt)) {
-                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
-                              cap >> EFI_PAGE_SHIFT);
-                f->Close(f);
-                root->Close(root);
-                return stt;
-            }
-            if (sz == 0) {
-                break;                       /* end of file */
-            }
-            total += sz;
-        }
-        f->Close(f);
-        root->Close(root);
-        if (total == 0) {
-            if (buf) {
-                bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)buf,
-                              cap >> EFI_PAGE_SHIFT);
-            }
-            return EFI_UNSUPPORTED;
-        }
-        *out_buf = buf;
-        *out_size = total;
-        *out_pages = cap >> EFI_PAGE_SHIFT;
+    stt = efi_read_rel_file(bs, root, path, out_buf, out_size, out_pages);
+    root->Close(root);
+    if (!EFI_ERROR(stt)) {
         gFs = fs;
-        return EFI_SUCCESS;
     }
+    return stt;
+}
+
+static UINTN ascii_strlen(const char *s)
+{
+    UINTN n = 0;
+    while (s[n]) {
+        n++;
+    }
+    return n;
+}
+
+static int ascii_match_at(const char *buf, UINTN len, UINTN pos,
+                          const char *lit)
+{
+    UINTN i = 0;
+    while (lit[i]) {
+        if (pos + i >= len || buf[pos + i] != lit[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+static int is_xml_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+/* Extract <key>CFBundleExecutable</key><string>...</string> from Info.plist,
+ * ignoring XML comments.  Returns 1 if CFBundleExecutable is declared (storing
+ * the trimmed name in `out`), or 0 for codeless kexts that omit it. */
+static int plist_find_executable(const char *plist, UINTN len,
+                                 char *out, UINTN out_cap)
+{
+    UINTN i = 0;
+    const char *key_tag = "<key>CFBundleExecutable</key>";
+    UINTN key_tag_len = ascii_strlen(key_tag);
+
+    out[0] = 0;
+    while (i < len) {
+        if (ascii_match_at(plist, len, i, "<!--")) {
+            i += 4;
+            while (i < len && !ascii_match_at(plist, len, i, "-->")) {
+                i++;
+            }
+            if (i < len) {
+                i += 3;
+            }
+            continue;
+        }
+        if (ascii_match_at(plist, len, i, key_tag)) {
+            UINTN s_start, s_end, n;
+            i += key_tag_len;
+            while (i < len) {
+                if (is_xml_space(plist[i])) {
+                    i++;
+                } else if (ascii_match_at(plist, len, i, "<!--")) {
+                    i += 4;
+                    while (i < len && !ascii_match_at(plist, len, i, "-->")) {
+                        i++;
+                    }
+                    if (i < len) {
+                        i += 3;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if (!ascii_match_at(plist, len, i, "<string>")) {
+                return 0;
+            }
+            i += 8;
+            s_start = i;
+            while (i < len && !ascii_match_at(plist, len, i, "</string>")) {
+                i++;
+            }
+            if (i >= len) {
+                return 0;
+            }
+            s_end = i;
+            while (s_start < s_end && is_xml_space(plist[s_start])) {
+                s_start++;
+            }
+            while (s_end > s_start && is_xml_space(plist[s_end - 1])) {
+                s_end--;
+            }
+            n = s_end - s_start;
+            if (n == 0 || n + 1 > out_cap) {
+                return 0;
+            }
+            for (i = 0; i < n; i++) {
+                char c = plist[s_start + i];
+                if (c == '/' || c == '\\' || c == '$') {
+                    return 0;
+                }
+                out[i] = c;
+            }
+            out[n] = 0;
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
+static CHAR16 u16_tolower(CHAR16 c)
+{
+    if (c >= 'A' && c <= 'Z') {
+        return (CHAR16)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
+static int ends_with_kext_u16(const CHAR16 *name)
+{
+    UINTN n = 0;
+    while (name[n]) {
+        n++;
+    }
+    if (n < 6) {
+        return 0;
+    }
+    return name[n - 5] == '.' &&
+           u16_tolower(name[n - 4]) == 'k' &&
+           u16_tolower(name[n - 3]) == 'e' &&
+           u16_tolower(name[n - 2]) == 'x' &&
+           u16_tolower(name[n - 1]) == 't';
+}
+
+static int build_u16_exec_path(CHAR16 *out, UINTN cap, const char *prefix,
+                               const char *exec_name)
+{
+    UINTN i = 0, j = 0;
+    while (prefix[j]) {
+        if (i + 1 >= cap) {
+            return 0;
+        }
+        out[i++] = (CHAR16)(UINT8)prefix[j++];
+    }
+    j = 0;
+    while (exec_name[j]) {
+        if (i + 1 >= cap) {
+            return 0;
+        }
+        out[i++] = (CHAR16)(UINT8)exec_name[j++];
+    }
+    out[i] = 0;
+    return 1;
+}
+
+static int join_posix_u16(char *out, UINTN cap, const char *dir,
+                          const CHAR16 *leaf)
+{
+    UINTN i = 0, j = 0;
+    while (dir[j]) {
+        if (i + 1 >= cap) {
+            return 0;
+        }
+        out[i++] = dir[j++];
+    }
+    if (i == 0 || out[i - 1] != '/') {
+        if (i + 1 >= cap) {
+            return 0;
+        }
+        out[i++] = '/';
+    }
+    j = 0;
+    while (leaf[j]) {
+        if (i + 1 >= cap || leaf[j] > 0x7Fu) {
+            return 0;
+        }
+        out[i++] = (char)leaf[j++];
+    }
+    out[i] = 0;
+    return 1;
+}
+
+static void free_staged_kexts(EFI_BOOT_SERVICES *bs)
+{
+    UINTN i;
+    for (i = 0; i < gStagedKextCount; i++) {
+        if (gStagedKexts[i].stage) {
+            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)gStagedKexts[i].stage,
+                          gStagedKexts[i].stage_pages);
+            gStagedKexts[i].stage = 0;
+        }
+    }
+    gStagedKextCount = 0;
+}
+
+/* Stage a single .kext bundle (deep Contents/Info.plist or shallow Info.plist)
+ * into its own 4 KiB-aligned EfiLoaderData buffer for OSKext::initWithBooterData
+ * (Kernel/xnu/libkern/c++/OSKext.cpp:1768-1915). */
+static int stage_one_kext(EFI_BOOT_SERVICES *bs, EFI_FILE *kext_dir,
+                          const char *posix_path)
+{
+    void *plist_buf = 0, *exec_buf = 0;
+    UINTN plist_sz = 0, plist_pages = 0;
+    UINTN exec_sz = 0, exec_pages = 0;
+    int deep = 1;
+    char exec_name[64];
+    int has_exec_key;
+    UINT32 plist_off, plist_len, path_off, path_len, exec_off, exec_len;
+    UINT32 raw_end, blob_size;
+    UINTN stage_pages;
+    EFI_PHYSICAL_ADDRESS stage_phys = KERNEL_PAYLOAD_MAX_ADDR;
+    UINT8 *stage;
+    staged_kext_t *slot;
+
+    if (gStagedKextCount >= MAX_BOOTER_KEXTS) {
+        return 0;
+    }
+    if (EFI_ERROR(efi_read_rel_file(bs, kext_dir, u"Contents\\Info.plist",
+                                    &plist_buf, &plist_sz, &plist_pages))) {
+        deep = 0;
+        if (EFI_ERROR(efi_read_rel_file(bs, kext_dir, u"Info.plist",
+                                        &plist_buf, &plist_sz, &plist_pages))) {
+            return 0;
+        }
+    }
+
+    has_exec_key = plist_find_executable((const char *)plist_buf, plist_sz,
+                                         exec_name, sizeof(exec_name));
+    if (has_exec_key) {
+        CHAR16 rel1[160], rel2[160];
+        const char *p1 = deep ? "Contents\\MacOS\\" : "";
+        const char *p2 = deep ? "" : "Contents\\MacOS\\";
+        EFI_STATUS est = EFI_NOT_FOUND;
+
+        if (build_u16_exec_path(rel1, 160, p1, exec_name)) {
+            est = efi_read_rel_file(bs, kext_dir, rel1, &exec_buf, &exec_sz,
+                                    &exec_pages);
+        }
+        if (EFI_ERROR(est) && build_u16_exec_path(rel2, 160, p2, exec_name)) {
+            est = efi_read_rel_file(bs, kext_dir, rel2, &exec_buf, &exec_sz,
+                                    &exec_pages);
+        }
+        if (EFI_ERROR(est)) {
+            /* e.g. System.kext/PlugIns/Kasan.kext on non-KASAN RELEASE builds
+             * declares CFBundleExecutable=Kasan without installing a binary;
+             * OSKext::loadExecutable (OSKext.cpp:5505) rejects declared-but-
+             * missing executables, so skip incomplete bundles cleanly. */
+            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)plist_buf, plist_pages);
+            return 0;
+        }
+    }
+
+    plist_off = (UINT32)sizeof(booter_kext_file_info_t);
+    plist_len = (UINT32)plist_sz + 1u; /* NUL-terminated for OSUnserializeXML */
+    path_off  = plist_off + plist_len;
+    path_len  = (UINT32)ascii_strlen(posix_path) + 1u;
+    exec_off  = (path_off + path_len + 15u) & ~15u;
+    exec_len  = (UINT32)exec_sz;
+    raw_end   = exec_len ? (exec_off + exec_len) : (path_off + path_len);
+    blob_size = (raw_end + (UINT32)(EFI_PAGE_SIZE - 1u)) &
+                ~(UINT32)(EFI_PAGE_SIZE - 1u);
+    stage_pages = (UINTN)(blob_size >> EFI_PAGE_SHIFT);
+
+    if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
+                                    stage_pages, &stage_phys))) {
+        if (exec_buf) {
+            bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)exec_buf, exec_pages);
+        }
+        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)plist_buf, plist_pages);
+        return 0;
+    }
+
+    stage = (UINT8 *)(UINTN)stage_phys;
+    bs->SetMem(stage, (UINTN)blob_size, 0);
+    bs->CopyMem(stage + plist_off, plist_buf, plist_sz);
+    bs->CopyMem(stage + path_off, (void *)posix_path, path_len - 1u);
+    if (exec_buf && exec_sz) {
+        bs->CopyMem(stage + exec_off, exec_buf, exec_sz);
+        bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)exec_buf, exec_pages);
+    }
+    bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)plist_buf, plist_pages);
+
+    slot = &gStagedKexts[gStagedKextCount++];
+    slot->stage       = stage;
+    slot->stage_pages = stage_pages;
+    slot->dest_phys   = 0;
+    slot->blob_size   = blob_size;
+    slot->plist_off   = plist_off;
+    slot->plist_len   = plist_len;
+    slot->path_off    = path_off;
+    slot->path_len    = path_len;
+    slot->exec_off    = exec_off;
+    slot->exec_len    = exec_len;
+    return 1;
+}
+
+static void scan_kext_dir(EFI_BOOT_SERVICES *bs, EFI_FILE *dir,
+                          const char *posix_dir, int depth)
+{
+    UINT8 info_stack[1024] __attribute__((aligned(8)));
+
+    for (;;) {
+        UINTN bsz = sizeof(info_stack);
+        EFI_FILE_INFO *fi = (EFI_FILE_INFO *)(void *)info_stack;
+        void *pool_info = 0;
+        EFI_STATUS stt = dir->Read(dir, &bsz, fi);
+
+        if (stt == EFI_BUFFER_TOO_SMALL) {
+            if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, bsz, &pool_info))) {
+                break;
+            }
+            fi = (EFI_FILE_INFO *)pool_info;
+            stt = dir->Read(dir, &bsz, fi);
+        }
+        if (EFI_ERROR(stt) || bsz == 0) {
+            if (pool_info) {
+                bs->FreePool(pool_info);
+            }
+            break;
+        }
+
+        if ((fi->Attribute & EFI_FILE_DIRECTORY) != 0 &&
+            !(fi->FileName[0] == '.' &&
+              (fi->FileName[1] == 0 ||
+               (fi->FileName[1] == '.' && fi->FileName[2] == 0))) &&
+            ends_with_kext_u16(fi->FileName)) {
+            EFI_FILE *sub = 0;
+            char child_posix[256];
+            if (join_posix_u16(child_posix, sizeof(child_posix), posix_dir,
+                               fi->FileName) &&
+                !EFI_ERROR(dir->Open(dir, &sub, fi->FileName, 1 /*READ*/, 0))) {
+                (void)stage_one_kext(bs, sub, child_posix);
+                if (depth == 0) {
+                    EFI_FILE *plug = 0;
+                    char plug_posix[256];
+                    if (join_posix_u16(plug_posix, sizeof(plug_posix),
+                                       child_posix, u"Contents/PlugIns") &&
+                        !EFI_ERROR(sub->Open(sub, &plug, u"Contents\\PlugIns",
+                                             1 /*READ*/, 0))) {
+                        scan_kext_dir(bs, plug, plug_posix, 1);
+                        plug->Close(plug);
+                    }
+                    if (join_posix_u16(plug_posix, sizeof(plug_posix),
+                                       child_posix, u"PlugIns") &&
+                        !EFI_ERROR(sub->Open(sub, &plug, u"PlugIns",
+                                             1 /*READ*/, 0))) {
+                        scan_kext_dir(bs, plug, plug_posix, 1);
+                        plug->Close(plug);
+                    }
+                }
+                sub->Close(sub);
+            }
+        }
+        if (pool_info) {
+            bs->FreePool(pool_info);
+        }
+    }
+}
+
+static void stage_booter_kexts(EFI_BOOT_SERVICES *bs, EFI_HANDLE dev_handle)
+{
+    static EFI_GUID sfs_guid = SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM *fs = 0;
+    EFI_FILE *root = 0, *ext_dir = 0;
+    void *iface = 0;
+    UINT64 total_bytes = 0;
+    UINTN i;
+
+    gStagedKextCount = 0;
+    if (!dev_handle ||
+        EFI_ERROR(bs->HandleProtocol(dev_handle, &sfs_guid, &iface))) {
+        return;
+    }
+    fs = (EFI_SIMPLE_FILE_SYSTEM *)iface;
+    if (EFI_ERROR(fs->OpenVolume(fs, &root))) {
+        return;
+    }
+    if (EFI_ERROR(root->Open(root, &ext_dir,
+                             u"\\System\\Library\\Extensions", 1 /*READ*/, 0))) {
+        root->Close(root);
+        say("loader: no \\System\\Library\\Extensions (0 kexts staged)\n");
+        return;
+    }
+    scan_kext_dir(bs, ext_dir, "/System/Library/Extensions", 0);
+    ext_dir->Close(ext_dir);
+    root->Close(root);
+
+    for (i = 0; i < gStagedKextCount; i++) {
+        total_bytes += gStagedKexts[i].blob_size;
+    }
+    say("loader: staged ");
+    say_dec(gStagedKextCount);
+    say(" kexts (");
+    say_dec(total_bytes);
+    say(" bytes)\n");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1066,6 +1551,7 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
     gBootStackBase = 0;
     gBootDataStage = 0;
     gBootDataPhys = 0;
+    gPostKernelEnd = 0;
 
     if (size < sizeof(mach_header_64_t) || mh->magic != MH_MAGIC_64 ||
         mh->cputype != CPU_TYPE_X86_64) {
@@ -1232,9 +1718,19 @@ void xnu_copy_kernel(void)
         }
     }
     if (gBootDataStage) {
-        volatile UINT8 *dst = (volatile UINT8 *)(UINTN)gBootDataPhys;
-        const volatile UINT8 *src = (const volatile UINT8 *)gBootDataStage;
-        UINTN n = (UINTN)XNU_BOOT_DATA_SIZE;
+        volatile UINT64 *dst = (volatile UINT64 *)(UINTN)gBootDataPhys;
+        const volatile UINT64 *src = (const volatile UINT64 *)(const void *)gBootDataStage;
+        UINTN n = (UINTN)(XNU_BOOT_DATA_SIZE / sizeof(UINT64));
+        while (n--) {
+            *dst++ = *src++;
+        }
+    }
+    for (i = 0; i < gStagedKextCount; i++) {
+        volatile UINT64 *dst =
+            (volatile UINT64 *)(UINTN)gStagedKexts[i].dest_phys;
+        const volatile UINT64 *src =
+            (const volatile UINT64 *)(const void *)gStagedKexts[i].stage;
+        UINTN n = (UINTN)(gStagedKexts[i].blob_size / sizeof(UINT64));
         while (n--) {
             *dst++ = *src++;
         }
@@ -1357,9 +1853,64 @@ static int ranges_overlap(UINT64 a0, UINT64 alen, UINT64 b0, UINT64 blen)
     return (a0 < b0 + blen) && (b0 < a0 + alen);
 }
 
+static int guid_eq(const EFI_GUID *a, const EFI_GUID *b)
+{
+    UINTN i;
+    if (a->Data1 != b->Data1 || a->Data2 != b->Data2 || a->Data3 != b->Data3) {
+        return 0;
+    }
+    for (i = 0; i < 8; i++) {
+        if (a->Data4[i] != b->Data4[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Locate ACPI RSDP in EFI_SYSTEM_TABLE.ConfigurationTable, preferring
+ * EFI_ACPI_20_TABLE_GUID so ACPIPlatformExpert::parseACPI()
+ * (Kernel/Extensions/IOACPIFamily/ACPIPlatformExpert.cpp:259) sees a non-zero
+ * rsdp->xsdtAddress. */
+static UINT64 find_acpi_rsdp(EFI_SYSTEM_TABLE *st)
+{
+    static const EFI_GUID acpi20_guid = EFI_ACPI_20_TABLE_GUID;
+    static const EFI_GUID acpi10_guid = EFI_ACPI_TABLE_GUID;
+    const EFI_CONFIGURATION_TABLE *ct;
+    UINT64 fallback = 0;
+    UINTN i;
+
+    if (!st || !st->ConfigurationTable || !st->NumberOfTableEntries) {
+        return 0;
+    }
+    ct = (const EFI_CONFIGURATION_TABLE *)st->ConfigurationTable;
+    for (i = 0; i < st->NumberOfTableEntries; i++) {
+        if (guid_eq(&ct[i].VendorGuid, &acpi20_guid) && ct[i].VendorTable) {
+            return (UINT64)(UINTN)ct[i].VendorTable;
+        }
+        if (!fallback && guid_eq(&ct[i].VendorGuid, &acpi10_guid) &&
+            ct[i].VendorTable) {
+            fallback = (UINT64)(UINTN)ct[i].VendorTable;
+        }
+    }
+    return fallback;
+}
+
+static void format_driver_prop_name(char out[16], UINT32 phys)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    int i;
+    out[0] = 'D'; out[1] = 'r'; out[2] = 'i'; out[3] = 'v';
+    out[4] = 'e'; out[5] = 'r'; out[6] = '-';
+    for (i = 7; i >= 0; i--) {
+        out[7 + i] = hex[phys & 0xFu];
+        phys >>= 4;
+    }
+    out[15] = 0;
+}
+
 /* Allocate the 256 KiB staging buffer in high EfiLoaderData and choose a
- * reclaimable 256 KiB physical destination immediately above the kernel's
- * Mach-O span. */
+ * reclaimable contiguous physical destination immediately above the kernel's
+ * Mach-O span for both the 256 KiB boot-data window and all staged kexts. */
 static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
                                   UINT64 kphys_size)
 {
@@ -1371,6 +1922,12 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
     UINT64 cand = (kphys_base + kphys_size + (EFI_PAGE_SIZE - 1)) &
                   ~(UINT64)(EFI_PAGE_SIZE - 1);
     UINT64 payload_base = (UINT64)(UINTN)gKernelPayload;
+    UINT64 total_window = XNU_BOOT_DATA_SIZE;
+    UINTN i;
+
+    for (i = 0; i < gStagedKextCount; i++) {
+        total_window += gStagedKexts[i].blob_size;
+    }
 
     if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
                                     stage_pages, &stage_phys))) {
@@ -1395,36 +1952,58 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
         return 0;
     }
 
-    while (cand + XNU_BOOT_DATA_SIZE <= XNU_BOOT_DATA_MAX_END) {
+    while (cand + total_window <= XNU_BOOT_DATA_MAX_END) {
         UINT64 next_cand = 0;
-        UINTN pg;
+        UINT64 pa, win_end;
         int ok = 1;
+        int bumped = 0;
 
-        if (ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+        if (ranges_overlap(cand, total_window,
                            (UINT64)stage_phys, XNU_BOOT_DATA_SIZE)) {
             cand = ((UINT64)stage_phys + XNU_BOOT_DATA_SIZE +
                     (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
             continue;
         }
         if (gKernelPayloadSize &&
-            ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+            ranges_overlap(cand, total_window,
                            payload_base, (UINT64)gKernelPayloadSize)) {
             cand = (payload_base + (UINT64)gKernelPayloadSize +
                     (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
             continue;
         }
         if (gBootStackBase &&
-            ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+            ranges_overlap(cand, total_window,
                            gBootStackBase, BOOTKSTACK_SIZE)) {
             cand = (gBootStackBase + BOOTKSTACK_SIZE +
                     (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
             continue;
         }
+        if (gLoaderImageSize &&
+            ranges_overlap(cand, total_window,
+                           gLoaderImageBase, gLoaderImageSize)) {
+            cand = (gLoaderImageBase + gLoaderImageSize +
+                    (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
+            continue;
+        }
+        for (i = 0; i < gStagedKextCount; i++) {
+            UINT64 ks = (UINT64)(UINTN)gStagedKexts[i].stage;
+            UINT64 kl = gStagedKexts[i].blob_size;
+            if (ranges_overlap(cand, total_window, ks, kl)) {
+                cand = (ks + kl + (EFI_PAGE_SIZE - 1)) &
+                       ~(UINT64)(EFI_PAGE_SIZE - 1);
+                bumped = 1;
+                break;
+            }
+        }
+        if (bumped) {
+            continue;
+        }
 
-        for (pg = 0; pg < stage_pages; pg++) {
-            UINT64 pa = cand + ((UINT64)pg << EFI_PAGE_SHIFT);
+        pa = cand;
+        win_end = cand + total_window;
+        while (pa < win_end) {
             UINTN off;
-            int page_ok = 0;
+            int covered = 0;
 
             for (off = 0; off < mapsize; off += descsize) {
                 EFI_MEMORY_DESCRIPTOR *d =
@@ -1438,7 +2017,8 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
                          d->Type == EfiBootServicesData ||
                          d->Type == EfiLoaderCode ||
                          d->Type == EfiLoaderData)) {
-                        page_ok = 1;
+                        pa = (dend < win_end) ? dend : win_end;
+                        covered = 1;
                     } else {
                         next_cand = (dend + (EFI_PAGE_SIZE - 1)) &
                                     ~(UINT64)(EFI_PAGE_SIZE - 1);
@@ -1446,7 +2026,7 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
                     break;
                 }
             }
-            if (!page_ok) {
+            if (!covered) {
                 ok = 0;
                 if (next_cand <= cand) {
                     next_cand = pa + EFI_PAGE_SIZE;
@@ -1455,9 +2035,26 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
             }
         }
         if (ok) {
+            UINT64 kcur = cand + XNU_BOOT_DATA_SIZE;
             bs->FreePool(map);
             gBootDataStage = (UINT8 *)(UINTN)stage_phys;
             gBootDataPhys = cand;
+            for (i = 0; i < gStagedKextCount; i++) {
+                booter_kext_file_info_t *hdr =
+                    (booter_kext_file_info_t *)(void *)gStagedKexts[i].stage;
+                gStagedKexts[i].dest_phys = kcur;
+                hdr->infoDictPhysAddr =
+                    (UINT32)(kcur + gStagedKexts[i].plist_off);
+                hdr->infoDictLength = gStagedKexts[i].plist_len;
+                hdr->executablePhysAddr = gStagedKexts[i].exec_len
+                    ? (UINT32)(kcur + gStagedKexts[i].exec_off) : 0u;
+                hdr->executableLength = gStagedKexts[i].exec_len;
+                hdr->bundlePathPhysAddr =
+                    (UINT32)(kcur + gStagedKexts[i].path_off);
+                hdr->bundlePathLength = gStagedKexts[i].path_len;
+                kcur += gStagedKexts[i].blob_size;
+            }
+            gPostKernelEnd = kcur;
             return 1;
         }
         cand = next_cand;
@@ -1469,11 +2066,21 @@ static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
     return 0;
 }
 
-static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
-                                UINT64 kphys_size)
+static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
+                                UINT64 kphys_base, UINT64 kphys_size)
 {
     UINT8 *buf, *p;
     UINT8 seed[XNU_RANDOM_SEED_SIZE];
+    UINT64 rsdp_phys = find_acpi_rsdp(st);
+    UINTN i;
+
+    if (rsdp_phys) {
+        say("loader: ACPI RSDP 0x");
+        say_hex(rsdp_phys, 16);
+        say("\n");
+    } else {
+        say("loader: warning: no ACPI RSDP in EFI ConfigurationTable\n");
+    }
 
     if (!stage_boot_data_window(bs, kphys_base, kphys_size)) {
         return 0;
@@ -1490,18 +2097,29 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
 #define WPROP_U64(pname, val) do {         WNAME(pname);         *(UINT32 *)p = 8; p += 4;         *(UINT64 *)p = (val); p += 8;     } while (0)
 #define WPROP_BYTES(pname, ptr, len) do {         WNAME(pname);         *(UINT32 *)p = (UINT32)(len); p += 4;         bs->CopyMem(p, (ptr), (len));         p += (((UINTN)(len) + 3u) & ~3u);     } while (0)
 
-    /* root: 1 prop (name), 2 children */
-    WU32(1); WU32(2);
+    /* root: 2 props (name, compatible="ACPI" for IODeviceTreeSupport.cpp:194
+     * and IOACPIFamily/Info.plist:34), 3 children (chosen, efi, ACPI). */
+    WU32(2); WU32(3);
     WPROP_STR("name", "");
+    WPROP_STR("compatible", "ACPI");
 
     /* chosen: PE_get_random_seed (pexpert/gen/pe_gen.c:147-170) reads
      * /chosen/random-seed and zeroes its bytes in place. */
     WU32(2); WU32(1);
     WPROP_STR("name", "chosen");
     WPROP_BYTES("random-seed", seed, sizeof(seed));
-    /* memory-map */
-    WU32(1); WU32(0);
+    /* memory-map: KLDBootstrap::readBooterExtensions (libsa/bootstrap.cpp:607)
+     * reads "Driver-<hex>" _DeviceTreeBuffer entries here. */
+    WU32(1u + (UINT32)gStagedKextCount); WU32(0);
     WPROP_STR("name", "memory-map");
+    for (i = 0; i < gStagedKextCount; i++) {
+        char drv_name[16];
+        dt_memmap_entry_t dte;
+        dte.paddr = (UINT32)gStagedKexts[i].dest_phys;
+        dte.length = gStagedKexts[i].blob_size;
+        format_driver_prop_name(drv_name, dte.paddr);
+        WPROP_BYTES(drv_name, &dte, sizeof(dte));
+    }
 
     /* efi */
     WU32(1); WU32(1);
@@ -1510,6 +2128,14 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
     WU32(2); WU32(0);
     WPROP_STR("name", "platform");
     WPROP_U64("FSBFrequency", 100000000ULL);
+
+    /* ACPI: ACPIPlatformExpert::parseACPI (ACPIPlatformExpert.cpp:227-269)
+     * resolves /ACPI in gIODTPlane and reads an 8-byte RSDP physical address. */
+    WU32(rsdp_phys ? 2u : 1u); WU32(0);
+    WPROP_STR("name", "ACPI");
+    if (rsdp_phys) {
+        WPROP_U64("RSDP", rsdp_phys);
+    }
 
 #undef WU32
 #undef WNAME
@@ -1578,7 +2204,7 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     ba->deviceTreeP = gDTPhys;
     ba->deviceTreeLength = gDTSize;
     ba->kaddr = (UINT32)kphys_base;
-    ba->ksize = (UINT32)((gBootDataPhys + XNU_BOOT_DATA_SIZE) - kphys_base);
+    ba->ksize = (UINT32)(gPostKernelEnd - kphys_base);
     ba->efiSystemTable = (UINT32)efistub_phys;
     ba->PhysicalMemorySize = 0; /* filled below */
     ba->FSBFrequency = 100000000ULL;
@@ -1902,6 +2528,8 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
             !EFI_ERROR(bs->HandleProtocol(image_handle, &lifo_guid,
                                           (void **)&li)) && li) {
             UINTN k;
+            gLoaderImageBase = li->ImageBase;
+            gLoaderImageSize = li->ImageSize;
             say("loader: image base 0x");
             say_hex(li->ImageBase, 16);
             say(" size ");
@@ -1947,11 +2575,14 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                     }
                     if (ok) {
                         if (is_macho) {
-                            /* The payload and staged boot-data window must stay
-                             * live until the post-EBS copy in xnu_handoff has
-                             * replayed them. */
-                            if (!build_device_tree(bs, kphys_base, kphys_size)) {
+                            /* Stage \System\Library\Extensions\*.kext (plus
+                             * PlugIns) and the boot-data window so the post-EBS
+                             * copy in xnu_handoff replays all of them into
+                             * [kaddr, kaddr+ksize). */
+                            stage_booter_kexts(bs, li->DeviceHandle);
+                            if (!build_device_tree(bs, st, kphys_base, kphys_size)) {
                                 say("loader: no device tree, not handing off\n");
+                                free_staged_kexts(bs);
                                 bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                               data_pages);
                                 break;
@@ -1965,6 +2596,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                                         (UINTN)(XNU_BOOT_DATA_SIZE >> EFI_PAGE_SHIFT));
                                     gBootDataStage = 0;
                                 }
+                                free_staged_kexts(bs);
                                 bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                               data_pages);
                                 break;
@@ -1976,6 +2608,7 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                                     (UINTN)(XNU_BOOT_DATA_SIZE >> EFI_PAGE_SHIFT));
                                 gBootDataStage = 0;
                             }
+                            free_staged_kexts(bs);
                             bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                           data_pages);
                         } else {
