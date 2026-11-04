@@ -115,7 +115,12 @@ lib${LIB}.dylib: mkdirs lib${LIB}.a ${CRLIB}
 
 libdyld: ${.OBJDIR}/lib${LIB}.dylib
 
-SUBDIR = dyld libdsc libslc_builder chroot_util #dyld_closure_util dyldinfo \
+# The nested dyld/dyld makefile builds the static /usr/lib/dyld executable.
+# It needs libc.a, libpthread.a and libplatform.a from Libsystem, while
+# Libsystem itself needs the libdyld.dylib built by this directory.  Keep the
+# executable out of this early recursion; Libraries/Makefile schedules it
+# after Libsystem has completed.
+SUBDIR = libdsc libslc_builder chroot_util #dyld_closure_util dyldinfo \
         #dsc_extractor dyld_shared_cache_util \
         #update_dyld_shared_cache_root_mode_tool
         #update_dyld_shared_cache_tool -- needs private Bom and dscsyms fmwks

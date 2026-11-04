@@ -8,8 +8,13 @@ CXXLIB = ${RAVYN_SDKROOT}/usr/lib/libc++.1.dylib
 RTLIB = ${RAVYN_SDKROOT}/usr/lib/system/libcompiler_rt.dylib
 RTLIB2 = ${SYSROOT_DIR}/usr/lib/system/libcompiler_rt.dylib
 
+# Build libdyld.dylib early: Libsystem re-exports it.  The static
+# /usr/lib/dyld executable is a separate nested target and links against the
+# startup archives produced by Libsystem, so schedule it after Libsystem.
 SUBDIR = libfirehose_kernel CrashReporterClient MiscLibs objc4 dyld Libsystem \
-	ICU zlib
+	dyld/dyld ICU zlib
+# Preserve this edge when a caller opts into SUBDIR_PARALLEL.
+SUBDIR_DEPEND_dyld/dyld = Libsystem
 
 # Don't try to link Foundation or System
 MK_OBJC_RUNTIME = no
