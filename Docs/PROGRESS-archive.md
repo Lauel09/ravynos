@@ -438,6 +438,20 @@ first real gap Phases 1–2 produce. See `work/README.md`.
   Best hypothesis: the IOKit header staging does not copy the `hidsystem`
   subtree into the SDK. Not fixed here (four-failure limit).
 
+- **2026-11-04 (rev 39) — Post-D6 bare XNU reaches `StartIOKit` / `IOPanicPlatform`.**
+  Stripping `EFI_MEMORY_RUNTIME` in `boot_args->MemoryMap` and pointing
+  `ba->efiSystemTable` at a zeroed stub (`719fa5b2ba`) cleared the `efi_init()`
+  `VirtualStart == 0` `#GP` and revealed `pmap_lowmem_finalize()` (`pmap.c:1143`)
+  freeing `[eHIB, stext)` (`0x19e000..0x200000`) over `[0x1A0000, 0x1E0000)`.
+  Relocating the 256 KiB boot-data window above `__LINKEDIT` (`0x15aa000`,
+  staged in high `EfiLoaderData`, copied after `ExitBootServices`, included in
+  `ba->ksize`, `52d36895fd`) boots bare XNU with zero CPU faults (2.01s uptime)
+  to `IOPanicPlatform::start` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`).
+- **2026-11-03 (rev 38) — D6 GATE PASSED + Phase 1 `CrashReporterClient` / `libdyld`.**
+  `BOOTX64.EFI` populates a 64-byte nonzero `/chosen/random-seed` (`ba3dc57c1`),
+  booting XNU under QEMU+OVMF (`-cpu Penryn`) to print `Darwin Kernel Version 19.6.0`
+  on serial. On the macOS build side, `CrashReporterClient` linked as static `.a`
+  (`78043ebe03`) and `libdyld.dylib` `-lsystem_malloc` fixed (`76918cbcec`).
 - **2026-11-03 (rev 37) — XNU now executes in 64-bit long mode; first failure
   mapped to the boot random seed.** This tree's `_pstart` is entered from UEFI
   in long mode (`osfmk/x86_64/start.s:149`, `.code64` at `L_pstart_common`),
