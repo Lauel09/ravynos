@@ -321,6 +321,7 @@ def _collect_staging_tree(
     uid: int,
     gid: int,
     volume_name: str,
+    extra_files: Sequence[Tuple[str, bytes, int]] = (),
 ) -> Tuple[StagedEntry, List[StagedEntry]]:
     root_entry = StagedEntry(
         rel_path="",
@@ -334,82 +335,125 @@ def _collect_staging_tree(
         parent_cnid=K_HFS_ROOT_PARENT_ID,
     )
     all_entries: List[StagedEntry] = [root_entry]
-    if root_dir is None:
-        return root_entry, all_entries
-
-    if not root_dir.is_dir():
-        raise HFSFormatError(f"staging root is not a directory: {root_dir}")
-
-    st_root = os.lstat(root_dir)
-    root_entry.mode = stat.S_IMODE(st_root.st_mode) or 0o755
-
     next_cnid = K_HFS_FIRST_USER_CNID
 
-    def walk_dir(host_dir: Path, parent: StagedEntry) -> None:
-        nonlocal next_cnid
-        names = sorted(os.listdir(host_dir))
-        for name in names:
-            host_path = host_dir / name
-            lst = os.lstat(host_path)
-            fmode = stat.S_IFMT(lst.st_mode)
-            imode = stat.S_IMODE(lst.st_mode)
-            rel = f"{parent.rel_path}/{name}" if parent.rel_path else name
-            if fmode == stat.S_IFDIR:
-                entry = StagedEntry(
-                    rel_path=rel,
-                    name=name,
+    if root_dir is not None:
+        if not root_dir.is_dir():
+            raise HFSFormatError(f"staging root is not a directory: {root_dir}")
+
+        st_root = os.lstat(root_dir)
+        root_entry.mode = stat.S_IMODE(st_root.st_mode) or 0o755
+
+        def walk_dir(host_dir: Path, parent: StagedEntry) -> None:
+            nonlocal next_cnid
+            names = sorted(os.listdir(host_dir))
+            for name in names:
+                host_path = host_dir / name
+                lst = os.lstat(host_path)
+                fmode = stat.S_IFMT(lst.st_mode)
+                imode = stat.S_IMODE(lst.st_mode)
+                rel = f"{parent.rel_path}/{name}" if parent.rel_path else name
+                if fmode == stat.S_IFDIR:
+                    entry = StagedEntry(
+                        rel_path=rel,
+                        name=name,
+                        is_dir=True,
+                        is_symlink=False,
+                        mode=imode or 0o755,
+                        uid=uid,
+                        gid=gid,
+                        cnid=next_cnid,
+                        parent_cnid=parent.cnid,
+                    )
+                    next_cnid += 1
+                    parent.children.append(entry)
+                    all_entries.append(entry)
+                    walk_dir(host_path, entry)
+                elif fmode == stat.S_IFLNK:
+                    target = os.readlink(host_path)
+                    target_bytes = target.encode("utf-8")
+                    entry = StagedEntry(
+                        rel_path=rel,
+                        name=name,
+                        is_dir=False,
+                        is_symlink=True,
+                        mode=0o777,
+                        uid=uid,
+                        gid=gid,
+                        data=target_bytes,
+                        cnid=next_cnid,
+                        parent_cnid=parent.cnid,
+                    )
+                    next_cnid += 1
+                    parent.children.append(entry)
+                    all_entries.append(entry)
+                elif fmode == stat.S_IFREG:
+                    data = host_path.read_bytes()
+                    entry = StagedEntry(
+                        rel_path=rel,
+                        name=name,
+                        is_dir=False,
+                        is_symlink=False,
+                        mode=imode,
+                        uid=uid,
+                        gid=gid,
+                        data=data,
+                        cnid=next_cnid,
+                        parent_cnid=parent.cnid,
+                    )
+                    next_cnid += 1
+                    parent.children.append(entry)
+                    all_entries.append(entry)
+                else:
+                    # Ignore sockets/FIFOs/device nodes during rootless staging
+                    continue
+
+        walk_dir(root_dir, root_entry)
+
+    # Inject optional in-memory files (useful on case-insensitive host filesystems)
+    for raw_rel, fbytes, fmode in extra_files:
+        parts = [p for p in raw_rel.strip("/").split("/") if p]
+        if not parts:
+            raise HFSFormatError(f"invalid extra_files path: {raw_rel!r}")
+        cur_parent = root_entry
+        cur_rel = ""
+        for comp in parts[:-1]:
+            cur_rel = f"{cur_rel}/{comp}" if cur_rel else comp
+            found = next((c for c in cur_parent.children if c.name == comp and c.is_dir), None)
+            if found is None:
+                found = StagedEntry(
+                    rel_path=cur_rel,
+                    name=comp,
                     is_dir=True,
                     is_symlink=False,
-                    mode=imode or 0o755,
+                    mode=0o755,
                     uid=uid,
                     gid=gid,
                     cnid=next_cnid,
-                    parent_cnid=parent.cnid,
+                    parent_cnid=cur_parent.cnid,
                 )
                 next_cnid += 1
-                parent.children.append(entry)
-                all_entries.append(entry)
-                walk_dir(host_path, entry)
-            elif fmode == stat.S_IFLNK:
-                target = os.readlink(host_path)
-                target_bytes = target.encode("utf-8")
-                entry = StagedEntry(
-                    rel_path=rel,
-                    name=name,
-                    is_dir=False,
-                    is_symlink=True,
-                    mode=0o777,
-                    uid=uid,
-                    gid=gid,
-                    data=target_bytes,
-                    cnid=next_cnid,
-                    parent_cnid=parent.cnid,
-                )
-                next_cnid += 1
-                parent.children.append(entry)
-                all_entries.append(entry)
-            elif fmode == stat.S_IFREG:
-                data = host_path.read_bytes()
-                entry = StagedEntry(
-                    rel_path=rel,
-                    name=name,
-                    is_dir=False,
-                    is_symlink=False,
-                    mode=imode,
-                    uid=uid,
-                    gid=gid,
-                    data=data,
-                    cnid=next_cnid,
-                    parent_cnid=parent.cnid,
-                )
-                next_cnid += 1
-                parent.children.append(entry)
-                all_entries.append(entry)
-            else:
-                # Ignore sockets/FIFOs/device nodes during rootless staging
-                continue
+                cur_parent.children.append(found)
+                all_entries.append(found)
+            cur_parent = found
+        leaf_name = parts[-1]
+        leaf_rel = f"{cur_rel}/{leaf_name}" if cur_rel else leaf_name
+        leaf_entry = StagedEntry(
+            rel_path=leaf_rel,
+            name=leaf_name,
+            is_dir=False,
+            is_symlink=False,
+            mode=fmode & 0o7777,
+            uid=uid,
+            gid=gid,
+            data=fbytes,
+            cnid=next_cnid,
+            parent_cnid=cur_parent.cnid,
+        )
+        next_cnid += 1
+        cur_parent.children.append(leaf_entry)
+        all_entries.append(leaf_entry)
 
-    walk_dir(root_dir, root_entry)
     return root_entry, all_entries
 
 
@@ -694,6 +738,7 @@ def build_hfs_volume(
     uid: int = 0,
     gid: int = 0,
     timestamp: int = DEFAULT_HFS_TIMESTAMP,
+    extra_files: Sequence[Tuple[str, bytes, int]] = (),
 ) -> bytes:
     """Build a standalone HFSX (default) or HFS+ volume byte image."""
     if block_size < SECTOR_SIZE or (block_size & (block_size - 1)) != 0:
@@ -701,7 +746,9 @@ def build_hfs_volume(
     if CATALOG_NODE_SIZE % block_size != 0:
         raise HFSFormatError("block_size must divide 8192-byte catalog node size")
 
-    root_entry, all_entries = _collect_staging_tree(root_dir, uid, gid, volume_name)
+    root_entry, all_entries = _collect_staging_tree(
+        root_dir, uid, gid, volume_name, extra_files=extra_files
+    )
 
     # Compute data blocks needed for all regular files and symlinks
     file_entries = [e for e in all_entries if not e.is_dir]
@@ -975,6 +1022,7 @@ def write_hfs_image(
     uid: int = 0,
     gid: int = 0,
     timestamp: int = DEFAULT_HFS_TIMESTAMP,
+    extra_files: Sequence[Tuple[str, bytes, int]] = (),
 ) -> Dict[str, int]:
     """Write a complete MBR-partitioned (0xAF Apple_HFS) or bare HFS+/HFSX image."""
     if partition not in ("mbr", "none"):
@@ -997,6 +1045,7 @@ def write_hfs_image(
         uid=uid,
         gid=gid,
         timestamp=timestamp,
+        extra_files=extra_files,
     )
     assert len(vol_bytes) % SECTOR_SIZE == 0
     part_sectors = len(vol_bytes) // SECTOR_SIZE

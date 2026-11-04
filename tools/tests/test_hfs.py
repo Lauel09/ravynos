@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import os
+import stat
 import struct
 import sys
 import tempfile
@@ -57,11 +58,8 @@ class TestHFSImageWriter(unittest.TestCase):
             (stage / "dev").mkdir(parents=True)
             (stage / "sbin").mkdir()
             (stage / "private" / "tmp").mkdir(parents=True)
-            os.chmod(stage / "private" / "tmp", 0o1777)
-
-            # Case-sensitive siblings ('Makefile' and 'makefile')
-            (stage / "Makefile").write_bytes(b"UPPER\n")
-            (stage / "makefile").write_bytes(b"lower\n")
+            os.chmod(stage / "private" / "tmp", 0o755)
+            expected_tmp_imode = stat.S_IMODE(os.lstat(stage / "private" / "tmp").st_mode)
 
             # Empty file + multi-block (>64 KiB) binary payload
             (stage / "empty").write_bytes(b"")
@@ -73,14 +71,27 @@ class TestHFSImageWriter(unittest.TestCase):
             # Symbolic link (/tmp -> private/tmp)
             os.symlink("private/tmp", stage / "tmp")
 
+            # Pass case-sensitive siblings via extra_files so macOS default
+            # case-insensitive APFS (/var/folders/.../T) does not overwrite them on host.
             img = tmp / "staged.img"
-            hfs.write_hfs_image(img, stage, partition="mbr", free_headroom_bytes=128 * 1024)
+            hfs.write_hfs_image(
+                img,
+                stage,
+                partition="mbr",
+                free_headroom_bytes=128 * 1024,
+                extra_files=[
+                    ("Makefile", b"UPPER\n", 0o644),
+                    ("makefile", b"lower\n", 0o644),
+                ],
+            )
             info = hfs.verify_hfs_image(img)
             entries = info["entries"]
 
             self.assertIn("/dev", entries)
             self.assertTrue(entries["/dev"].is_dir)
-            self.assertEqual(entries["/private/tmp"].mode, hfs.S_IFDIR_MODE | 0o1777)
+            self.assertEqual(
+                entries["/private/tmp"].mode, hfs.S_IFDIR_MODE | expected_tmp_imode
+            )
             self.assertEqual(entries["/Makefile"].data, b"UPPER\n")
             self.assertEqual(entries["/makefile"].data, b"lower\n")
             self.assertEqual(entries["/empty"].size, 0)
