@@ -14,9 +14,17 @@ CLTSDK = /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
 # libdyld and Libsystem itself link against the individual libsystem_* dylibs
 # before Libraries/Libsystem has produced them.  Seed the CLT text stubs for
 # the ones they name, alongside libSystem.tbd, so the bootstrap can link.
+# The Libsystem reexport scan (Libraries/Libsystem/xcodescripts/
+# linker_arguments.sh) additionally requires REQUIREDLIBS{copyfile,removefile,
+# system_asl,system_darwin,system_info,system_m,system_notify,system_trace} to
+# exist at scan time, so those TBDs are seeded too; the recursion overwrites
+# them with the real dylibs as it runs.
 CLT_STUB_SYSLIBS = libsystem_platform.tbd libsystem_malloc.tbd \
 	libsystem_c.tbd libsystem_pthread.tbd libsystem_kernel.tbd \
-	libsystem_blocks.tbd libdispatch.tbd libxpc.tbd
+	libsystem_blocks.tbd libdispatch.tbd libxpc.tbd \
+	libcopyfile.tbd libremovefile.tbd libsystem_asl.tbd \
+	libsystem_darwin.tbd libsystem_info.tbd libsystem_m.tbd \
+	libsystem_notify.tbd libsystem_trace.tbd
 .if "${.MAKE.OS}" == "Darwin" && exists(${CLTSDK}/usr/lib/libSystem.tbd) && exists(${CLTSDK}/usr/lib/libSystem.B.tbd)
 CLT_LIBSYSTEM_COPY = mkdir -p ${RAVYN_SDKROOT}/usr/lib/system && \
 	cp -f ${CLTSDK}/usr/lib/libSystem.tbd ${CLTSDK}/usr/lib/libSystem.B.tbd ${RAVYN_SDKROOT}/usr/lib/ && \

@@ -51,6 +51,21 @@ LDFLAGS = -mmacos-version-min=${MACOS_VERSION_MIN} \
 
 all: lib${LIB}.dylib
 
+# linker_arguments.sh scans ${RAVYN_SDKROOT}/usr{,/local}/lib/system for every
+# reexport/input it must name; those libraries are *installed by the recursion
+# below*.  Sequence the local products after the recursion by depending on the
+# subdir targets bsd.subdir.mk attaches to `all` (namespaced with the inherited
+# DIRPRFX, the same spelling it uses for its all_subdir_ targets), so the order
+# also holds under SUBDIR_PARALLEL.  Only declared when `all` is the target:
+# the otherwise-phoned targets do not exist for install/clean-only runs.
+.if make(all)
+SUBDIR_DEPS = ${SUBDIR:N.WAIT:@d@all_subdir_${DIRPRFX}$d@}
+
+${.OBJDIR}/config.${CpuArch}.normal.h: ${SUBDIR_DEPS}
+
+lib${LIB}.dylib: ${SUBDIR_DEPS}
+.endif
+
 ${.OBJDIR}/config.${CpuArch}.normal.h:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
 	RUNTIME_SPEC_PATH=${TOOLCHAIN}/Library/Xcode/Specifications \
