@@ -457,7 +457,7 @@ SRCS =  compat-43/FreeBSD/gethostid.c \
 
 .if "${CpuArch}" == "x86_64"
 SRCS += gdtoa/FreeBSD/gdtoa-strtopx.c gdtoa/FreeBSD/machdep_ldisx.c
-.else if "${CpuArch}" == "arm64"
+.elif "${CpuArch}" == "arm64"
 SRCS += gdtoa/FreeBSD/machdep_ldisd.c
 .endif
 

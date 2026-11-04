@@ -15,7 +15,7 @@ SRCS = ./src/blocksort.c \
 
 .if "${CpuArch}" == "aarch64"
 SRCS +=	./src/arm64/crc32vec.s
-.else if "${CpuArch}" == "x86_64"
+.elif "${CpuArch}" == "x86_64"
 SRCS +=	./src/x86_64/crc32vec.s
 .else
 .error Unsupported CPU architecture ${CpuArch}

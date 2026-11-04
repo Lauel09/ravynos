@@ -116,7 +116,7 @@ ${.OBJDIR}/${basefile}: ${.CURDIR}/${file}
 	${CC} ${COMMONFLAGS} -o ${.TARGET} \
 .if "${file:E}" == ".c"
 		${CFLAGS} \
-.else if "${file:E}" == ".cpp"
+.elif "${file:E}" == ".cpp"
 		${CXXFLAGS} \
 .else
 		-x assembler-with-cpp \
