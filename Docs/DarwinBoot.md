@@ -1548,6 +1548,34 @@ Next: add a portable rootless HFS+ writer (`tools/image/hfs.py`, MBR type
 AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and
 reach `load_init_program("/sbin/launchd")`.
 
+### 2026-11-04 — Post-D6: portable HFSX root mounted (`/`), `devfs` mounted, and PID 1 `load_init_program` reached
+Evidence (verbatim):
+```
+BSD root: disk1s1, major 14, minor 3
+hfs: mounted ravynOS on device b(14, 3)
+bsd_init: calling devfs_kernel_mount
+bsd_init: bsd_do_post - doneload_init_program: attempting to load /sbin/launchd
+load_init_program: failed loading /sbin/launchd: errno 2
+```
+Did: added a portable, rootless Python HFS+/HFSX + MBR `0xAF` (`Apple_HFS`)
+writer and structural verifier (`tools/image/hfs.py`, `tools/tests/test_hfs.py`,
+`95762e5ec`, `91a1cc852`) and wired `tools/xnu-boot.sh` (`ac748b4b8`) to stage
+`/` (`/dev`, `/sbin`, `/bin`, `/usr/lib`, `/private/*`, symlinks, and any built
+sysroot userland) into `$OUT/root.img` on AHCI port 1. `IOFDiskPartitionScheme`
+published `"Content" = "Apple_HFS"` on `disk1s1`, `IOFindBSDRoot()` matched it
+without `boot-uuid`, `hfs.kext` mounted `/` (`ravynOS` on `b(14, 3)`), `devfs`
+mounted `/dev`, and PID 1 (`bsdinit_task`) called `load_init_program()`, stopping
+only on `ENOENT` (`errno 2`) for the not-yet-built `/sbin/launchd`.
+Cites: `tools/image/hfs.py:1-1486`; `tools/tests/test_hfs.py:1-182`;
+`tools/xnu-boot.sh:74-125`;
+`Kernel/Extensions/IOStorageFamily/Info.plist:139-140`;
+`Kernel/Extensions/hfs/core/hfs_vfsutils.c:334-465,668-676`;
+`Kernel/xnu/bsd/kern/bsd_init.c:963-1145`;
+`Kernel/xnu/bsd/kern/kern_exec.c:5968-5977`.
+Next: break the `Libraries/dyld` <-> `Libsystem` `-lc` link cycle
+(`Libraries/Makefile:11`, `Libraries/dyld/Makefile:120`), build `Libraries` +
+`BSD` (`/sbin/launchd`, `/bin/sh`), and boot to a shell in QEMU.
+
 ## Post-D6 handoff status (2026-11-04)
 
 **Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
@@ -1569,11 +1597,9 @@ boot-data window `0x1c75000..0x1cb5000` (above 30 staged booter kexts),
 | relocate boot-data window above kernel (`52d36895fd`) | `v=03` (`int3` in `panic`) | Zero CPU faults; 2.01s uptime; `IOPanicPlatform::start`: `"Unable to find driver for this platform: \"\"."` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`). |
 | stage booter kexts + `/ACPI/RSDP` (`f5ff2c74b`, `d7504302e`) | `v=0e` `CR2=0x16` (`kfree` in `OSKext.cpp:5792`) | `OSKext::loadExecutable()` rejected `kernel_task` (`get_bsdtask_info == NULL`) and freed null `kmod_info` on interface kext `com.apple.kpi.bsd`. |
 | allow `kernel_task` kext linking (`48ca4834c`) | **none** (25s run, 0 panics) | Linked all 30 kexts live via `kxld`; attached `ACPIPlatformExpert`, `AppleAPIC`, PCI (`6 devices`), `RavynAHCIPort`, `IOStorageFamily`; waiting in `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for `Apple_HFS`. |
+| attach portable MBR `0xAF` HFSX `root.img` (`95762e5ec`, `ac748b4b8`, `91a1cc852`) | `v=03` (`int3` in `panic` at `kern_exec.c:5977`) | `BSD root: disk1s1`, `hfs: mounted ravynOS on device b(14, 3)`, `devfs_kernel_mount`, `bsd_do_post - done`, `load_init_program: failed loading /sbin/launchd: errno 2` (`ENOENT`). |
 
-**Next stage (agreed Option 1).** Build a portable, rootless HFS+/HFSX image
-writer (`tools/image/hfs.py`, MBR partition type `0xAF` so
-`IOFDiskPartitionScheme` publishes `"Content" = "Apple_HFS"` at
-`IOStorageFamily/Info.plist:139-140`, matching `IOFindBSDRoot()` without
-`boot-uuid`) and attach it on AHCI in `tools/xnu-boot.sh` so `hfs.kext` mounts
-`/` (`hfs_vfsops.c:550-635`) and XNU reaches `load_init_program("/sbin/launchd")`
-(`kern_exec.c:5380-5445`).
+**Next stage.** Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`,
+static `/usr/lib/dyld` after `Libsystem` installs
+`/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`), complete `Libraries` +
+`BSD` (`/sbin/launchd` + `/bin/sh`) on macOS, and boot ravynOS into userland PID 1.
