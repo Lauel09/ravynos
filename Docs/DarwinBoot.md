@@ -1492,38 +1492,58 @@ copy (`i386_vm_init.c:530` still reserves non-`ConventionalMemory` types) and
 point `ba->efiSystemTable` at a zeroed boot-window stub so `efi_init()` does
 not overwrite `0xffffff8000000000` (`VirtualStart == 0`) over `__HIB`/boot stack.
 
-## Post-D6 handoff status (2026-11-03)
+### 2026-11-04 — Post-D6: bare XNU reaches `StartIOKit` / `IOPanicPlatform`
+Evidence (verbatim):
+```
+panic(cpu 0 caller 0xffffff8000c4ff2d): "Unable to find driver for this platform: \"\".\n"@/Users/ariya/Documents/ravyn-os-test/ravynos/Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995
+0xffffff80596cbbf0 : 0xffffff8000c4ff2d mach_kernel : __ZN15IOPanicPlatform5startEP9IOService + 0x4d
+System uptime in nanoseconds: 2014760000
+loaded kexts:
+(none)
+```
+Did: stripped `EFI_MEMORY_RUNTIME` in the `boot_args->MemoryMap` copy and
+pointed `ba->efiSystemTable` at a zeroed stub (`719fa5b2ba`), which cleared
+`efi_init()` and exposed `pmap_lowmem_finalize()` (`pmap.c:1143`) freeing
+`[eHIB, stext)` (`[0x19e000, 0x200000)`) over `[0x1A0000, 0x1E0000)`. Relocated
+the 256 KiB boot-data window above `__LINKEDIT` (`0x15aa000`, staged in high
+`EfiLoaderData`, copied after `ExitBootServices`, included in `ba->ksize`,
+`52d36895fd`). Bare XNU now boots with zero CPU faults through `machine_init()`,
+Mach scheduler/threads/interrupts, `bsd_early_init()`, and `StartIOKit()` up to
+`IOPanicPlatform::start()`.
+Cites: `tools/bootloader/uefi_stub.c:618-634,1327-1605`;
+`Kernel/xnu/osfmk/i386/AT386/model_dep.c:376-379,529-556`;
+`Kernel/xnu/osfmk/x86_64/pmap.c:1143`;
+`Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995`.
+Next: stage `\System\Library\Extensions\*.kext` (including `System.kext/PlugIns`)
+as `Driver-<addr>` entries in `/chosen/memory-map`, set root `compatible="ACPI"`,
+and populate `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` so `IOACPIFamily`'s
+`ACPIPlatformExpert` attaches.
+
+## Post-D6 handoff status (2026-11-04)
 
 **Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
-firmware identity map, copies all `LC_SEGMENT_64` payloads after
-`ExitBootServices` (physical = `vmaddr - 0xffffff8000000000`, kslide 0), then
-jumps to the physical `LC_UNIXTHREAD` RIP with `EAX` = physical `boot_args`.
-Observed values for the freshly built kernel: entry `0x196000`, `boot_args`
-`0x1B0000`, device tree `0x1A0000`/`0x1DC` bytes, `kaddr=0x100000`,
-`ksize=0x14aa000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
+firmware identity map, copies all `LC_SEGMENT_64` payloads plus the staged
+boot-data window after `ExitBootServices` (physical = `vmaddr -
+0xffffff8000000000`, kslide 0), then jumps to the physical `LC_UNIXTHREAD` RIP
+with `EAX` = physical `boot_args`. Observed values: entry `0x196000`,
+boot-data window `0x15aa000..0x15ea000` (`DT` `+0x0`, `boot_args` `+0x10000`,
+EFI stub `+0x11000`, `MemoryMap` `+0x12000`), `kaddr=0x100000`,
+`ksize=0x14ea000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
 
 **Attempts -> first fault.**
 
 | Change | First exception | Where |
 |---|---|---|
-| old 32-bit trampoline | `v=0d` `RIP=0x196039` | `_pstart+0x39`, `CS=0x8` CS32, `CR0=0x10033` (PG off), `EFER=0x800`. Instruction is `mov %ax,%ss` with AX=0 after `lgdt`; legal in long mode, illegal in 32-bit. |
-| stay in 64-bit mode (commit `cc832cf4eb`) | `v=0e` `RIP=0xffffff8000481cc4`, `CR2=0xffffdeadbeefee00` | `_current_cpu_datap+0x14` (`mov %gs:0,%rax`), `CS=0x8` CS64, `CR0=0x80010033`, `CR3=0x100000`, `EFER=0xd00`. Panic frame: `"Expected 64 seed bytes from bootloader, but got 0"` (`prng_random.c:65`). |
-| 64-byte `/chosen/random-seed` (commit `ba3dc57c1`, **D6 PASSED**) | `v=0d` `RIP=0xae557bfa39129d48` | After `Darwin Kernel Version 19.6.0` and `Initializing EFI runtime services` (`model_dep.c:503`), `RSP=0xffffff8000194e40`, `CR3=0x17a3000`, `GS=0xffffff8000e060c0`. |
+| old 32-bit trampoline | `v=0d` `RIP=0x196039` | `_pstart+0x39`, `CS=0x8` CS32, `CR0=0x10033` (PG off), `EFER=0x800`. |
+| stay in 64-bit mode (`cc832cf4eb`) | `v=0e` `RIP=0xffffff8000481cc4`, `CR2=0xffffdeadbeefee00` | `_current_cpu_datap+0x14`; panic frame `"Expected 64 seed bytes from bootloader, but got 0"` (`prng_random.c:65`). |
+| 64-byte `/chosen/random-seed` (`ba3dc57c1`, **D6 PASSED**) | `v=0d` `RIP=0xae557bfa39129d48` | `efi_init()` (`model_dep.c:529-545`) mapped `VirtualStart == 0` over `0xffffff8000000000` (`__HIB`/boot stack). |
+| omit EFI runtime mapping (`719fa5b2ba`) | `v=0e` `RIP=0xffffff8000caf3fe`, `CR2=0xffffff80001b0008` | `pmap_lowmem_finalize()` (`pmap.c:1143`) freed `[eHIB, stext)` (`0x19e000..0x200000`), unmapping `boot_args` at `0x1B0000`. |
+| relocate boot-data window above kernel (`52d36895fd`) | `v=03` (`int3` in `panic`) | Zero CPU faults; 2.01s uptime; `IOPanicPlatform::start`: `"Unable to find driver for this platform: \"\"."` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`). |
 
-**Current fault.** Because the loader never calls `SetVirtualAddressMap()`,
-every `EFI_MEMORY_RUNTIME` descriptor in `args->MemoryMap` has
-`VirtualStart == 0`. `efi_init()` (`model_dep.c:529-545`) computes
-`vm_addr = mptr->VirtualStart | VM_MIN_KERNEL_ADDRESS` (`0xffffff8000000000`)
-and calls `pmap_map_bd()`, overwriting the kernel's low KVA PTEs over `__HIB`
-(`0xffffff8000100000..0xffffff800019e000`), including the active boot stack
-(`RSP=0xffffff8000194e40`). After TLB flush (`CR3=0x17a3000`), `ret` pops
-`0xae557bfa39129d48` from the newly mapped runtime page and `#GP`s.
-
-**Agreed next fix (Option B).** In `tools/bootloader/uefi_stub.c`, clear
-`EFI_MEMORY_RUNTIME` on descriptors in the `boot_args->MemoryMap` copy (`Type`
-stays non-`ConventionalMemory`, so `i386_vm_init.c:530` still reserves those
-physical pages) and point `ba->efiSystemTable` at a zeroed stub inside the
-`[0x1A0000, 0x1E0000)` boot window so `gPEEFISystemTable` and
-`gPEEFIRuntimeServices` remain `NULL` (`pal_routines.c:171` and
-`EFINVRAM.cpp:126` both handle `NULL` cleanly) and boot advances into
-`StartIOKit()` / `bsd_init()`.
+**Next stage (agreed Option 1).** Stage `\System\Library\Extensions\*.kext`
+(and `System.kext\PlugIns\*.kext`) in `BOOTX64.EFI` as page-aligned
+`_BooterKextFileInfo` buffers (`OSKext.cpp:1759-1908`) referenced by
+`Driver-<addr>` properties under `/chosen/memory-map`
+(`libsa/bootstrap.cpp:575-710`), set root `compatible = "ACPI"`
+(`IODeviceTreeSupport.cpp:193-197`, `IOACPIFamily/Info.plist:31-36`), and add
+`/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` (`ACPIPlatformExpert.cpp:227-269`).
