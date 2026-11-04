@@ -17,7 +17,10 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-KERNEL="$ROOT/../build/sysroot/System/Library/Kernels/kernel"
+BUILD_DIR="$ROOT/../build"
+KERNEL="$BUILD_DIR/sysroot/System/Library/Kernels/kernel"
+EXT_SRC="$BUILD_DIR/sysroot/System/Library/Extensions"
+HFS_ENC_SRC="$BUILD_DIR$ROOT/Kernel/Extensions/hfs/hfs_encodings/hfs_encodings.kext"
 SECS=25
 CPU=Penryn
 GDB=0
@@ -48,13 +51,27 @@ if [ "$BUILD" = 1 ]; then
 fi
 
 rm -rf "$OUT"
-mkdir -p "$OUT/fat/EFI/BOOT" "$OUT/fat/System/Library/Kernels"
+mkdir -p "$OUT/fat/EFI/BOOT" "$OUT/fat/System/Library/Kernels" "$OUT/fat/System/Library/Extensions"
 cp "$ROOT/tools/bootloader/BOOTX64.EFI" "$OUT/fat/EFI/BOOT/BOOTX64.EFI"
 cp "$KERNEL" "$OUT/fat/System/Library/Kernels/kernel"
+kext_count=0
+if [ -d "$EXT_SRC" ]; then
+    for kx in "$EXT_SRC"/*.kext; do
+        [ -d "$kx" ] || continue
+        cp -RL "$kx" "$OUT/fat/System/Library/Extensions/"
+        kext_count=$((kext_count + 1))
+    done
+fi
+if [ -d "$HFS_ENC_SRC" ] && [ ! -d "$OUT/fat/System/Library/Extensions/hfs_encodings.kext" ]; then
+    cp -RL "$HFS_ENC_SRC" "$OUT/fat/System/Library/Extensions/"
+    kext_count=$((kext_count + 1))
+fi
+find "$OUT/fat/System/Library/Extensions" -name '*.dSYM' -exec rm -rf {} + 2>/dev/null || true
+chmod -R u+rwX "$OUT/fat"
 cp "$FW/edk2-i386-vars.fd" "$OUT/vars.fd"
 
 echo "xnu-boot: kernel $(shasum -a 256 "$KERNEL" | cut -c1-16) $(ls -l "$KERNEL" | awk '{print $6, $7, $8}')"
-echo "xnu-boot: loader $(shasum -a 256 "$OUT/fat/EFI/BOOT/BOOTX64.EFI" | cut -c1-16), cpu $CPU"
+echo "xnu-boot: loader $(shasum -a 256 "$OUT/fat/EFI/BOOT/BOOTX64.EFI" | cut -c1-16), kext_bundles $kext_count, cpu $CPU"
 
 set -- qemu-system-x86_64 -machine q35 -cpu "$CPU" -m 2048 \
     -display none -monitor none -no-reboot -no-shutdown \
@@ -83,9 +100,9 @@ else
     echo "xnu-boot: QEMU ran ${i}s"
 fi
 
-echo "---- serial (filtered, last 30) ----"
-grep -a -E "RAVYNOS|Darwin|panic|Panic|loader:|handoff|kernel:|Exception|RIP|seed" \
-    "$OUT/serial.log" 2>/dev/null | tail -30 || true
+echo "---- serial (filtered, last 35) ----"
+grep -a -E "RAVYNOS|Darwin|panic|Panic|loader:|handoff|kernel:|Exception|RIP|seed|ACPI|Kext|kext|PCI|IOPanic|BSD root|mount" \
+    "$OUT/serial.log" 2>/dev/null | tail -35 || true
 echo "---- serial (raw, last 15 lines) ----"
 tail -15 "$OUT/serial.log" 2>/dev/null | LC_ALL=C tr -cd '\11\12\15\40-\176' || true
 echo
