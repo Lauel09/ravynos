@@ -5,15 +5,15 @@ Live status only. History: Docs/PROGRESS-archive.md. Keep this file under 600 wo
 Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 
 ## Status
-- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain (LLVM, cctools, xcbuild, iig), XNU + all kexts, `IOKitUser`, `libc++`/`libc++abi`, compiler-rt and objc4. Stop is `Libraries/dyld`: `libdyld.dylib` failure fixed (`76918cbcec`; targeted build succeeds); the next targeted step shows the `dyld` executable failing `ld: library not found for -lc` — not yet confirmed by a full world run.
-- **Boot (D6 PASSED; `StartIOKit` / `IOPanicPlatform` reached):** `tools/bootloader/BOOTX64.EFI` supplies `/chosen/random-seed` (`ba3dc57c1`), strips `EFI_MEMORY_RUNTIME` + stubs `ba->efiSystemTable` (`719fa5b2ba`), and stages the 256 KiB boot-data window above `__LINKEDIT` (`0x15aa000`, included in `ba->ksize`, `52d36895fd`). Bare XNU boots under QEMU+OVMF (`-cpu Penryn`) with zero CPU faults (2.01s uptime) through Mach VM/PMAP/IPC/scheduler, `bsd_early_init()`, and `StartIOKit()` up to `IOPanicPlatform::start` (`Unable to find driver for this platform: ""`, `loaded kexts: (none)`).
-- **Open defects:** mtools `.img` output is not byte-reproducible (differing bytes are 64-bit stack addresses at the end of the FAT volume — uninitialised memory, upstream); `auto` backend no longer selects mtools. Darwin prelinked kernelcache is skipped (`plktool` is Linux-only); `BOOTX64.EFI` kext staging via `/chosen/memory-map` `Driver-<addr>` is the agreed Darwin path.
+- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain (LLVM, cctools, xcbuild, iig), XNU + all kexts, `IOKitUser`, `libc++`/`libc++abi`, compiler-rt and objc4. Stop is `Libraries/dyld`: `libdyld.dylib` fixed (`76918cbcec`); the `dyld` executable fails `ld: library not found for -lc` because `Libraries/Makefile:11` builds `dyld` before `Libsystem` installs `/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`.
+- **Boot (D6 PASSED; live kext linking + ACPI/PCI/AHCI + `IOFindBSDRoot` reached):** `BOOTX64.EFI` stages 30 `.kext` bundles (`Driver-<addr>`), sets root `compatible="ACPI"` + `/ACPI/RSDP`, and relocates the 256 KiB boot-data window above staged kexts (`f5ff2c74b`, `d7504302e`). With `OSKext::loadExecutable()` allowing `kernel_task` linking (`48ca4834c`), XNU runs 25s in QEMU with 0 panics: links all kexts live via `kxld`, attaches `ACPIPlatformExpert`, `AppleAPIC`, `q35` PCI (`6 devices`), `RavynAHCIPort`, and `IOStorageFamily`, and waits in `IOFindBSDRoot()` for an `Apple_HFS` root volume.
+- **Open defects:** mtools `.img` output is not byte-reproducible (`auto` backend no longer selects mtools). Darwin prelinked kernelcache is skipped (`plktool` is Linux-only), bypassed cleanly via live `kxld` linking of `BOOTX64.EFI` `Driver-<addr>` kexts.
 - The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. Stage `\System\Library\Extensions\*.kext` (and `System.kext\PlugIns\*.kext`) in `BOOTX64.EFI` as page-aligned `_BooterKextFileInfo` buffers under `/chosen/memory-map` (`Driver-<addr>`), set root DT `compatible="ACPI"`, and populate `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` so `IOACPIFamily`'s `ACPIPlatformExpert` attaches.
-2. Observe IOKit PCI/storage matching with `IOACPIFamily` + `IOPCIFamily` + `IOStorageFamily` loaded, then advance toward BSD root mount (`vfs_mountroot()`).
-3. Re-run or target `Libraries/dyld` to fix the `dyld` executable `-lc` link failure, then continue `Libraries` and `BSD` world stages for `/sbin/launchd` + `/bin/sh`.
+1. Add a portable rootless HFS+/HFSX image writer (`tools/image/hfs.py`, MBR type `0xAF` -> `IOFDiskPartitionScheme` `"Content" = "Apple_HFS"`) and attach `$OUT/root.img` on AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and reach `load_init_program("/sbin/launchd")`.
+2. Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`, `/usr/lib/dyld` after `Libsystem`) to resolve the `-lc` cycle, then build `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`).
+3. Stage built userland into `$OUT/root.img` and boot ravynOS to an interactive shell in QEMU.
 
 ## Key commands
 - Remote runner: `tools/arena-run.sh <branch> <task> [<task> ...]`
@@ -32,8 +32,8 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - `Docs/PROGRESS-archive.md` — full history and changelog (everything removed from this file)
 
 ## Recent changes
+- 2026-11-04: Live `kxld` linking of 30 booter kexts + `ACPIPlatformExpert` + PCI + `RavynAHCIPort` + `IOStorageFamily` -> `IOFindBSDRoot()`, 25s / 0 panics (`f5ff2c74b`, `d7504302e`, `48ca4834c`)
 - 2026-11-04: Bare XNU reaches `StartIOKit()` / `IOPanicPlatform::start` with zero CPU faults after boot-window relocation + EFI runtime strip (`719fa5b2ba`, `52d36895fd`)
 - 2026-11-03: D6 GATE PASSED — XNU prints `Darwin Kernel Version 19.6.0` on serial (`ba3dc57c1`)
 - 2026-11-03: Phase 1 world reaches and passes XNU + userland link graph; libdyld `-lsystem_malloc` fixed (`76918cbcec`)
 - 2026-11-03: XNU executes in 64-bit long mode; fault root-caused to `PE_get_random_seed()` = 0 (`cc832cf4eb`)
-- 2026-11-03: OVMF `#UD 0xB0000` does not reproduce locally; FAT-wrapper sizing + `EFI_LOADED_IMAGE_PROTOCOL` layout fixed (`2ceef99c0e`, `5dce5e36e5`)

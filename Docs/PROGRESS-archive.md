@@ -438,6 +438,19 @@ first real gap Phases 1–2 produce. See `work/README.md`.
   Best hypothesis: the IOKit header staging does not copy the `hidsystem`
   subtree into the SDK. Not fixed here (four-failure limit).
 
+- **2026-11-04 (rev 40) — Live booter-kext linking, ACPI/PCI/AHCI attach, and `IOFindBSDRoot` reached (25s, 0 panics).**
+  `BOOTX64.EFI` stages 30 `.kext` bundles (`\System\Library\Extensions\*.kext`
+  and `System.kext\PlugIns\*.kext`) as page-aligned `_BooterKextFileInfo`
+  buffers under `/chosen/memory-map` (`Driver-<addr>`), sets root
+  `compatible="ACPI"`, and populates `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID`
+  (`f5ff2c74b`, `d7504302e`). Guarding `OSKext::loadExecutable()`'s
+  `kOSKextManagementEntitlement` check with `current_task() != kernel_task &&`
+  (`OSKext.cpp:5496`) and interface `kmod_info` cleanup (`OSKext.cpp:5792`,
+  `48ca4834c`) allows XNU to link all booter kexts live via `kxld` without
+  `plktool`. QEMU runs 25s with 0 panics through `pthread.kext`,
+  `ACPIPlatformExpert` (`v2 XSDT`), `AppleAPIC`, `q35` PCI (`6 devices`),
+  `RavynAHCIPort` (`pci8086,2922`), and `IOStorageFamily`, waiting in
+  `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for an `Apple_HFS` root volume.
 - **2026-11-04 (rev 39) — Post-D6 bare XNU reaches `StartIOKit` / `IOPanicPlatform`.**
   Stripping `EFI_MEMORY_RUNTIME` in `boot_args->MemoryMap` and pointing
   `ba->efiSystemTable` at a zeroed stub (`719fa5b2ba`) cleared the `efi_init()`
