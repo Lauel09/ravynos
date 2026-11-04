@@ -615,16 +615,23 @@ typedef struct {
 #define KERNEL_MIN_ADDR 0x100000ULL
 #define KERNEL_MAX_END  0x100000000ULL
 
-/* XNU's D2 link layout leaves this gap between __HIB (ends 0x19e000) and
- * __TEXT (starts 0x200000).  XNU's low linear map only covers
- * [0, kaddr+ksize), so the device tree, boot_args, zeroed EFI system-table
- * stub, and EFI memory map must live in this gap rather than in pool
- * allocated at the top of RAM. */
-#define XNU_DT_ADDR          0x1A0000ULL
-#define XNU_BA_ADDR          0x1B0000ULL
-#define XNU_EFISTUB_ADDR     0x1B1000ULL
-#define XNU_BAMAP_ADDR       0x1B2000ULL
-#define XNU_BOOT_WINDOW_END  0x1E0000ULL
+/* XNU's pmap_lowmem_finalize() (osfmk/x86_64/pmap.c:1143) calls
+ * ml_static_mfree(eHIB, stext - eHIB) on [0x19e000, 0x200000), so boot data
+ * cannot live in that 2M-alignment gap.  Place a 256 KiB boot-data window
+ * immediately above the highest Mach-O segment (round_page(kphys_base +
+ * kphys_size)), stage it in high EfiLoaderData while boot services are alive,
+ * copy it into place after ExitBootServices() alongside the kernel segments,
+ * and include it in boot_args->ksize so Idle_PTs_init() / i386_vm_init()
+ * (osfmk/i386/i386_init.c:369,603; i386_vm_init.c:588-605) keep it mapped and
+ * reserved below first_avail. */
+#define XNU_BOOT_DATA_SIZE     0x40000ULL /* 256 KiB total */
+#define XNU_BD_DT_OFF          0x00000ULL /* 64 KiB device tree */
+#define XNU_BD_DT_CAP          0x10000ULL
+#define XNU_BD_BA_OFF          0x10000ULL /* 4 KiB boot_args_t */
+#define XNU_BD_EFISTUB_OFF     0x11000ULL /* 4 KiB zeroed EFI_SYSTEM_TABLE_64 */
+#define XNU_BD_MEMMAP_OFF      0x12000ULL /* 184 KiB EFI memory map */
+#define XNU_BD_MEMMAP_CAP      (XNU_BOOT_DATA_SIZE - XNU_BD_MEMMAP_OFF)
+#define XNU_BOOT_DATA_MAX_END  0x3C000000ULL /* < NKPT*2M (1000M, i386_init.c:369) */
 
 typedef struct { UINT64 base; UINT64 pages; } kern_memdesc_t;
 typedef struct {
@@ -642,6 +649,8 @@ UINT32 gDTSize = 0;
 UINT32 gHandoffEntry = 0;
 UINT32 gHandoffBootArgs = 0;
 UINT32 gHandoffRsp = 0;
+static UINT8 *gBootDataStage = 0;
+static UINT64 gBootDataPhys = 0;
 
 /* Mach-O segments are recorded, not copied, while boot services are alive:
  * part of the kernel's physical span is firmware EfiBootServicesCode, which
@@ -657,6 +666,8 @@ typedef struct {
 static kernel_seg_t gKernelSegs[MAX_KERNEL_SEGS];
 static UINTN gKernelSegCount;
 static const UINT8 *gKernelPayload;
+static UINTN gKernelPayloadSize;
+static UINT64 gBootStackBase;
 
 /* The real XNU kernel is ~20 MiB with its __LINKEDIT, so the reader must
  * accept more than the old 8 MiB cap while still refusing an absurd file
@@ -1051,6 +1062,10 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
 
     gKernelSegCount = 0;
     gKernelPayload = 0;
+    gKernelPayloadSize = 0;
+    gBootStackBase = 0;
+    gBootDataStage = 0;
+    gBootDataPhys = 0;
 
     if (size < sizeof(mach_header_64_t) || mh->magic != MH_MAGIC_64 ||
         mh->cputype != CPU_TYPE_X86_64) {
@@ -1107,11 +1122,6 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
             phys = vmaddr - VM_MIN_KERNEL_ADDRESS;
             if (phys + vmsize < phys) {
                 say("kernel: Mach-O segment overflow\n");
-                return 0;
-            }
-            if (phys < XNU_BOOT_WINDOW_END &&
-                XNU_DT_ADDR < phys + vmsize) {
-                say("kernel: Mach-O segment overlaps the boot-data window\n");
                 return 0;
             }
             if (gKernelSegCount >= MAX_KERNEL_SEGS) {
@@ -1181,10 +1191,12 @@ static int load_macho_kernel_image(EFI_BOOT_SERVICES *bs, void *file_data, UINTN
             say("kernel: boot stack allocation failed\n");
             return 0;
         }
+        gBootStackBase = (UINT64)stk;
         *rsp_out = (UINT64)stk + BOOTKSTACK_SIZE;
     }
 
     gKernelPayload = base;
+    gKernelPayloadSize = size;
     *entry_out = entry_vm - VM_MIN_KERNEL_ADDRESS;
     if (kphys_base_out) { *kphys_base_out = min_phys; }
     if (kphys_size_out) { *kphys_size_out = max_phys - min_phys; }
@@ -1217,6 +1229,14 @@ void xnu_copy_kernel(void)
         n = (UINTN)(gKernelSegs[i].vmsize - gKernelSegs[i].filesize);
         while (n--) {
             *dst++ = 0;
+        }
+    }
+    if (gBootDataStage) {
+        volatile UINT8 *dst = (volatile UINT8 *)(UINTN)gBootDataPhys;
+        const volatile UINT8 *src = (const volatile UINT8 *)gBootDataStage;
+        UINTN n = (UINTN)XNU_BOOT_DATA_SIZE;
+        while (n--) {
+            *dst++ = *src++;
         }
     }
     serial_puts("handoff: kernel segments copied\n");
@@ -1332,24 +1352,134 @@ static void fill_random_seed(UINT8 out[XNU_RANDOM_SEED_SIZE])
     }
 }
 
-static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
+static int ranges_overlap(UINT64 a0, UINT64 alen, UINT64 b0, UINT64 blen)
 {
-    EFI_PHYSICAL_ADDRESS phys = XNU_DT_ADDR;
-    UINTN cap = 64 * 1024;
-    UINT8 *buf, *p;
-    UINT8 seed[XNU_RANDOM_SEED_SIZE];
-    EFI_STATUS stt;
+    return (a0 < b0 + blen) && (b0 < a0 + alen);
+}
 
-    stt = bs->AllocatePages(AllocateAddress, EfiLoaderData,
-                             (cap + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE, &phys);
-    if (EFI_ERROR(stt) || phys != XNU_DT_ADDR) {
-        say("kernel: cannot reserve device-tree window at 0x");
-        say_hex(XNU_DT_ADDR, 16);
-        say("\n");
+/* Allocate the 256 KiB staging buffer in high EfiLoaderData and choose a
+ * reclaimable 256 KiB physical destination immediately above the kernel's
+ * Mach-O span. */
+static int stage_boot_data_window(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
+                                  UINT64 kphys_size)
+{
+    EFI_PHYSICAL_ADDRESS stage_phys = KERNEL_PAYLOAD_MAX_ADDR;
+    UINTN stage_pages = (UINTN)(XNU_BOOT_DATA_SIZE >> EFI_PAGE_SHIFT);
+    UINTN mapsize = 0, descsize = 0, key = 0;
+    UINT32 descver = 0;
+    EFI_MEMORY_DESCRIPTOR *map = 0;
+    UINT64 cand = (kphys_base + kphys_size + (EFI_PAGE_SIZE - 1)) &
+                  ~(UINT64)(EFI_PAGE_SIZE - 1);
+    UINT64 payload_base = (UINT64)(UINTN)gKernelPayload;
+
+    if (EFI_ERROR(bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
+                                    stage_pages, &stage_phys))) {
+        say("kernel: cannot stage boot-data buffer\n");
         return 0;
     }
-    buf = (UINT8 *)(UINTN)phys;
-    bs->SetMem(buf, cap, 0);
+    if (ranges_overlap((UINT64)stage_phys, XNU_BOOT_DATA_SIZE,
+                       kphys_base, kphys_size)) {
+        bs->FreePages(stage_phys, stage_pages);
+        say("kernel: boot-data stage overlaps kernel span\n");
+        return 0;
+    }
+    bs->SetMem((void *)(UINTN)stage_phys, (UINTN)XNU_BOOT_DATA_SIZE, 0);
+
+    bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
+    mapsize += 2 * descsize;
+    if (EFI_ERROR(bs->AllocatePool(EfiLoaderData, mapsize, (void **)&map)) ||
+        EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver))) {
+        if (map) { bs->FreePool(map); }
+        bs->FreePages(stage_phys, stage_pages);
+        say("kernel: cannot inspect memory map for boot-data placement\n");
+        return 0;
+    }
+
+    while (cand + XNU_BOOT_DATA_SIZE <= XNU_BOOT_DATA_MAX_END) {
+        UINT64 next_cand = 0;
+        UINTN pg;
+        int ok = 1;
+
+        if (ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+                           (UINT64)stage_phys, XNU_BOOT_DATA_SIZE)) {
+            cand = ((UINT64)stage_phys + XNU_BOOT_DATA_SIZE +
+                    (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
+            continue;
+        }
+        if (gKernelPayloadSize &&
+            ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+                           payload_base, (UINT64)gKernelPayloadSize)) {
+            cand = (payload_base + (UINT64)gKernelPayloadSize +
+                    (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
+            continue;
+        }
+        if (gBootStackBase &&
+            ranges_overlap(cand, XNU_BOOT_DATA_SIZE,
+                           gBootStackBase, BOOTKSTACK_SIZE)) {
+            cand = (gBootStackBase + BOOTKSTACK_SIZE +
+                    (EFI_PAGE_SIZE - 1)) & ~(UINT64)(EFI_PAGE_SIZE - 1);
+            continue;
+        }
+
+        for (pg = 0; pg < stage_pages; pg++) {
+            UINT64 pa = cand + ((UINT64)pg << EFI_PAGE_SHIFT);
+            UINTN off;
+            int page_ok = 0;
+
+            for (off = 0; off < mapsize; off += descsize) {
+                EFI_MEMORY_DESCRIPTOR *d =
+                    (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)map + off);
+                UINT64 dend = d->PhysicalStart +
+                              d->NumberOfPages * EFI_PAGE_SIZE;
+                if (pa >= d->PhysicalStart && pa < dend) {
+                    if ((d->Attribute & EFI_MEMORY_RUNTIME) == 0 &&
+                        (d->Type == EfiConventionalMemory ||
+                         d->Type == EfiBootServicesCode ||
+                         d->Type == EfiBootServicesData ||
+                         d->Type == EfiLoaderCode ||
+                         d->Type == EfiLoaderData)) {
+                        page_ok = 1;
+                    } else {
+                        next_cand = (dend + (EFI_PAGE_SIZE - 1)) &
+                                    ~(UINT64)(EFI_PAGE_SIZE - 1);
+                    }
+                    break;
+                }
+            }
+            if (!page_ok) {
+                ok = 0;
+                if (next_cand <= cand) {
+                    next_cand = pa + EFI_PAGE_SIZE;
+                }
+                break;
+            }
+        }
+        if (ok) {
+            bs->FreePool(map);
+            gBootDataStage = (UINT8 *)(UINTN)stage_phys;
+            gBootDataPhys = cand;
+            return 1;
+        }
+        cand = next_cand;
+    }
+
+    bs->FreePool(map);
+    bs->FreePages(stage_phys, stage_pages);
+    say("kernel: no reclaimable RAM window above kernel for boot data\n");
+    return 0;
+}
+
+static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs, UINT64 kphys_base,
+                                UINT64 kphys_size)
+{
+    UINT8 *buf, *p;
+    UINT8 seed[XNU_RANDOM_SEED_SIZE];
+
+    if (!stage_boot_data_window(bs, kphys_base, kphys_size)) {
+        return 0;
+    }
+    buf = gBootDataStage + XNU_BD_DT_OFF;
+    bs->SetMem(buf, (UINTN)XNU_BD_DT_CAP, 0);
     fill_random_seed(seed);
     p = buf;
 
@@ -1387,7 +1517,7 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 #undef WPROP_U64
 #undef WPROP_BYTES
 
-    gDTPhys = (UINT32)phys;
+    gDTPhys = (UINT32)(gBootDataPhys + XNU_BD_DT_OFF);
     gDTSize = (UINT32)(p - buf);
     return gDTPhys;
 }
@@ -1395,8 +1525,9 @@ static UINT32 build_device_tree(EFI_BOOT_SERVICES *bs)
 static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
                               UINT64 kphys_base, UINT64 kphys_size)
 {
-    EFI_PHYSICAL_ADDRESS ba_phys = XNU_BA_ADDR;
-    EFI_PHYSICAL_ADDRESS efistub_phys = XNU_EFISTUB_ADDR;
+    UINT64 ba_phys = gBootDataPhys + XNU_BD_BA_OFF;
+    UINT64 efistub_phys = gBootDataPhys + XNU_BD_EFISTUB_OFF;
+    UINT64 map_phys = gBootDataPhys + XNU_BD_MEMMAP_OFF;
     boot_args_t *ba;
     UINTN mapsize = 0, descsize = 0, key = 0;
     UINT32 descver = 0;
@@ -1405,55 +1536,25 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     UINTN off;
 
     (void)st;
+    (void)kphys_size;
 
-    if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1,
-                                    &ba_phys)) ||
-        ba_phys != XNU_BA_ADDR) {
-        say("kernel: cannot reserve boot_args window at 0x");
-        say_hex(XNU_BA_ADDR, 16);
-        say("\n");
+    if (!gBootDataStage || !gBootDataPhys) {
         return 0;
     }
-    ba = (boot_args_t *)(UINTN)ba_phys;
-    bs->SetMem(ba, sizeof(*ba), 0);
 
+    ba = (boot_args_t *)(void *)(gBootDataStage + XNU_BD_BA_OFF);
+    bs->SetMem(ba, sizeof(*ba), 0);
     /* Zeroed EFI_SYSTEM_TABLE_64 stub inside [kaddr, kaddr+ksize): efi_init()
      * (osfmk/i386/AT386/model_dep.c:376-379,554) dereferences
      * ml_static_ptovirt(args->efiSystemTable), sees Hdr.Signature == 0, and
      * leaves gPEEFISystemTable/gPEEFIRuntimeServices NULL cleanly
      * (osfmk/i386/pal_routines.c:171, IOACPIFamily/EFINVRAM.cpp:126). */
-    if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData, 1,
-                                    &efistub_phys)) ||
-        efistub_phys != XNU_EFISTUB_ADDR) {
-        say("kernel: cannot reserve EFI stub page at 0x");
-        say_hex(XNU_EFISTUB_ADDR, 16);
-        say("\n");
-        return 0;
-    }
-    bs->SetMem((void *)(UINTN)efistub_phys, EFI_PAGE_SIZE, 0);
+    bs->SetMem(gBootDataStage + XNU_BD_EFISTUB_OFF, EFI_PAGE_SIZE, 0);
 
-    /* Memory map.  XNU reads it through its low linear map, so it has to live
-     * below kaddr+ksize together with boot_args and the device tree. */
-    bs->GetMemoryMap(&mapsize, 0, &key, &descsize, &descver);
-    mapsize += 2 * descsize;
-    if (mapsize > (UINTN)(XNU_BOOT_WINDOW_END - XNU_BAMAP_ADDR)) {
-        say("kernel: EFI memory map does not fit the boot-data window\n");
-        return 0;
-    }
-    {
-        EFI_PHYSICAL_ADDRESS map_phys = XNU_BAMAP_ADDR;
-        UINTN map_pages = (mapsize + EFI_PAGE_SIZE - 1) >> EFI_PAGE_SHIFT;
-        if (EFI_ERROR(bs->AllocatePages(AllocateAddress, EfiLoaderData,
-                                        map_pages, &map_phys)) ||
-            map_phys != XNU_BAMAP_ADDR) {
-            say("kernel: cannot reserve EFI memory map window at 0x");
-            say_hex(XNU_BAMAP_ADDR, 16);
-            say("\n");
-            return 0;
-        }
-        map = (EFI_MEMORY_DESCRIPTOR *)(UINTN)map_phys;
-    }
+    map = (EFI_MEMORY_DESCRIPTOR *)(void *)(gBootDataStage + XNU_BD_MEMMAP_OFF);
+    mapsize = (UINTN)XNU_BD_MEMMAP_CAP;
     if (EFI_ERROR(bs->GetMemoryMap(&mapsize, map, &key, &descsize, &descver))) {
+        say("kernel: EFI memory map does not fit the boot-data window\n");
         return 0;
     }
 
@@ -1470,14 +1571,14 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
         }
         ba->CommandLine[i] = 0;
     }
-    ba->MemoryMap = (UINT32)(UINTN)map;
+    ba->MemoryMap = (UINT32)map_phys;
     ba->MemoryMapSize = (UINT32)mapsize;
     ba->MemoryMapDescriptorSize = (UINT32)descsize;
     ba->MemoryMapDescriptorVersion = descver;
     ba->deviceTreeP = gDTPhys;
     ba->deviceTreeLength = gDTSize;
     ba->kaddr = (UINT32)kphys_base;
-    ba->ksize = (UINT32)kphys_size;
+    ba->ksize = (UINT32)((gBootDataPhys + XNU_BOOT_DATA_SIZE) - kphys_base);
     ba->efiSystemTable = (UINT32)efistub_phys;
     ba->PhysicalMemorySize = 0; /* filled below */
     ba->FSBFrequency = 100000000ULL;
@@ -1846,9 +1947,10 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                     }
                     if (ok) {
                         if (is_macho) {
-                            /* The payload must stay live until the post-EBS
-                             * copy in xnu_handoff has replayed its segments. */
-                            if (!build_device_tree(bs)) {
+                            /* The payload and staged boot-data window must stay
+                             * live until the post-EBS copy in xnu_handoff has
+                             * replayed them. */
+                            if (!build_device_tree(bs, kphys_base, kphys_size)) {
                                 say("loader: no device tree, not handing off\n");
                                 bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                               data_pages);
@@ -1857,11 +1959,23 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                             UINT32 bargs = build_boot_args(bs, st, kphys_base, kphys_size);
                             if (!bargs) {
                                 say("loader: no boot_args, not handing off\n");
+                                if (gBootDataStage) {
+                                    bs->FreePages(
+                                        (EFI_PHYSICAL_ADDRESS)(UINTN)gBootDataStage,
+                                        (UINTN)(XNU_BOOT_DATA_SIZE >> EFI_PAGE_SHIFT));
+                                    gBootDataStage = 0;
+                                }
                                 bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                               data_pages);
                                 break;
                             }
                             handoff_to_xnu(bs, image_handle, entry, bargs, rsp);
+                            if (gBootDataStage) {
+                                bs->FreePages(
+                                    (EFI_PHYSICAL_ADDRESS)(UINTN)gBootDataStage,
+                                    (UINTN)(XNU_BOOT_DATA_SIZE >> EFI_PAGE_SHIFT));
+                                gBootDataStage = 0;
+                            }
                             bs->FreePages((EFI_PHYSICAL_ADDRESS)(UINTN)data,
                                           data_pages);
                         } else {
