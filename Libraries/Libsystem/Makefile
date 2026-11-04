@@ -51,20 +51,38 @@ LDFLAGS = -mmacos-version-min=${MACOS_VERSION_MIN} \
 
 all: lib${LIB}.dylib
 
-# linker_arguments.sh scans ${RAVYN_SDKROOT}/usr{,/local}/lib/system for every
-# reexport/input it must name; those libraries are *installed by the recursion
-# below*.  Sequence the local products after the recursion by depending on the
-# subdir targets bsd.subdir.mk attaches to `all` (namespaced with the inherited
-# DIRPRFX, the same spelling it uses for its all_subdir_ targets), so the order
-# also holds under SUBDIR_PARALLEL.  Only declared when `all` is the target:
-# the otherwise-phoned targets do not exist for install/clean-only runs.
+# libSystem bootstrap order (build-Libraries-2..4.log).  (1) Run
+# linker_arguments.sh first -- it only needs the TBD stubs seeded into the
+# SDK, so the config header must NOT depend on the recursion.  The recursion
+# then compiles with this directory's -include config... CFLAGS (its objects
+# inherit ${CFLAGS} through the environment), then libSystem.dylib links the
+# dylibs the recursion installs.  (2)+(3) are sequenced by depending on the
+# all_subdir_${DIRPRFX}${dir} targets bsd.subdir.mk attaches to `all` -- the
+# same node names it uses, so extra deps declared here merge onto them and
+# the order also holds under SUBDIR_PARALLEL.  ${OBJS} is not defined until
+# bsd.lib.mk is included (below), so the object->config edge is per-source.
+# Everything is make(all)-guarded: install/clean-only runs see no phony
+# all_subdir_* targets.
 .if make(all)
 SUBDIR_DEPS = ${SUBDIR:N.WAIT:@d@all_subdir_${DIRPRFX}$d@}
 
-${.OBJDIR}/config.${CpuArch}.normal.h: ${SUBDIR_DEPS}
+.for d in ${SUBDIR:N.WAIT}
+all_subdir_${DIRPRFX}$d: ${.OBJDIR}/config.${CpuArch}.normal.h
+.endfor
 
 lib${LIB}.dylib: ${SUBDIR_DEPS}
 .endif
+
+.for s in ${SRCS}
+${.OBJDIR}/${s:R}.o: ${.OBJDIR}/config.${CpuArch}.normal.h
+.endfor
+
+${.OBJDIR}/config.${CpuArch}.normal.h:
+	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
+	RUNTIME_SPEC_PATH=${TOOLCHAIN}/Library/Xcode/Specifications \
+	PATH="${TOOLS}:${PATH}" \
+	${.CURDIR}/xcodescripts/linker_arguments.sh \
+	${CpuArch} normal ${.OBJDIR} ${RAVYN_SDKROOT} ${.CURDIR}
 
 ${.OBJDIR}/config.${CpuArch}.normal.h:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
