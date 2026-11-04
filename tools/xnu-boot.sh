@@ -3,21 +3,29 @@
 # verdict: filtered serial output plus the first CPU exceptions.  This is the
 # Docs/DarwinBoot.md §3 fat:rw recipe as one command (D6 inner loop).
 #
-# Usage: tools/xnu-boot.sh [--kernel PATH] [--secs N] [--cpu MODEL] [--gdb]
-#                          [--no-build] [--out DIR]
-#   --kernel PATH  Mach-O kernel (default ../build/sysroot/System/Library/Kernels/kernel)
-#   --secs N       let QEMU run N seconds, then kill it (default 25)
-#   --cpu MODEL    QEMU -cpu model (default Penryn: XNU checks for an Intel vendor)
-#   --gdb          start QEMU halted with a gdbstub on :1234 and wait for it to
-#                  exit; attach with the lldb line printed below
-#   --no-build     reuse tools/bootloader/BOOTX64.EFI instead of rebuilding it
-#   --out DIR      work directory (default out/arena/boot)
+# Usage: tools/xnu-boot.sh [--kernel PATH] [--root-dir PATH] [--no-root]
+#                          [--secs N] [--cpu MODEL] [--gdb] [--no-build]
+#                          [--out DIR]
+#   --kernel PATH    Mach-O kernel (default ../build/sysroot/System/Library/Kernels/kernel)
+#   --root-dir PATH  Directory to stage into Apple_HFS root.img (default: minimal / + sysroot userland)
+#   --no-root        Omit the HFS+ root disk (stop at IOFindBSDRoot)
+#   --secs N         let QEMU run N seconds, then kill it (default 25)
+#   --cpu MODEL      QEMU -cpu model (default Penryn: XNU checks for an Intel vendor)
+#   --gdb            start QEMU halted with a gdbstub on :1234 and wait for it to
+#                    exit; attach with the lldb line printed below
+#   --no-build       reuse tools/bootloader/BOOTX64.EFI instead of rebuilding it
+#   --out DIR        work directory (default out/arena/boot)
 #
-# Files left in --out: serial.log (COM1), qemu-int.log (QEMU -d int,cpu_reset).
+# Files left in --out: serial.log (COM1), qemu-int.log (QEMU -d int,cpu_reset), root.img.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-KERNEL="$ROOT/../build/sysroot/System/Library/Kernels/kernel"
+BUILD_DIR="$ROOT/../build"
+KERNEL="$BUILD_DIR/sysroot/System/Library/Kernels/kernel"
+EXT_SRC="$BUILD_DIR/sysroot/System/Library/Extensions"
+HFS_ENC_SRC="$BUILD_DIR$ROOT/Kernel/Extensions/hfs/hfs_encodings/hfs_encodings.kext"
+ROOT_DIR_OPT=""
+USE_ROOT=1
 SECS=25
 CPU=Penryn
 GDB=0
@@ -28,12 +36,14 @@ FW=${QEMU_FW_DIR:-/opt/homebrew/share/qemu}
 while [ $# -gt 0 ]; do
     case $1 in
         --kernel) KERNEL=$2; shift 2 ;;
+        --root-dir) ROOT_DIR_OPT=$2; shift 2 ;;
+        --no-root) USE_ROOT=0; shift ;;
         --secs) SECS=$2; shift 2 ;;
         --cpu) CPU=$2; shift 2 ;;
         --gdb) GDB=1; shift ;;
         --no-build) BUILD=0; shift ;;
         --out) OUT=$2; shift 2 ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "xnu-boot: unknown option $1" >&2; exit 2 ;;
     esac
 done
@@ -48,19 +58,78 @@ if [ "$BUILD" = 1 ]; then
 fi
 
 rm -rf "$OUT"
-mkdir -p "$OUT/fat/EFI/BOOT" "$OUT/fat/System/Library/Kernels"
+mkdir -p "$OUT/fat/EFI/BOOT" "$OUT/fat/System/Library/Kernels" "$OUT/fat/System/Library/Extensions"
 cp "$ROOT/tools/bootloader/BOOTX64.EFI" "$OUT/fat/EFI/BOOT/BOOTX64.EFI"
 cp "$KERNEL" "$OUT/fat/System/Library/Kernels/kernel"
+kext_count=0
+if [ -d "$EXT_SRC" ]; then
+    for kx in "$EXT_SRC"/*.kext; do
+        [ -d "$kx" ] || continue
+        cp -RL "$kx" "$OUT/fat/System/Library/Extensions/"
+        kext_count=$((kext_count + 1))
+    done
+fi
+if [ -d "$HFS_ENC_SRC" ] && [ ! -d "$OUT/fat/System/Library/Extensions/hfs_encodings.kext" ]; then
+    cp -RL "$HFS_ENC_SRC" "$OUT/fat/System/Library/Extensions/"
+    kext_count=$((kext_count + 1))
+fi
+find "$OUT/fat/System/Library/Extensions" -name '*.dSYM' -exec rm -rf {} + 2>/dev/null || true
+chmod -R u+rwX "$OUT/fat"
 cp "$FW/edk2-i386-vars.fd" "$OUT/vars.fd"
 
+ROOT_IMG=""
+if [ "$USE_ROOT" = 1 ]; then
+    ROOT_STAGE="$OUT/root"
+    if [ -n "$ROOT_DIR_OPT" ]; then
+        [ -d "$ROOT_DIR_OPT" ] || { echo "xnu-boot: --root-dir $ROOT_DIR_OPT is not a directory" >&2; exit 2; }
+        ROOT_STAGE="$ROOT_DIR_OPT"
+    else
+        mkdir -p \
+            "$ROOT_STAGE/dev" \
+            "$ROOT_STAGE/sbin" \
+            "$ROOT_STAGE/bin" \
+            "$ROOT_STAGE/usr/lib/system" \
+            "$ROOT_STAGE/usr/bin" \
+            "$ROOT_STAGE/usr/sbin" \
+            "$ROOT_STAGE/private/etc" \
+            "$ROOT_STAGE/private/var/run" \
+            "$ROOT_STAGE/private/tmp" \
+            "$ROOT_STAGE/System/Library/Frameworks" \
+            "$ROOT_STAGE/Library"
+        chmod 1777 "$ROOT_STAGE/private/tmp"
+        ln -s private/etc "$ROOT_STAGE/etc"
+        ln -s private/var "$ROOT_STAGE/var"
+        ln -s private/tmp "$ROOT_STAGE/tmp"
+        SYSROOT="$BUILD_DIR/sysroot"
+        for rel in sbin/launchd bin/sh usr/lib/dyld usr/lib/libSystem.B.dylib usr/lib/libSystem.dylib; do
+            if [ -e "$SYSROOT/$rel" ] || [ -L "$SYSROOT/$rel" ]; then
+                cp -RP "$SYSROOT/$rel" "$ROOT_STAGE/$rel"
+            fi
+        done
+        if [ -d "$SYSROOT/usr/lib/system" ]; then
+            for dylib in "$SYSROOT/usr/lib/system"/*.dylib; do
+                [ -e "$dylib" ] || [ -L "$dylib" ] || continue
+                cp -RP "$dylib" "$ROOT_STAGE/usr/lib/system/"
+            done
+        fi
+    fi
+    ROOT_IMG="$OUT/root.img"
+    python3 "$ROOT/tools/image/hfs.py" build -o "$ROOT_IMG" --root "$ROOT_STAGE"
+    python3 "$ROOT/tools/image/hfs.py" verify "$ROOT_IMG"
+fi
+
 echo "xnu-boot: kernel $(shasum -a 256 "$KERNEL" | cut -c1-16) $(ls -l "$KERNEL" | awk '{print $6, $7, $8}')"
-echo "xnu-boot: loader $(shasum -a 256 "$OUT/fat/EFI/BOOT/BOOTX64.EFI" | cut -c1-16), cpu $CPU"
+echo "xnu-boot: loader $(shasum -a 256 "$OUT/fat/EFI/BOOT/BOOTX64.EFI" | cut -c1-16), kext_bundles $kext_count, cpu $CPU"
 
 set -- qemu-system-x86_64 -machine q35 -cpu "$CPU" -m 2048 \
     -display none -monitor none -no-reboot -no-shutdown \
     -drive if=pflash,format=raw,readonly=on,file="$FW/edk2-x86_64-code.fd" \
     -drive if=pflash,format=raw,file="$OUT/vars.fd" \
-    -drive format=raw,file=fat:rw:"$OUT/fat" \
+    -drive format=raw,file=fat:rw:"$OUT/fat"
+if [ -n "$ROOT_IMG" ]; then
+    set -- "$@" -drive format=raw,file="$ROOT_IMG"
+fi
+set -- "$@" \
     -serial file:"$OUT/serial.log" \
     -d int,cpu_reset -D "$OUT/qemu-int.log"
 
@@ -83,9 +152,9 @@ else
     echo "xnu-boot: QEMU ran ${i}s"
 fi
 
-echo "---- serial (filtered, last 30) ----"
-grep -a -E "RAVYNOS|Darwin|panic|Panic|loader:|handoff|kernel:|Exception|RIP|seed" \
-    "$OUT/serial.log" 2>/dev/null | tail -30 || true
+echo "---- serial (filtered, last 35) ----"
+grep -a -E "RAVYNOS|Darwin|panic|Panic|loader:|handoff|kernel:|Exception|RIP|seed|ACPI|Kext|kext|PCI|IOPanic|BSD root|root on|mount|hfs|devfs|load_init_program|launchd" \
+    "$OUT/serial.log" 2>/dev/null | tail -35 || true
 echo "---- serial (raw, last 15 lines) ----"
 tail -15 "$OUT/serial.log" 2>/dev/null | LC_ALL=C tr -cd '\11\12\15\40-\176' || true
 echo

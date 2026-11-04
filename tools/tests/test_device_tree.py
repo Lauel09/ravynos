@@ -18,6 +18,9 @@ import unittest
 
 PROP_NAME_LEN = 32
 FSB_FREQUENCY = 100000000
+RANDOM_SEED_LEN = 64
+DEFAULT_RSDP = 0x7FFE1000
+PAGE_SIZE = 0x1000
 
 
 def pad4(n):
@@ -42,10 +45,23 @@ def node(properties, children):
     return out
 
 
-def build_loader_blob():
+def build_loader_blob(seed=None, rsdp=DEFAULT_RSDP, drivers=()):
     """The exact node/property layout of build_device_tree()."""
-    memory_map = node([("name", b"memory-map\0")], [])
-    chosen = node([("name", b"chosen\0")], [memory_map])
+    if seed is None:
+        seed = bytes((i + 1) & 0xFF for i in range(RANDOM_SEED_LEN))
+    mm_props = [("name", b"memory-map\0")]
+    for paddr, length in drivers:
+        mm_props.append(
+            ("Driver-%08X" % paddr, struct.pack("<II", paddr, length))
+        )
+    memory_map = node(mm_props, [])
+    chosen = node(
+        [
+            ("name", b"chosen\0"),
+            ("random-seed", seed),
+        ],
+        [memory_map],
+    )
     platform = node(
         [
             ("name", b"platform\0"),
@@ -54,7 +70,17 @@ def build_loader_blob():
         [],
     )
     efi = node([("name", b"efi\0")], [platform])
-    return node([("name", b"\0")], [chosen, efi])
+    acpi_props = [("name", b"ACPI\0")]
+    if rsdp:
+        acpi_props.append(("RSDP", struct.pack("<Q", rsdp)))
+    acpi = node(acpi_props, [])
+    return node(
+        [
+            ("name", b"\0"),
+            ("compatible", b"ACPI\0"),
+        ],
+        [chosen, efi, acpi],
+    )
 
 
 def parse(blob):
@@ -107,25 +133,50 @@ def parse(blob):
 
 class DeviceTreeTests(unittest.TestCase):
     def test_loader_blob_is_exact_and_round_trips(self):
-        nodes = parse(build_loader_blob())
+        drivers = [(0x015EA000, 0x4000), (0x015EE000, 0x12000)]
+        nodes = parse(build_loader_blob(drivers=drivers))
         self.assertEqual(
             set(nodes),
-            {"/", "/chosen", "/chosen/memory-map", "/efi", "/efi/platform"},
+            {
+                "/",
+                "/chosen",
+                "/chosen/memory-map",
+                "/efi",
+                "/efi/platform",
+                "/ACPI",
+            },
         )
         self.assertEqual(nodes["/"]["name"], b"\0")
+        self.assertEqual(nodes["/"]["compatible"], b"ACPI\0")
         self.assertEqual(nodes["/chosen"]["name"], b"chosen\0")
+        self.assertEqual(len(nodes["/chosen"]["random-seed"]), RANDOM_SEED_LEN)
+        self.assertTrue(any(nodes["/chosen"]["random-seed"]))
         self.assertEqual(nodes["/chosen/memory-map"]["name"], b"memory-map\0")
+        for paddr, length in drivers:
+            self.assertEqual(paddr & (PAGE_SIZE - 1), 0)
+            self.assertEqual(length & (PAGE_SIZE - 1), 0)
+            raw = nodes["/chosen/memory-map"]["Driver-%08X" % paddr]
+            self.assertEqual(struct.unpack("<II", raw), (paddr, length))
         self.assertEqual(nodes["/efi"]["name"], b"efi\0")
         self.assertEqual(nodes["/efi/platform"]["name"], b"platform\0")
         self.assertEqual(
             nodes["/efi/platform"]["FSBFrequency"],
             struct.pack("<Q", FSB_FREQUENCY),
         )
+        self.assertEqual(nodes["/ACPI"]["name"], b"ACPI\0")
+        self.assertEqual(
+            nodes["/ACPI"]["RSDP"],
+            struct.pack("<Q", DEFAULT_RSDP),
+        )
+
+    def test_acpi_without_rsdp_omits_rsdp_property(self):
+        nodes = parse(build_loader_blob(rsdp=0))
+        self.assertEqual(nodes["/ACPI"], {"name": b"ACPI\0"})
 
     def test_node_counts_and_root_name(self):
         blob = build_loader_blob()
-        # root: 1 property (name), 2 children (chosen, efi)
-        self.assertEqual(struct.unpack_from("<II", blob, 0), (1, 2))
+        # root: 2 properties (name, compatible), 3 children (chosen, efi, ACPI)
+        self.assertEqual(struct.unpack_from("<II", blob, 0), (2, 3))
         # The first property's name is "name"; its value is the empty root name.
         self.assertEqual(blob[8:12], b"name")
         self.assertEqual(struct.unpack_from("<I", blob, 40)[0], 1)

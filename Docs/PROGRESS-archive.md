@@ -321,6 +321,24 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 
 ## Changelog
 
+- **2026-11-03 (rev 39) — Gate D6 PASSED: built XNU boots via `BOOTX64.EFI` and prints `Darwin Kernel Version 19.6.0` on serial.**
+  Populating a 64-byte nonzero `/chosen/random-seed` in `tools/bootloader/uefi_stub.c`
+  (`fill_random_seed()`, CPUID-checked `RDRAND` with SplitMix64-mixed `RDTSC`
+  fallback for `-cpu Penryn`, commit `ba3dc57c1`, covered by
+  `tools/tests/test_device_tree.py`) cleared the `prng_random.c:65` early panic
+  (previously misread as post-fault DT wiping because `PE_get_random_seed()`
+  intentionally scrubs `/chosen/random-seed` to zero in place at
+  `pexpert/gen/pe_gen.c:165`). Under `tools/xnu-boot.sh`, XNU now completes
+  `early_random()`, `Idle_PTs_init()`, `cpu_desc_load()`, `tsc_init()`, and
+  VM/IPC/PMAP bootstrap, printing `Darwin Kernel Version 19.6.0` and reaching
+  `Initializing EFI runtime services` (`osfmk/i386/AT386/model_dep.c:503`).
+  Next fault: `#GP` (`v=0d`, `RIP=0xae557bfa39129d48`, `RSP=0xffffff8000194e40`)
+  when `efi_init()` (`model_dep.c:529-545`) maps raw `EFI_MEMORY_RUNTIME`
+  descriptors (`VirtualStart == 0`) at `0xffffff8000000000`, overwriting
+  `__HIB` and the active boot stack. Superseded from `PROGRESS.md`: the three
+  pre-D6 `PE_get_random_seed`/GS-base probe steps and the oldest `Recent changes`
+  bullet (`44c2437550`, already logged in rev 36 below).
+
 - **2026-11-03 (rev 38) — Phase 1 reaches (and passes) XNU, then the userland link graph.**
   Continued `tools/macbuild.sh --audit --target-arch x86_64` through
   `work/logs/world-{14..17}.log`. Four more failure → fix pairs:
@@ -420,6 +438,45 @@ first real gap Phases 1–2 produce. See `work/README.md`.
   Best hypothesis: the IOKit header staging does not copy the `hidsystem`
   subtree into the SDK. Not fixed here (four-failure limit).
 
+- **2026-11-04 (rev 41) — Portable rootless HFSX `/` mounted, `devfs` mounted, and PID 1 `load_init_program` reached.**
+  Added a portable, rootless Python HFS+/HFSX + MBR `0xAF` (`Apple_HFS`) image
+  writer and structural verifier (`tools/image/hfs.py`, `tools/tests/test_hfs.py`,
+  `95762e5ec`, `91a1cc852`) and wired `tools/xnu-boot.sh` (`ac748b4b8`) to stage
+  `/` (`/dev`, `/sbin`, `/bin`, `/usr/lib`, `/private/*`, symlinks, and any
+  sysroot userland) into `$OUT/root.img` on AHCI port 1. `IOFDiskPartitionScheme`
+  published `"Content" = "Apple_HFS"` on `disk1s1` (`IOStorageFamily/Info.plist:139-140`),
+  `IOFindBSDRoot()` matched `BSD root: disk1s1, major 14, minor 3` without
+  `boot-uuid`, `hfs.kext` mounted `/` (`hfs: mounted ravynOS on device b(14, 3)`),
+  `devfs` mounted `/dev`, and PID 1 (`bsdinit_task`) called
+  `load_init_program("/sbin/launchd")` (`kern_exec.c:5968-5977`), stopping only on
+  `errno 2` (`ENOENT`) pending userland build.
+- **2026-11-04 (rev 40) — Live booter-kext linking, ACPI/PCI/AHCI attach, and `IOFindBSDRoot` reached (25s, 0 panics).**
+  `BOOTX64.EFI` stages 30 `.kext` bundles (`\System\Library\Extensions\*.kext`
+  and `System.kext\PlugIns\*.kext`) as page-aligned `_BooterKextFileInfo`
+  buffers under `/chosen/memory-map` (`Driver-<addr>`), sets root
+  `compatible="ACPI"`, and populates `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID`
+  (`f5ff2c74b`, `d7504302e`). Guarding `OSKext::loadExecutable()`'s
+  `kOSKextManagementEntitlement` check with `current_task() != kernel_task &&`
+  (`OSKext.cpp:5496`) and interface `kmod_info` cleanup (`OSKext.cpp:5792`,
+  `48ca4834c`) allows XNU to link all booter kexts live via `kxld` without
+  `plktool`. QEMU runs 25s with 0 panics through `pthread.kext`,
+  `ACPIPlatformExpert` (`v2 XSDT`), `AppleAPIC`, `q35` PCI (`6 devices`),
+  `RavynAHCIPort` (`pci8086,2922`), and `IOStorageFamily`, waiting in
+  `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for an `Apple_HFS` root volume.
+- **2026-11-04 (rev 39) — Post-D6 bare XNU reaches `StartIOKit` / `IOPanicPlatform`.**
+  Stripping `EFI_MEMORY_RUNTIME` in `boot_args->MemoryMap` and pointing
+  `ba->efiSystemTable` at a zeroed stub (`719fa5b2ba`) cleared the `efi_init()`
+  `VirtualStart == 0` `#GP` and revealed `pmap_lowmem_finalize()` (`pmap.c:1143`)
+  freeing `[eHIB, stext)` (`0x19e000..0x200000`) over `[0x1A0000, 0x1E0000)`.
+  Relocating the 256 KiB boot-data window above `__LINKEDIT` (`0x15aa000`,
+  staged in high `EfiLoaderData`, copied after `ExitBootServices`, included in
+  `ba->ksize`, `52d36895fd`) boots bare XNU with zero CPU faults (2.01s uptime)
+  to `IOPanicPlatform::start` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`).
+- **2026-11-03 (rev 38) — D6 GATE PASSED + Phase 1 `CrashReporterClient` / `libdyld`.**
+  `BOOTX64.EFI` populates a 64-byte nonzero `/chosen/random-seed` (`ba3dc57c1`),
+  booting XNU under QEMU+OVMF (`-cpu Penryn`) to print `Darwin Kernel Version 19.6.0`
+  on serial. On the macOS build side, `CrashReporterClient` linked as static `.a`
+  (`78043ebe03`) and `libdyld.dylib` `-lsystem_malloc` fixed (`76918cbcec`).
 - **2026-11-03 (rev 37) — XNU now executes in 64-bit long mode; first failure
   mapped to the boot random seed.** This tree's `_pstart` is entered from UEFI
   in long mode (`osfmk/x86_64/start.s:149`, `.code64` at `L_pstart_common`),

@@ -5,28 +5,25 @@ Live status only. History: Docs/PROGRESS-archive.md. Keep this file under 600 wo
 Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 
 ## Status
-- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain (LLVM, cctools, xcbuild, iig), XNU + all kexts, `IOKitUser`, `libc++`/`libc++abi`, compiler-rt and objc4. Stop is `Libraries/dyld`: `libdyld.dylib` failure fixed (`76918cbcec`; targeted build succeeds); the next targeted step shows the `dyld` executable failing `ld: library not found for -lc` — not yet confirmed by a full world run.
-- **Boot:** loader reaches XNU in 64-bit long mode (`cc832cf4eb`). Current fault: `v=0e` at `_current_cpu_datap+0x14` (`mov %gs:0,%rax`, CR2 `0xffffdeadbeefee00`, GS poison); panic frame points at `"Expected 64 seed bytes"` (`prng_random.c:65`) — `PE_get_random_seed()` returns 0, so `panic()` faults before printing.
-- **Open defects:** mtools `.img` output is not byte-reproducible (differing bytes are 64-bit stack addresses at the end of the FAT volume — uninitialised memory, upstream); `auto` backend no longer selects mtools. Darwin prelinked kernelcache is skipped (plktool is Linux-only). No real `D1 GATE PASSED` yet.
-- The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`; the remaining fault is the D6 handoff, not firmware.
+- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain (LLVM, cctools, xcbuild, iig), XNU + all kexts, `IOKitUser`, `libc++`/`libc++abi`, compiler-rt and objc4. Stop is `Libraries/dyld`: `libdyld.dylib` fixed (`76918cbcec`); the `dyld` executable fails `ld: library not found for -lc` because `Libraries/Makefile:11` builds `dyld` before `Libsystem` installs `/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`.
+- **Boot (D6 PASSED; `/` mounted via `hfs.kext` + `devfs` + PID 1 `load_init_program` reached):** `BOOTX64.EFI` stages 30 `.kext` bundles (`Driver-<addr>`) + `/ACPI/RSDP` (`f5ff2c74b`, `d7504302e`), `OSKext::loadExecutable()` links them live from `kernel_task` (`48ca4834c`), and `tools/image/hfs.py` + `tools/xnu-boot.sh` (`95762e5ec`, `ac748b4b8`, `91a1cc852`) attach a portable rootless MBR `0xAF` (`Apple_HFS`) HFSX disk (`root.img`) on AHCI port 1. XNU matches `BSD root: disk1s1`, mounts `/` (`hfs: mounted ravynOS on device b(14, 3)`), mounts `devfs` on `/dev`, finishes `bsd_init`, and reaches PID 1 `load_init_program("/sbin/launchd")` (`errno 2` until userland is built).
+- **Open defects:** mtools `.img` output is not byte-reproducible (`auto` backend no longer selects mtools). Darwin prelinked kernelcache is skipped (`plktool` is Linux-only), bypassed cleanly via live `kxld` linking of `BOOTX64.EFI` `Driver-<addr>` kexts.
+- The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. Break at `PE_get_random_seed`/`DTGetProperty` via lldb on the QEMU gdbstub (`-S -s`); read the returned size and property bytes at the actual call.
-2. If the boot window (`0x1A0000-0x1E0000`) is wiped before `early_random()`, move/reserve device tree + `boot_args` above `kaddr+ksize`.
-3. Diagnostics only: point `MSR_IA32_GS_BASE` at a zeroed page before the jump so `panic()` can print; fix the next fault after.
-4. Re-run the full world build; confirm and fix the `dyld` executable `-lc` failure, then the BSD stage.
-5. Chase `Darwin Kernel Version` in the serial log (the D6 gate), then retire the D1 gate claim.
+1. Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`, `/usr/lib/dyld` after `Libsystem`) to resolve the `-lc` cycle, then build `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`).
+2. Stage built userland into `$OUT/root.img` (`tools/xnu-boot.sh` already auto-copies `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib`, and `/usr/lib/system/*.dylib`) and boot ravynOS to a shell in QEMU.
 
 ## Key commands
+- Remote runner: `tools/arena-run.sh <branch> <task> [<task> ...]`
 - Build: `tools/macbuild.sh --audit --target-arch x86_64` — logs `work/logs/world-N.log`
 - Loader: `tools/bootloader/build.sh -q`
-- Local boot: `Docs/DarwinBoot.md` §3 recipe (`mkimage.sh --root … --efi-payload … --format img` + `qemu-system-x86_64 … -serial file:out/local/serial.log`)
+- Local XNU boot: `tools/xnu-boot.sh` (logs `out/arena/boot/serial.log`, `qemu-int.log`)
 - Boot verdict: `tools/bootcheck.sh --uefi` (CI-style), `tools/darwin-gate.sh` (stub/XNU gate)
 - Structural verify: `tools/image/verify.py <iso|img> …`
-- Boot logs: `out/local/serial.log`, `work/logs/world-*.log`
 
 ## Pointers
-- `Docs/DarwinBoot.md` — boot plan; §"D6 handoff status (2026-11-03)" has the fault table and next probes; §3 local boot recipe
+- `Docs/DarwinBoot.md` — boot plan (D1–D6 complete); §"Post-D6 handoff status (2026-11-04)" has the fault table and next fix
 - `Docs/macOS-Host.md` — macOS prerequisites, build loop, failure classes, portability audit (§5)
 - `Docs/BUILDING.md` — entry points (`bmake world`), Homebrew prereqs, target vs host arch
 - `Docs/Pipeline.md` — portable image pipeline: design, commands (§3), reproducibility, CI
@@ -34,8 +31,8 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - `Docs/PROGRESS-archive.md` — full history and changelog (everything removed from this file)
 
 ## Recent changes
+- 2026-11-04: Portable rootless MBR `0xAF` HFSX `root.img` (`tools/image/hfs.py`) mounts `/` (`hfs: mounted ravynOS`) + `devfs` and reaches PID 1 `load_init_program("/sbin/launchd")` (`95762e5ec`, `ac748b4b8`, `91a1cc852`)
+- 2026-11-04: Live `kxld` linking of 30 booter kexts + `ACPIPlatformExpert` + PCI + `RavynAHCIPort` + `IOStorageFamily` -> `IOFindBSDRoot()`, 25s / 0 panics (`f5ff2c74b`, `d7504302e`, `48ca4834c`)
+- 2026-11-04: Bare XNU reaches `StartIOKit()` / `IOPanicPlatform::start` with zero CPU faults after boot-window relocation + EFI runtime strip (`719fa5b2ba`, `52d36895fd`)
+- 2026-11-03: D6 GATE PASSED — XNU prints `Darwin Kernel Version 19.6.0` on serial (`ba3dc57c1`)
 - 2026-11-03: Phase 1 world reaches and passes XNU + userland link graph; libdyld `-lsystem_malloc` fixed (`76918cbcec`)
-- 2026-11-03: XNU executes in 64-bit long mode; fault root-caused to `PE_get_random_seed()` = 0 (`cc832cf4eb`)
-- 2026-11-03: OVMF `#UD 0xB0000` does not reproduce locally; FAT-wrapper sizing + `EFI_LOADED_IMAGE_PROTOCOL` layout fixed (`2ceef99c0e`, `5dce5e36e5`)
-- 2026-11-03: Phase 1 world reaches userland libraries; CrashReporterClient linked as static `.a` (`78043ebe03`)
-- 2026-11-03: Phase 1 world runs past the toolchain (LLVM, cctools, xcbuild, iig) (`44c2437550`)

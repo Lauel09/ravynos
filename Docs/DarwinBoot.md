@@ -1466,46 +1466,140 @@ Cites: `tools/bootloader/uefi_stub.c:1160-1210`;
 `Kernel/xnu/pexpert/i386/pe_init.c:136`.
 Next: D6 — stage the D1 kernel and boot it under OVMF.
 
-## D6 handoff status (2026-11-03)
+### 2026-11-03 — D6 GATE PASSED
+Evidence (verbatim):
+```
+RAVYNOS-KERNEL-LOAD (macho) entry 0x0000000000196000 (8 segments deferred)
+handoff: copying kernel segments
+handoff: kernel segments copied
+Darwin Kernel Version 19.6.0: Tue Nov  3 18:12:09 IST 2026; ariya:xnu/RELEASE_X86_64
+Initializing EFI runtime services
+```
+Did: populated a 64-byte nonzero `/chosen/random-seed` in `build_device_tree()`
+via `fill_random_seed()` (CPUID-checked `RDRAND` with SplitMix64-mixed `RDTSC`
+fallback for `-cpu Penryn`, `ba3dc57c1`) and extended `test_device_tree.py` to
+verify the property. XNU consumed the seed (note: `PE_get_random_seed()` zeroes
+`/chosen/random-seed` in place at `pe_gen.c:165`), booted past `early_random()`,
+`Idle_PTs_init()`, `cpu_desc_load()`, `tsc_init()`, VM/IPC/PMAP bootstrap, and
+printed `Darwin Kernel Version 19.6.0` on serial before faulting in `efi_init()`.
+Cites: `tools/bootloader/uefi_stub.c:1276-1375`;
+`tools/tests/test_device_tree.py:30,72-80,174-205`;
+`Kernel/xnu/osfmk/prng/prng_random.c:56-65`;
+`Kernel/xnu/pexpert/gen/pe_gen.c:141-172`;
+`Kernel/xnu/osfmk/i386/AT386/model_dep.c:503,526-556`.
+Next: post-D6 boot — clear `EFI_MEMORY_RUNTIME` in the `boot_args->MemoryMap`
+copy (`i386_vm_init.c:530` still reserves non-`ConventionalMemory` types) and
+point `ba->efiSystemTable` at a zeroed boot-window stub so `efi_init()` does
+not overwrite `0xffffff8000000000` (`VirtualStart == 0`) over `__HIB`/boot stack.
+
+### 2026-11-04 — Post-D6: bare XNU reaches `StartIOKit` / `IOPanicPlatform`
+Evidence (verbatim):
+```
+panic(cpu 0 caller 0xffffff8000c4ff2d): "Unable to find driver for this platform: \"\".\n"@/Users/ariya/Documents/ravyn-os-test/ravynos/Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995
+0xffffff80596cbbf0 : 0xffffff8000c4ff2d mach_kernel : __ZN15IOPanicPlatform5startEP9IOService + 0x4d
+System uptime in nanoseconds: 2014760000
+loaded kexts:
+(none)
+```
+Did: stripped `EFI_MEMORY_RUNTIME` in the `boot_args->MemoryMap` copy and
+pointed `ba->efiSystemTable` at a zeroed stub (`719fa5b2ba`), which cleared
+`efi_init()` and exposed `pmap_lowmem_finalize()` (`pmap.c:1143`) freeing
+`[eHIB, stext)` (`[0x19e000, 0x200000)`) over `[0x1A0000, 0x1E0000)`. Relocated
+the 256 KiB boot-data window above `__LINKEDIT` (`0x15aa000`, staged in high
+`EfiLoaderData`, copied after `ExitBootServices`, included in `ba->ksize`,
+`52d36895fd`). Bare XNU now boots with zero CPU faults through `machine_init()`,
+Mach scheduler/threads/interrupts, `bsd_early_init()`, and `StartIOKit()` up to
+`IOPanicPlatform::start()`.
+Cites: `tools/bootloader/uefi_stub.c:618-634,1327-1605`;
+`Kernel/xnu/osfmk/i386/AT386/model_dep.c:376-379,529-556`;
+`Kernel/xnu/osfmk/x86_64/pmap.c:1143`;
+`Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995`.
+Next: stage `\System\Library\Extensions\*.kext` (including `System.kext/PlugIns`)
+as `Driver-<addr>` entries in `/chosen/memory-map`, set root `compatible="ACPI"`,
+and populate `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` so `IOACPIFamily`'s
+`ACPIPlatformExpert` attaches.
+
+### 2026-11-04 — Post-D6: live booter-kext linking, ACPI/PCI/AHCI attach, and `IOFindBSDRoot`
+Evidence (verbatim):
+```
+Starting pthread kext.
+[ACPI PE] v2 XSDT 0x7fb7d0e8
+[ PCI configuration end, bridges 1, devices 6 ]
+pci8086,2922[0xffffff805a392520]::getResources()
+IOMediaBSDClient::getWholeMedia: whole media found at depth 2
+```
+Did: staged 30 kext bundles (`\System\Library\Extensions\*.kext` plus
+`System.kext\PlugIns\*.kext`) as page-aligned `_BooterKextFileInfo` buffers in
+`/chosen/memory-map` (`Driver-<addr>`), set root `compatible="ACPI"`, and added
+`/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` (`f5ff2c74b`, `d7504302e`). Guarded
+`OSKext::loadExecutable()`'s `kOSKextManagementEntitlement` check with
+`current_task() != kernel_task &&` (`OSKext.cpp:5496`) and interface `kmod_info`
+cleanup (`OSKext.cpp:5792`, `48ca4834c`). XNU ran 25s with 0 panics, linked all
+booter kexts live via `kxld`, attached `ACPIPlatformExpert`, `AppleAPIC`, `q35`
+PCI, `RavynAHCIPort`, and `IOStorageFamily`, and waited in `IOFindBSDRoot()`
+for an `Apple_HFS` root volume.
+Cites: `tools/bootloader/uefi_stub.c:892-1098,1311-1431`;
+`tools/xnu-boot.sh:47-63`;
+`Kernel/xnu/libkern/c++/OSKext.cpp:1759-1908,5494-5501,5790-5795`;
+`Kernel/xnu/iokit/Kernel/IOUserClient.cpp:1424`;
+`Kernel/xnu/iokit/bsddev/IOKitBSDInit.cpp:581-621`.
+Next: add a portable rootless HFS+ writer (`tools/image/hfs.py`, MBR type
+`0xAF` -> `IOFDiskPartitionScheme` `"Content" = "Apple_HFS"`) and attach it on
+AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and
+reach `load_init_program("/sbin/launchd")`.
+
+### 2026-11-04 — Post-D6: portable HFSX root mounted (`/`), `devfs` mounted, and PID 1 `load_init_program` reached
+Evidence (verbatim):
+```
+BSD root: disk1s1, major 14, minor 3
+hfs: mounted ravynOS on device b(14, 3)
+bsd_init: calling devfs_kernel_mount
+bsd_init: bsd_do_post - doneload_init_program: attempting to load /sbin/launchd
+load_init_program: failed loading /sbin/launchd: errno 2
+```
+Did: added a portable, rootless Python HFS+/HFSX + MBR `0xAF` (`Apple_HFS`)
+writer and structural verifier (`tools/image/hfs.py`, `tools/tests/test_hfs.py`,
+`95762e5ec`, `91a1cc852`) and wired `tools/xnu-boot.sh` (`ac748b4b8`) to stage
+`/` (`/dev`, `/sbin`, `/bin`, `/usr/lib`, `/private/*`, symlinks, and any built
+sysroot userland) into `$OUT/root.img` on AHCI port 1. `IOFDiskPartitionScheme`
+published `"Content" = "Apple_HFS"` on `disk1s1`, `IOFindBSDRoot()` matched it
+without `boot-uuid`, `hfs.kext` mounted `/` (`ravynOS` on `b(14, 3)`), `devfs`
+mounted `/dev`, and PID 1 (`bsdinit_task`) called `load_init_program()`, stopping
+only on `ENOENT` (`errno 2`) for the not-yet-built `/sbin/launchd`.
+Cites: `tools/image/hfs.py:1-1486`; `tools/tests/test_hfs.py:1-182`;
+`tools/xnu-boot.sh:74-125`;
+`Kernel/Extensions/IOStorageFamily/Info.plist:139-140`;
+`Kernel/Extensions/hfs/core/hfs_vfsutils.c:334-465,668-676`;
+`Kernel/xnu/bsd/kern/bsd_init.c:963-1145`;
+`Kernel/xnu/bsd/kern/kern_exec.c:5968-5977`.
+Next: break the `Libraries/dyld` <-> `Libsystem` `-lc` link cycle
+(`Libraries/Makefile:11`, `Libraries/dyld/Makefile:120`), build `Libraries` +
+`BSD` (`/sbin/launchd`, `/bin/sh`), and boot to a shell in QEMU.
+
+## Post-D6 handoff status (2026-11-04)
 
 **Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
-firmware identity map, copies all `LC_SEGMENT_64` payloads after
-`ExitBootServices` (physical = `vmaddr - 0xffffff8000000000`, kslide 0), then
-jumps to the physical `LC_UNIXTHREAD` RIP with `EAX` = physical `boot_args`.
-Observed values for the freshly built kernel: entry `0x196000`, `boot_args`
-`0x1B0000`, device tree `0x1A0000`/`0x194` bytes, `kaddr=0x100000`,
-`ksize=0x14aa000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
+firmware identity map, copies all `LC_SEGMENT_64` payloads plus the staged
+boot-data window after `ExitBootServices` (physical = `vmaddr -
+0xffffff8000000000`, kslide 0), then jumps to the physical `LC_UNIXTHREAD` RIP
+with `EAX` = physical `boot_args`. Observed values: entry `0x196000`,
+boot-data window `0x1c75000..0x1cb5000` (above 30 staged booter kexts),
+`kaddr=0x100000`, `ksize=0x1bb5000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
 
 **Attempts -> first fault.**
 
 | Change | First exception | Where |
 |---|---|---|
-| old 32-bit trampoline | `v=0d` `RIP=0x196039` | `_pstart+0x39`, `CS=0x8` CS32, `CR0=0x10033` (PG off), `EFER=0x800`. Instruction is `mov %ax,%ss` with AX=0 after `lgdt`; legal in long mode, illegal in 32-bit. |
-| stay in 64-bit mode (commit `cc832cf4eb`) | `v=0e` `RIP=0xffffff8000481cc4`, `CR2=0xffffdeadbeefee00` | `_current_cpu_datap+0x14` (`mov %gs:0,%rax`), `CS=0x8` CS64, `CR0=0x80010033`, `CR3=0x100000`, `EFER=0xd00`. GS base is XNU's `EARLY_GSBASE_MAGIC`. |
+| old 32-bit trampoline | `v=0d` `RIP=0x196039` | `_pstart+0x39`, `CS=0x8` CS32, `CR0=0x10033` (PG off), `EFER=0x800`. |
+| stay in 64-bit mode (`cc832cf4eb`) | `v=0e` `RIP=0xffffff8000481cc4`, `CR2=0xffffdeadbeefee00` | `_current_cpu_datap+0x14`; panic frame `"Expected 64 seed bytes from bootloader, but got 0"` (`prng_random.c:65`). |
+| 64-byte `/chosen/random-seed` (`ba3dc57c1`, **D6 PASSED**) | `v=0d` `RIP=0xae557bfa39129d48` | `efi_init()` (`model_dep.c:529-545`) mapped `VirtualStart == 0` over `0xffffff8000000000` (`__HIB`/boot stack). |
+| omit EFI runtime mapping (`719fa5b2ba`) | `v=0e` `RIP=0xffffff8000caf3fe`, `CR2=0xffffff80001b0008` | `pmap_lowmem_finalize()` (`pmap.c:1143`) freed `[eHIB, stext)` (`0x19e000..0x200000`), unmapping `boot_args` at `0x1B0000`. |
+| relocate boot-data window above kernel (`52d36895fd`) | `v=03` (`int3` in `panic`) | Zero CPU faults; 2.01s uptime; `IOPanicPlatform::start`: `"Unable to find driver for this platform: \"\"."` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`). |
+| stage booter kexts + `/ACPI/RSDP` (`f5ff2c74b`, `d7504302e`) | `v=0e` `CR2=0x16` (`kfree` in `OSKext.cpp:5792`) | `OSKext::loadExecutable()` rejected `kernel_task` (`get_bsdtask_info == NULL`) and freed null `kmod_info` on interface kext `com.apple.kpi.bsd`. |
+| allow `kernel_task` kext linking (`48ca4834c`) | **none** (25s run, 0 panics) | Linked all 30 kexts live via `kxld`; attached `ACPIPlatformExpert`, `AppleAPIC`, PCI (`6 devices`), `RavynAHCIPort`, `IOStorageFamily`; waiting in `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for `Apple_HFS`. |
+| attach portable MBR `0xAF` HFSX `root.img` (`95762e5ec`, `ac748b4b8`, `91a1cc852`) | `v=03` (`int3` in `panic` at `kern_exec.c:5977`) | `BSD root: disk1s1`, `hfs: mounted ravynOS on device b(14, 3)`, `devfs_kernel_mount`, `bsd_do_post - done`, `load_init_program: failed loading /sbin/launchd: errno 2` (`ENOENT`). |
 
-**Current fault.** `_current_cpu_datap` was called from `_current_processor`
-(return `0xffffff80004820a9`), which was called from
-`panic_trap_to_debugger` (`0xffffff80002ef0f4`), itself called by `panic`
-(`0xffffff8000cd6ec3`). The panic frame holds `RSI=64`, `RDX=0`, and RDI points
-at `"Expected 64 seed bytes from bootloader, but got 0"` (`prng_random.c:65`),
-so `bootseed_init_bootloader()` is the original failure: `PE_get_random_seed()`
-returned 0. Because GS is still poisoned, `panic()` faults in
-`current_processor()` before it can print, which is why serial shows no panic
-text.
-
-**Not committed.** Supplying `/chosen/random-seed` (64 bytes, RDRAND with a
-TSC fallback) was tested: the loader logs a nonzero seed both when building the
-tree and again after `ExitBootServices`, but the first fault stayed exactly the
-same, and the property is zero when inspected after the fault. That experiment
-was reverted rather than committed.
-
-**Next probes.**
-1. Break at `PE_get_random_seed`/`DTGetProperty` with lldb over the QEMU gdbstub
-   (`-S -s`, hardware breakpoint) and read the returned size and the property
-   bytes at the actual call, before the kernel can zero them.
-2. If the boot window (`0x1A0000-0x1E0000`) is being wiped before
-   `early_random()`, move/reserve device tree + boot_args above
-   `kaddr+ksize` or in a region XNU will not reclaim.
-3. For diagnostics only, point `MSR_IA32_GS_BASE` at a zeroed page before the
-   jump so `panic()` can print; then fix the next boot_args/device-tree fault
-   and only afterwards revisit `cpu_desc_load()` GS setup.
+**Next stage.** Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`,
+static `/usr/lib/dyld` after `Libsystem` installs
+`/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`), complete `Libraries` +
+`BSD` (`/sbin/launchd` + `/bin/sh`) on macOS, and boot ravynOS into userland PID 1.
