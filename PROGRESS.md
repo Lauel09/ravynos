@@ -5,15 +5,14 @@ Live status only. History: Docs/PROGRESS-archive.md. Keep this file under 600 wo
 Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 
 ## Status
-- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain (LLVM, cctools, xcbuild, iig), XNU + all kexts, `IOKitUser`, `libc++`/`libc++abi`, compiler-rt and objc4. Stop is `Libraries/dyld`: `libdyld.dylib` fixed (`76918cbcec`); the `dyld` executable fails `ld: library not found for -lc` because `Libraries/Makefile:11` builds `dyld` before `Libsystem` installs `/usr/local/lib/dyld/{libc,libpthread,libplatform}.a`.
-- **Boot (D6 PASSED; live kext linking + ACPI/PCI/AHCI + `IOFindBSDRoot` reached):** `BOOTX64.EFI` stages 30 `.kext` bundles (`Driver-<addr>`), sets root `compatible="ACPI"` + `/ACPI/RSDP`, and relocates the 256 KiB boot-data window above staged kexts (`f5ff2c74b`, `d7504302e`). With `OSKext::loadExecutable()` allowing `kernel_task` linking (`48ca4834c`), XNU runs 25s in QEMU with 0 panics: links all kexts live via `kxld`, attaches `ACPIPlatformExpert`, `AppleAPIC`, `q35` PCI (`6 devices`), `RavynAHCIPort`, and `IOStorageFamily`, and waits in `IOFindBSDRoot()` for an `Apple_HFS` root volume.
+- **Build (macOS host):** `tools/macbuild.sh --audit --target-arch x86_64` builds the full toolchain, XNU + kexts, IOKitUser, libc++/compiler-rt, objc4, `libdyld.dylib`, and all Libsystem local objects. Next gate: the Libsystem SUBDIR recursion only entered `copyfile` (19 other members never ran) so `libSystem.B.dylib` links fail `library not found for -llaunch` — diagnose in `Libraries/Libsystem` with `VERBOSE=YES`, then `bmake BSD` for `/sbin/launchd` (`Docs/DarwinBoot.md` 2026-11-05 entry).
+- **Boot (D6 PASSED; HFS root mounted):** `BOOTX64.EFI` stages 30 `.kext` bundles (`Driver-<addr>`), sets root `compatible="ACPI"` + `/ACPI/RSDP`. XNU runs 0-panic through live `kxld` linking of all kexts, `ACPIPlatformExpert`, PCI (`6 devices`), `RavynAHCIPort`, `IOStorageFamily`. `tools/image/hfs.py` writes the MBR `0xAF` root image; `xnu-boot.sh` attaches it and `hfs.kext` mounts `/` (`hfs: mounted ravynOS on device b(14, 3)`), reaching `load_init_program("/sbin/launchd")` — which now panics `errno 2` because userland is not staged yet.
 - **Open defects:** mtools `.img` output is not byte-reproducible (`auto` backend no longer selects mtools). Darwin prelinked kernelcache is skipped (`plktool` is Linux-only), bypassed cleanly via live `kxld` linking of `BOOTX64.EFI` `Driver-<addr>` kexts.
 - The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. Add a portable rootless HFS+/HFSX image writer (`tools/image/hfs.py`, MBR type `0xAF` -> `IOFDiskPartitionScheme` `"Content" = "Apple_HFS"`) and attach `$OUT/root.img` on AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and reach `load_init_program("/sbin/launchd")`.
-2. Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`, `/usr/lib/dyld` after `Libsystem`) to resolve the `-lc` cycle, then build `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`).
-3. Stage built userland into `$OUT/root.img` and boot ravynOS to an interactive shell in QEMU.
+1. Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`, `/usr/lib/dyld` after `Libsystem`) to resolve the `-lc` cycle, then build `Libraries` + `BSD` (`/sbin/launchd` + `/bin/sh`). *(In progress: `.elif` parse fixes for libFreeBSD/bzip2/dyld makefiles; `bmake Libraries` running.)*
+2. Stage built userland into `$OUT/root.img` and boot ravynOS to an interactive shell in QEMU.
 
 ## Key commands
 - Remote runner: `tools/arena-run.sh <branch> <task> [<task> ...]`
@@ -32,6 +31,8 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - `Docs/PROGRESS-archive.md` — full history and changelog (everything removed from this file)
 
 ## Recent changes
+- 2026-11-05: dyld split landed; libSystem bootstrap fixed (PATH quoting, `.elif` parse, CLT TBD seeding, config/recursion/dylib ordering) (`c1f73a0133`, `b946210d8d`, `d0ab37b85d`, `8cdd2abafa`, `4a7828d3a0`)
+- 2026-11-05: Apple_HFS root mounted (`hfs: mounted ravynOS on device b(14, 3)`), `load_init_program("/sbin/launchd")` reached (`hfs.py`, `xnu-boot.sh`)
 - 2026-11-04: Live `kxld` linking of 30 booter kexts + `ACPIPlatformExpert` + PCI + `RavynAHCIPort` + `IOStorageFamily` -> `IOFindBSDRoot()`, 25s / 0 panics (`f5ff2c74b`, `d7504302e`, `48ca4834c`)
 - 2026-11-04: Bare XNU reaches `StartIOKit()` / `IOPanicPlatform::start` with zero CPU faults after boot-window relocation + EFI runtime strip (`719fa5b2ba`, `52d36895fd`)
 - 2026-11-03: D6 GATE PASSED — XNU prints `Darwin Kernel Version 19.6.0` on serial (`ba3dc57c1`)

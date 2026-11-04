@@ -1576,4 +1576,67 @@ writer (`tools/image/hfs.py`, MBR partition type `0xAF` so
 `IOStorageFamily/Info.plist:139-140`, matching `IOFindBSDRoot()` without
 `boot-uuid`) and attach it on AHCI in `tools/xnu-boot.sh` so `hfs.kext` mounts
 `/` (`hfs_vfsops.c:550-635`) and XNU reaches `load_init_program("/sbin/launchd")`
-(`kern_exec.c:5380-5445`).
+(`kern_exec.c:5380-5445`). — **Done; see 2026-11-04 Apple_HFS root entry below.**
+
+### 2026-11-05 — Libraries: dyld split landed; libSystem bootstrap fixed (4 runs)
+Goal: `bmake Libraries` after the Apple_HFS mount (`load_init_program` errno 2),
+per the "Next stage" plan. The uncommitted dyld split was verified by dry-run
+and committed (`8cdd2abafa`).
+* `c1f73a0133` — `.else if` → `.elif` (bmake rejects it) in libFreeBSD, bzip2,
+  dyld/dyld makefiles: first parse of this path reached them.
+* `b946210d8d` — quote `PATH=${TOOLS}:${PATH}` recipes; this Mac's PATH contains
+  "VMware Fusion.app", so sh word-split the assignment and the first Libsystem
+  run died with `sh: line 1: Fusion.app/Contents/Public:...: No such file or
+  directory` in the `linker_arguments.sh` rule (Libraries-Libsystem/Makefile:57).
+* `d0ab37b85d` — (a) seed the CLT TBD stubs for the 8 libs the Libsystem
+  REQUIREDLIBS scan demands pre-build (copyfile, removefile, system_asl,
+  system_darwin, system_info, system_m, system_notify, system_trace — SDK
+  usr/lib/system went 14→22 files); (b) interpose recursion-before-scan deps.
+* `4a7828d3a0` — corrected the order: config header needs only the seeded TBDs,
+  the recursion's compiles *inherit* `-include config...` via env CFLAGS, and
+  the dylib link needs the recursion's products; OBJS is undefined at parse
+  time so object→config edges are per-source (dyld/dyld pattern).
+Evidence per run (first error, verbatim):
+```
+run1: sh: line 1: Fusion.app/Contents/Public:...: No such file or directory
+run2: *** missing required libs *** (copyfile, removefile, system_asl, ...)
+run3: fatal error: '.../config.x86_64.normal.h' file not found  (race)
+run4: same race (config dep could not attach: ${OBJS} empty at parse)
+run5: cd: library not found for -llaunch; ld: library not found for -llaunch
+```
+Cites: Libraries/Libsystem/Makefile:52-90; Libraries/Libsystem/requiredlibs;
+Developer/ravynOS.sdk/Makefile:14-25; BSD/share/mk/bsd.subdir.mk:196-201;
+Libraries/dyld/dyld/makefile:113-125; build-Libraries-{1..5}.log.
+Next: run 5 (build-Libraries-5.log, 2026-11-05): all Libsystem objects
+compiled; the recursion ran but the SDK holds only libcopyfile.dylib as a
+real product, so the final libSystem.B.dylib link fails `ld: library not
+found for -llaunch`. Open: why the SUBDIR recursion banners only show
+`===> Libraries/Libsystem/copyfile (all)` — the other 19 SUBDIR members
+never entered their `all` despite the merit-merged all_subdir_ deps
+(build-Libraries-5.log:79666+, banner grep returns exactly one). Probe
+next session: `bmake -C Libraries/Libsystem -DX all` with VERBOSE=YES and
+watch for `removing makefile ... does not set SUBDIR`-style behavior or a
+missing makefile (liblaunch, libsystem_m, libmacho, libsystem_dnssd,
+corecrypto have no in-subdir dylib rule?). Then `bmake BSD` for
+`/sbin/launchd` + `/bin/sh`, stage into root.img.
+
+### 2026-11-04 — Apple_HFS root image mounted; XNU reaches `load_init_program`
+Evidence (verbatim, `out/arena/boot/serial.log`):
+```
+BSD root: disk1s1, major 14, minor 3
+bsd_init: vfs_mountroot
+hfs: mounted ravynOS on device b(14, 3)
+bsd_init: bsd_do_post - doneload_init_program: attempting to load /sbin/launchd
+load_init_program: failed loading /sbin/launchd: errno 2
+panic(cpu 0 caller 0xffffff8000a5846f): "Process 1 exec of /sbin/launchd failed, errno 2"@…/Kernel/xnu/bsd/kern/kern_exec.c:5977
+```
+Did: `tools/image/hfs.py` writes the rootless MBR `0xAF` image (user-run
+2026-11-04 21:52); `xnu-boot.sh` stages `root.img` on AHCI. `IOFindBSDRoot()`
+matched `IOMedia`/`"Apple_HFS"`, mounted `/` via `hfs.kext`, and executed
+`bsd_init` post-processing up to `load_init_program`. The panic is the *next*
+milestone's trigger, not a handoff defect: `/sbin/launchd` does not exist on
+the image yet.
+Cites: `tools/image/hfs.py:105,701-730,1012`; `tools/xnu-boot.sh:116-118`;
+`Kernel/xnu/bsd/kern/kern_exec.c:5977`.
+Next: build `Libraries` (dyld/Libsystem loop) + `BSD` userland, stage
+`/sbin/launchd` + `/bin/sh` into `root.img`, boot to `load_init_program`.
