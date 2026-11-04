@@ -1519,6 +1519,35 @@ as `Driver-<addr>` entries in `/chosen/memory-map`, set root `compatible="ACPI"`
 and populate `/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` so `IOACPIFamily`'s
 `ACPIPlatformExpert` attaches.
 
+### 2026-11-04 — Post-D6: live booter-kext linking, ACPI/PCI/AHCI attach, and `IOFindBSDRoot`
+Evidence (verbatim):
+```
+Starting pthread kext.
+[ACPI PE] v2 XSDT 0x7fb7d0e8
+[ PCI configuration end, bridges 1, devices 6 ]
+pci8086,2922[0xffffff805a392520]::getResources()
+IOMediaBSDClient::getWholeMedia: whole media found at depth 2
+```
+Did: staged 30 kext bundles (`\System\Library\Extensions\*.kext` plus
+`System.kext\PlugIns\*.kext`) as page-aligned `_BooterKextFileInfo` buffers in
+`/chosen/memory-map` (`Driver-<addr>`), set root `compatible="ACPI"`, and added
+`/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` (`f5ff2c74b`, `d7504302e`). Guarded
+`OSKext::loadExecutable()`'s `kOSKextManagementEntitlement` check with
+`current_task() != kernel_task &&` (`OSKext.cpp:5496`) and interface `kmod_info`
+cleanup (`OSKext.cpp:5792`, `48ca4834c`). XNU ran 25s with 0 panics, linked all
+booter kexts live via `kxld`, attached `ACPIPlatformExpert`, `AppleAPIC`, `q35`
+PCI, `RavynAHCIPort`, and `IOStorageFamily`, and waited in `IOFindBSDRoot()`
+for an `Apple_HFS` root volume.
+Cites: `tools/bootloader/uefi_stub.c:892-1098,1311-1431`;
+`tools/xnu-boot.sh:47-63`;
+`Kernel/xnu/libkern/c++/OSKext.cpp:1759-1908,5494-5501,5790-5795`;
+`Kernel/xnu/iokit/Kernel/IOUserClient.cpp:1424`;
+`Kernel/xnu/iokit/bsddev/IOKitBSDInit.cpp:581-621`.
+Next: add a portable rootless HFS+ writer (`tools/image/hfs.py`, MBR type
+`0xAF` -> `IOFDiskPartitionScheme` `"Content" = "Apple_HFS"`) and attach it on
+AHCI in `tools/xnu-boot.sh` so `IOFindBSDRoot()` + `hfs.kext` mount `/` and
+reach `load_init_program("/sbin/launchd")`.
+
 ## Post-D6 handoff status (2026-11-04)
 
 **Entry contract now.** `xnu_handoff.S` keeps UEFI 64-bit long mode and the
@@ -1526,9 +1555,8 @@ firmware identity map, copies all `LC_SEGMENT_64` payloads plus the staged
 boot-data window after `ExitBootServices` (physical = `vmaddr -
 0xffffff8000000000`, kslide 0), then jumps to the physical `LC_UNIXTHREAD` RIP
 with `EAX` = physical `boot_args`. Observed values: entry `0x196000`,
-boot-data window `0x15aa000..0x15ea000` (`DT` `+0x0`, `boot_args` `+0x10000`,
-EFI stub `+0x11000`, `MemoryMap` `+0x12000`), `kaddr=0x100000`,
-`ksize=0x14ea000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
+boot-data window `0x1c75000..0x1cb5000` (above 30 staged booter kexts),
+`kaddr=0x100000`, `ksize=0x1bb5000`, command line `-v debug=0x8 serial=3 keepsyms=1`.
 
 **Attempts -> first fault.**
 
@@ -1539,11 +1567,13 @@ EFI stub `+0x11000`, `MemoryMap` `+0x12000`), `kaddr=0x100000`,
 | 64-byte `/chosen/random-seed` (`ba3dc57c1`, **D6 PASSED**) | `v=0d` `RIP=0xae557bfa39129d48` | `efi_init()` (`model_dep.c:529-545`) mapped `VirtualStart == 0` over `0xffffff8000000000` (`__HIB`/boot stack). |
 | omit EFI runtime mapping (`719fa5b2ba`) | `v=0e` `RIP=0xffffff8000caf3fe`, `CR2=0xffffff80001b0008` | `pmap_lowmem_finalize()` (`pmap.c:1143`) freed `[eHIB, stext)` (`0x19e000..0x200000`), unmapping `boot_args` at `0x1B0000`. |
 | relocate boot-data window above kernel (`52d36895fd`) | `v=03` (`int3` in `panic`) | Zero CPU faults; 2.01s uptime; `IOPanicPlatform::start`: `"Unable to find driver for this platform: \"\"."` (`IOPlatformExpert.cpp:1995`, `loaded kexts: (none)`). |
+| stage booter kexts + `/ACPI/RSDP` (`f5ff2c74b`, `d7504302e`) | `v=0e` `CR2=0x16` (`kfree` in `OSKext.cpp:5792`) | `OSKext::loadExecutable()` rejected `kernel_task` (`get_bsdtask_info == NULL`) and freed null `kmod_info` on interface kext `com.apple.kpi.bsd`. |
+| allow `kernel_task` kext linking (`48ca4834c`) | **none** (25s run, 0 panics) | Linked all 30 kexts live via `kxld`; attached `ACPIPlatformExpert`, `AppleAPIC`, PCI (`6 devices`), `RavynAHCIPort`, `IOStorageFamily`; waiting in `IOFindBSDRoot()` (`IOKitBSDInit.cpp:581-621`) for `Apple_HFS`. |
 
-**Next stage (agreed Option 1).** Stage `\System\Library\Extensions\*.kext`
-(and `System.kext\PlugIns\*.kext`) in `BOOTX64.EFI` as page-aligned
-`_BooterKextFileInfo` buffers (`OSKext.cpp:1759-1908`) referenced by
-`Driver-<addr>` properties under `/chosen/memory-map`
-(`libsa/bootstrap.cpp:575-710`), set root `compatible = "ACPI"`
-(`IODeviceTreeSupport.cpp:193-197`, `IOACPIFamily/Info.plist:31-36`), and add
-`/ACPI/RSDP` from `EFI_ACPI_20_TABLE_GUID` (`ACPIPlatformExpert.cpp:227-269`).
+**Next stage (agreed Option 1).** Build a portable, rootless HFS+/HFSX image
+writer (`tools/image/hfs.py`, MBR partition type `0xAF` so
+`IOFDiskPartitionScheme` publishes `"Content" = "Apple_HFS"` at
+`IOStorageFamily/Info.plist:139-140`, matching `IOFindBSDRoot()` without
+`boot-uuid`) and attach it on AHCI in `tools/xnu-boot.sh` so `hfs.kext` mounts
+`/` (`hfs_vfsops.c:550-635`) and XNU reaches `load_init_program("/sbin/launchd")`
+(`kern_exec.c:5380-5445`).
