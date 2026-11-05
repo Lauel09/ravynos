@@ -1,5 +1,11 @@
 # Raven's Guide to the Source Galaxy
 
+> **Note (2026-11-05): partially stale.** This guide predates the Darwin
+> restructure and still describes the older FreeBSD/GNUstep layout in places
+> (e.g. "BSD — Planned", "not yet converted to CMake or Darwin"). For the
+> current, authoritative layout see `README.md` → "Repository layout" and
+> `Docs/PROGRESS-archive.md` §1 "Codebase layout".
+
 Don't panic. This document will give you an overview of the important folders and where things are. The organization of the source tree is still evolving, so check back frequently!
 
 

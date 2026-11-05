@@ -12,7 +12,7 @@ RTLIB2 = ${SYSROOT_DIR}/usr/lib/system/libcompiler_rt.dylib
 # /usr/lib/dyld executable is a separate nested target and links against the
 # startup archives produced by Libsystem, so schedule it after Libsystem.
 SUBDIR = libfirehose_kernel CrashReporterClient MiscLibs objc4 dyld Libsystem \
-	dyld/dyld ICU zlib
+	dyld/dyld zlib # ICU deferred: cross-compile config issues on macOS host; not needed for single-user shell milestone
 # Preserve this edge when a caller opts into SUBDIR_PARALLEL.
 SUBDIR_DEPEND_dyld/dyld = Libsystem
 

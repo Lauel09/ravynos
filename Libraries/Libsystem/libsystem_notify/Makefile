@@ -40,8 +40,11 @@ all: ${.OBJDIR}/lib${LIB}.dylib
 notify_ipc.h notify_ipcUser.c notify_ipcServer.c: ${.CURDIR}/notify_ipc.defs
 	${MIG} ${MIG_FLAGS} -novouchers -header notify_ipc.h \
 		${.CURDIR}/notify_ipc.defs
+	@touch notify_ipc.h notify_ipcUser.c notify_ipcServer.c 2>/dev/null || true
 
-lib${LIB}.a: notify_ipcUser.c
+lib${LIB}.a: notify_ipcUser.c notify_ipc.h
+notify_client.o: notify_ipc.h
+libnotify.o: notify_ipc.h
 
 ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 	${CC} -fuse-ld=${LD} -shared -dylib -o ${.TARGET} \

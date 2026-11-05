@@ -146,7 +146,7 @@ LDFLAGS = -Wl,-dylib -fexceptions -Wl,-init,___CFInitialize \
 	-Wl,-sectcreate,__UNICODE,__properties,${.CURDIR}/CFUniCharPropertyDatabase.data \
 	-Wl,-sectcreate,__UNICODE,__data,${.CURDIR}/${unicode_data_file_name} \
 	-Wl,-segprot,__UNICODE,r,r \
-	-lSystem -L${RAVYN_SDKROOT}/usr/lib -licucore -lobjc \
+	-lSystem -L${RAVYN_SDKROOT}/usr/lib -lobjc \
 	${ROOT_BINARY_DIR}${ROOT_SOURCE_DIR}/Libraries/llvm_target/compiler-rt/lib/ravynos/libclang_rt.osx.a
 SUBDIR =
 

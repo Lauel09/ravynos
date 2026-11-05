@@ -1,13 +1,15 @@
 # RavynOS Fork — Roadmap
 
-> **⚠ ACTIVE PLAN (2026-11-02): `Docs/DarwinBoot.md` — goal: XNU prints
-> `Darwin Kernel Version` via our loader. Work only its milestones D1→D6, log
-> there. D4's Mach-O stub and ELF regression gates have passed on the Mac;
-> D1 (build the real XNU kernel) is current. Run `./tools/darwin-gate.sh xnu`
-> for the next D1 verdict. Everything below is background; the OVMF
-> `#UD 0xB0000` "blocker" does not reproduce locally and is deprioritised.**
+> **⚠ ACTIVE PLAN (2026-11-05): `Docs/DarwinBoot.md` — the D1→D6 chain is
+> complete: XNU prints `Darwin Kernel Version` and mounts `/` via `hfs.kext`
+> (`load_init_program("/sbin/launchd")` reached, `errno 2`). Current goal: the
+> Apple single-user shell — finish `bmake Libraries`, then `bmake BSD`
+> (`/sbin/launchd` + `/bin/sh`), stage userland, boot with `boot-args=-s`.
+> Work only from `Docs/DarwinBoot.md` §"Run-log" and §"Boot-spirit policy"; log
+> there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
+> not reproduce locally and is deprioritised.**
 
-**Last updated:** 2026-11-02 (rev 10: D1 incremental SDK header regeneration corrected; profiling-runtime and final-kernel gate verdicts pending)
+**Last updated:** 2026-11-05 (D1–D6 done; XNU boots and mounts `/`; current goal is the single-user shell — see `Docs/DarwinBoot.md` and `PROGRESS.md`)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**
@@ -26,7 +28,7 @@
 1. **Create our fork**
    - `gh repo fork ravynsoft/ravynos --clone=false`, then in `ravynos/`: `git remote add fork <our-fork-url>`.
    - Fetch full history (`git fetch --unshallow origin` — today's clone is depth 1), branch `fork/darwin-dev` off `darwin`, tag the baseline: `git tag baseline-60aa4ff4b`.
-   > ✅ Done 2026-10-30 (see `progress.md` rev 3) — branch/tag exist; only the fork remote awaits `gh auth login`.
+   > ✅ Done 2026-10-30 (see `PROGRESS.md` rev 3) — branch/tag exist; only the fork remote awaits `gh auth login`.
 2. **Install host prerequisites** (Homebrew on macOS, apt/dnf equivalents on Linux) — ✅ done 2026-10-30:
    ```
    brew install bmake cmake ninja make      # build prerequisites ("make" = GNU make as gmake; gmake is NOT a formula name on macOS)
@@ -51,7 +53,9 @@ interrupted LLVM build is resumable, and prints the next actions on failure.
 `tools/macbuild-audit.py` statically finds the host assumptions that break a
 build (non-root chowns, FreeBSD-only tools, GNU-only flags, host-arch leakage)
 before one is attempted, and is clean at `--severity high` over the build
-surface. Remaining: SDK → kernel → userland. Failure→fix table: `PROGRESS.md`
+surface. Kernel + kexts + most userland now build and XNU boots (D6 passed);
+remaining: `Libraries` (Libsystem link) and `BSD` (`/sbin/launchd`,
+`/bin/sh`). Failure→fix table: `Docs/PROGRESS-archive.md`
 §3.2; conventions: `Docs/macOS-Host.md`.
 
 Approach: run the build, fix failures host-by-host, keep every patch guarded so Linux is unaffected. Expected work areas (in likely order):
@@ -62,7 +66,7 @@ Approach: run the build, fix failures host-by-host, keep every patch guarded so 
 4. **Frameworks / Libraries / BSD userland** against `ravynOS.sdk`. If case-insensitive APFS collides with kernel/userland sources, build inside a case-sensitive sparse bundle (`hdiutil create -type SPARSE -fs "Case-sensitive APFS"`).
 5. **Cherry-pick upstream** before starting — after unshallowing, check whether our failures are already fixed upstream.
 
-Conventions: one fix per commit, prefix `macbuild:`, log every failure→fix pair in `progress.md`.
+Conventions: one fix per commit, prefix `macbuild:`, log every failure→fix pair in `PROGRESS.md`.
 
 **Exit criteria:** `bmake world` (or a documented `tools/macbuild.sh` subset) exits 0 on macOS with kernel + SDK + userland artifacts under `../build`; Linux build unaffected.
 
@@ -168,7 +172,7 @@ The loop:
 3. **Analyze with rea** into `work/<topic>/evidence/*.json`; record provenance (source path on this Mac + sha256).
 4. **Conclude** in `work/<topic>/NOTES.md`: question, evidence ids, answer, and the exact fork change it justifies.
 5. **Implement** in `Frameworks/`/`Libraries/`/kernel, commit referencing the note (`re: work/<topic>`).
-6. **Verify** — compiles via Phase 1; behavior re-checked via the probe once Phase 2 boots userspace; outcome logged in `progress.md`.
+6. **Verify** — compiles via Phase 1; behavior re-checked via the probe once Phase 2 boots userspace; outcome logged in `PROGRESS.md`.
 
 Standing rules: only analyze software we own/are entitled to inspect; open-source components get read at source, not decompiled; every investigation closes with a commit or a documented no-change.
 

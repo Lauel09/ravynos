@@ -12,6 +12,11 @@ requires the cross toolchain + SDK from Phase 1 and Apple's i386 boot ABI
 mechanism with a minimal freestanding kernel first, then grow it toward XNU
 compatibility. Same principle as Step B: smallest verifiable thing first.
 
+> **Status (2026-11-05): historical.** This plan's ELF-stub handoff is done and
+> superseded by the Mach-O XNU handoff — see `Docs/DarwinBoot.md` (D4–D6 passed;
+> XNU boots and mounts `/`). The design decisions below document the stub path;
+> the real kernel is handed `boot_args` + Mach-O, not `bootinfo` + ELF.
+
 ## Design decisions
 
 1. **Payload format: raw ELF64 (x86-64), not Mach-O.**
@@ -74,7 +79,7 @@ compatibility. Same principle as Step B: smallest verifiable thing first.
 | K2 | Loader: minimal ELF64 parser (header, phdrs, PT_LOAD copy, entry extract) in `uefi_stub.c` + `loadkern()` reading `/EFI/KERNEL.ELF` off the ESP via SimpleFileSystem (path reuse from shell chain-load). | Builds BOOTX64.EFI clean; objdump sanity; unit-testable parser fed by fixture bytes. |
 | K3 | Loader: memory-map harvest → bootinfo struct at 0x90000, `ExitBootServices()`, long-mode jump to entry with `rdi=&bootinfo`. Guarded: only taken when K2 succeeded. | Code review vs UEFI spec §7.2/§8.4 ordering rules; serial trace up to handoff. |
 | K4 | `mkimage.sh`: `--kernel` stages the payload as `EFI/KERNEL.ELF` + `BOOT/KERNEL` and inside the El Torito FAT wrap; `--shell` stages `EFI/SHELL.EFI`. `verify.py` parses the kernel inside the finished ISO/ESP and enforces the same ELF rules. | Done: the ISO and IMG both carry a validated kernel, and `verify.py img` prints it. |
-| K5 | Boot verdict: `bootcheck.sh --uefi --expect RAVYNOS-KERNEL-OK`, plus `--send commands.txt` to prove the prompt answers. OVMF is booted from three media (ISO, GPT/ESP, bare FAT) so a firmware failure can be attributed. | **Open**: no OVMF run has yet entered the loader — the boot option BDS starts has no file node. See `PROGRESS.md` rev 17. |
+| K5 | Boot verdict: `bootcheck.sh --uefi --expect RAVYNOS-KERNEL-OK`, plus `--send commands.txt` to prove the prompt answers. OVMF is booted from three media (ISO, GPT/ESP, bare FAT) so a firmware failure can be attributed. | **Done** (superseded by the Mach-O handoff): OVMF boots the ISO, GPT/ESP and bare FAT media to `RAVYNOS-ENTRY`/`RAVYNOS-LOADER-OK` — see `Docs/DarwinBoot.md` D4/D6. |
 
 ## Risks / mitigations
 

@@ -28,7 +28,7 @@ This fork exists to do three things, in order:
 
 - **Phase 0** — fork/environment bootstrap: complete.
 - **Phase 1** — building on macOS: active. The host toolchain milestone is
-  done; the failure→fix log lives in [`PROGRESS.md`](PROGRESS.md) §3.2 and the
+  done; the failure→fix log lives in [`Docs/PROGRESS-archive.md`](Docs/PROGRESS-archive.md) §3.2 and the
   conventions in [`Docs/macOS-Host.md`](Docs/macOS-Host.md).
   `tools/macbuild.sh` drives the loop (preflight, logging, per-stage resume,
   `--audit`), and `tools/macbuild-audit.py` statically finds the host
@@ -45,9 +45,9 @@ This fork exists to do three things, in order:
   Ubuntu and macOS; [`build.yml`](.github/workflows/build.yml) and
   [`nightly.yml`](.github/workflows/nightly.yml) chain `bmake world` →
   `mkimage` → `bootcheck`.
-- **Phase 4** — reverse-engineering loop: workspace and templates are in
-  [`work/README.md`](work/README.md); no investigation is open until Phase 1/2
-  nominate a real gap.
+- **Phase 4** — reverse-engineering loop: the doctrine is in ROADMAP.md Phase 4;
+  the `work/` workspace (templates, evidence) is created on demand. No
+  investigation is open until Phase 1/2 nominate a real gap.
 - **Phase 5** — parity demos: not started.
 
 Full plan and exit criteria: [`ROADMAP.md`](ROADMAP.md).
@@ -84,7 +84,7 @@ xorriso mtools nasm openssl@3 libxml2 zlib`. See
 | `ISO/` | Legacy FreeBSD-host ISO assembly (superseded by `tools/`) |
 | `tools/` | Portable image pipeline, image writers/verifier, boot smoke tests, macOS build driver |
 | `tools/image/` | Dependency-free ISO 9660/El Torito, FAT16/GPT writers and the structural verifier |
-| `work/` | Reverse-engineering workspace: doctrine, templates, evidence (need-driven) |
+| `work/` | Reverse-engineering workspace (created on demand): doctrine, templates, evidence |
 | `Docs/` | Build, pipeline, bootloader and macOS-host documentation |
 
 ## Conventions

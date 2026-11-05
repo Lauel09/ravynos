@@ -29,6 +29,8 @@
 #ifndef _OS__OSBYTEORDER_H
 #define _OS__OSBYTEORDER_H
 
+#include <stdint.h>
+
 /*
  * This header is normally included from <libkern/OSByteOrder.h>.  However,
  * <sys/_endian.h> also includes this in the case of little-endian

@@ -165,7 +165,7 @@ SYSROOT_DIR = ${ROOT_BINARY_DIR}/sysroot
 
 TARGET_TRIPLE = ${CpuArch}-apple-darwin${DARWIN_MAJOR}
 
-SUBDIR ?= Developer .WAIT Kernel Libraries Frameworks BSD
+SUBDIR ?= Developer .WAIT Kernel Libraries BSD  # Frameworks deferred (needs ICU, deferred in Libraries)
 
 .export ROOT_SOURCE_DIR ROOT_BINARY_DIR TARGET_ARCH ARCH_CONFIGS KERNEL_CONFIGS \
 	PROD_VERSION PROD_FAMILY CFLAGS DEVEL DARWIN_VERSION \

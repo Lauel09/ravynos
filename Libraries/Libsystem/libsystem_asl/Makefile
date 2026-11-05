@@ -21,7 +21,7 @@ SLF = /System/Library/Frameworks
 CFLAGS = -DXPC_DEBUG -DMACH -D__APPLE__ -D__DARWIN_C_LEVEL=__DARWIN_C_FULL \
 	-D_DARWIN_C_SOURCE -D_POSIX_C_SOURCE=200809L -fblocks \
 	--sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
-	-Wno-implicit-function-declaration \
+	-Wno-implicit-function-declaration -Wno-error \
 	-isystem${RAVYN_SDKROOT}/usr/include/c++/v1 -I${.CURDIR} \
 	-I${.CURDIR:H}/liblaunch -I${.CURDIR}/../../MiscLibs \
 	-I${.CURDIR}/../../openbsm \

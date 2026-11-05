@@ -4,10 +4,11 @@
 Step B (UEFI application) builds with clang+lld-link *or* zig and has a CI job
 that boots it under OVMF from the ISO, the GPT/ESP image and a bare FAT volume
 — see §3. Step C (read a payload off the volume) and Step D (ELF load +
-handoff) are implemented and packaged, but no OVMF run has yet observed the
-loader *running*: the boot option BDS starts has no file node, i.e. firmware
-never mounted the volume. That is the open defect; `PROGRESS.md` rev 17 records
-what was ruled out and how each boot is now diagnosed. Everything below is constrained by two facts
+handoff) are implemented and packaged. **Note (2026-11-05): the Mach-O XNU
+handoff described as "future work" below is now done — `Docs/DarwinBoot.md`
+D4–D6 passed; XNU boots and mounts `/`.** The ELF-stub path in this document
+remains the reference for the `tools/shell` console and the bootcheck milestone
+contract. Everything below is constrained by two facts
 that can be checked in this repository:
 
 1. The kernel build produces a **Mach-O** executable (`Kernel/xnu` links with
@@ -160,8 +161,9 @@ at `0x90000` (conventional-memory list, harvested from the last `GetMemoryMap`
 before `ExitBootServices`), then `ExitBootServices` is attempted with the key
 from that same call and the CPU jumps to `e_entry` with `rdi = &bootinfo`.
 
-Mach-O and Apple's `boot_args` remain future work: the stub kernel is ELF, and
-loading a Mach-O XNU is a separate loader beside this one. The
+Mach-O and Apple's `boot_args` are now implemented (see `Docs/DarwinBoot.md`
+D4/D6): the stub kernel here is ELF, and loading a Mach-O XNU is a separate
+loader beside this one. The
 `ExitBootServices`/memory-map/boot-stack code is reusable unchanged.
 
 **Exit:** `RAVYNOS-KERNEL-OK` and `RAVYNOS-KSHELL-OK` on the serial console,

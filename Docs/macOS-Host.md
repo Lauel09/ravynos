@@ -79,7 +79,7 @@ survivable.
    scripts. Never assume a fix is universal because it is right on a Mac.
 3. **One fix per commit**, prefixed `macbuild:`, with the failure text quoted
    in the message — the log line is the useful part six months later.
-4. **Record it** in `PROGRESS.md` §3.2 as a failure → fix row, with the commit
+4. **Record it** in `Docs/PROGRESS-archive.md` §3.2 as a failure → fix row, with the commit
    hash.
 5. **Prefer not patching vendored code.** LLVM, cctools and xcbuild are third
    party; a change there is a future rebase conflict. Exhaust local options
@@ -105,7 +105,7 @@ individual fix.
 | **CMake flag splitting** | `-fno-common` rejected as a malformed argument | quote whole flag strings in `-DCMAKE_*_FLAGS` |
 | **Host/target arch mismatch** | AArch64 toolchain, `ARCH_CONFIGS=X86_64` | make `TARGET_ARCH` explicit (done) |
 
-`PROGRESS.md` §3.2 keeps the authoritative numbered list with commit hashes;
+`Docs/PROGRESS-archive.md` §3.2 keeps the authoritative numbered list with commit hashes;
 this table is the taxonomy.
 
 ---

@@ -46,7 +46,7 @@ LDFLAGS = --target=${CpuArch}-apple-darwin -Wl,-syslibroot,${RAVYN_SDKROOT} \
 	-Wl,-install_name,/usr/lib/system/libsystem_darwin.dylib \
 	-L${RAVYN_SDKROOT}/usr/lib/system -lsystem_kernel \
 	-L${.OBJDIR}/../../dyld -ldyld -lsystem_malloc -lsystem_platform \
-	-lsystem_pthread -lsystem_c -lunwind -ldyld -lm -ldispatch -lxpc
+	-lsystem_pthread -lsystem_c -lunwind -ldyld -lsystem_m -lsystem_trace -llaunch -ldispatch -lxpc
 
 all: ${.OBJDIR}/lib${LIB}.dylib
 

@@ -1,6 +1,11 @@
 SUBDIR =
 PROG= launchd
 
+# When built standalone (not via top-level bmake), compute SDK path.
+.if !defined(RAVYN_SDKROOT)
+RAVYN_SDKROOT = ${.CURDIR}/../../../Developer/ravynOS.sdk
+.endif
+
 .PATH: .
 .PATH: ${.CURDIR}
 .PATH: ${.CURDIR}/support
@@ -9,12 +14,12 @@ PROG= launchd
 
 MK_PIE= no
 BASE_INCLUDE=  -I. -I${.CURDIR} -I${.CURDIR}/init -I${.CURDIR}/../../include/apple
-BASE_INCLUDE+= -I${.CURDIR}/../../include -I${.CURDIR}/../../sys -I${MACHINE_INCLUDES}
+BASE_INCLUDE+= -I${.CURDIR}/../../sys -I${MACHINE_INCLUDES}
 DEFINES= -D__APPLE__ -fblocks -DLIBC_NO_LIBCRASHREPORTERCLIENT -DPRIVATE
 MIG_FLAGS= ${BASE_INCLUDE} 	${DEFINES}
 #override default CFLAGS
-CFLAGS= ${MIG_FLAGS}  -D__MigTypeCheck
-CFLAGS+= -I${.CURDIR}/../../contrib/openbsm -I${.CURDIR}/../../lib/liblaunch
+CFLAGS= ${MIG_FLAGS}  -D__MigTypeCheck -nostdinc -isystem ${RAVYN_SDKROOT}/usr/include -include ${.CURDIR}/../../include/sys/mach/availability_stub.h
+CFLAGS+= -I${.CURDIR}/../../contrib/openbsm -I${.CURDIR}/../../lib/liblaunch -I${.CURDIR}/../../../BSD/old-launchd/liblaunch
 CFLAGS+= -fPIC -DHAVE_INTTYPES_H
 
 DEBUG_FLAGS+= -g -O0

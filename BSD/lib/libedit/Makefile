@@ -43,7 +43,7 @@ SRCS =  chared.c \
         help.h
 
 CFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
-	-I${.CURDIR}/src -I${.CURDIR} -I${.OBJDIR}
+	-I${.CURDIR}/src -I${.CURDIR} -I${.OBJDIR} -I${.CURDIR}/../../include
 LDFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
         -fuse-ld=${LD}
 
@@ -70,7 +70,7 @@ lib${LIB}.dylib: lib${LIB}.a
 	${CC} ${LDFLAGS} -shared -o ${.TARGET} \
 	  -Wl,-install_name,/usr/lib/libedit.dylib \
 	  -Wl,-current_version,3.1 -Wl,-compatibility_version,1.0 \
-	  -Wl,-force_load,${.OBJDIR}/lib${LIB}.a -lncurses
+	  -Wl,-force_load,${.OBJDIR}/lib${LIB}.a 
 	cp -f ${.OBJDIR}/lib${LIB}.dylib ${RAVYN_SDKROOT}/usr/lib/
 	cp -f ${.OBJDIR}/lib${LIB}.dylib ${SYSROOT_DIR}/usr/lib/
 

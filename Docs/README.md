@@ -1,7 +1,7 @@
 # What is ravynOS? [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.1-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
-__Don't speak English? Read this in: [Italiano](README.IT.md), [Türkçe](README.TR.md), [Deutsch](README.DE.md), [Indonesia](README.ID.md), [简体中文](README.zh_CN.md), [繁體中文](README.zh_TW.md), [Português do Brasil](README.pt_BR.md), [한국어](README.KR.md), [فارسی](README.FA.md),
-[Magyar](README.HU.md)__
+__Don't speak English? Read this in: [Italiano](__OLD__/README.IT.md), [Türkçe](__OLD__/README.TR.md), [Deutsch](__OLD__/README.DE.md), [Indonesia](__OLD__/README.ID.md), [简体中文](__OLD__/README.zh_CN.md), [繁體中文](__OLD__/README.zh_TW.md), [Português do Brasil](__OLD__/README.pt_BR.md), [한국어](__OLD__/README.KR.md), [فارسی](__OLD__/README.FA.md),
+[Magyar](__OLD__/README.HU.md)__
 Note: where different, the English version is authoritative. Translations are done by volunteers and not always up to
 date.
 

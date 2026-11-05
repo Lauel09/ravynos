@@ -16,6 +16,10 @@ CFG_GUESS != sh ${.CURDIR}/source/config.guess
 EXTRA_FLAGS += --with-cross-build=${.OBJDIR}/native \
 	--host=${CpuArch}-apple-darwin --build=${CFG_GUESS} \
 	--disable-samples --disable-tests --disable-extras
+.elif "${CpuArch}" != "arm64"
+CFG_GUESS != sh ${.CURDIR}/source/config.guess
+EXTRA_FLAGS += --host=${CpuArch}-apple-darwin --build=${CFG_GUESS} \
+	--disable-samples --disable-tests --disable-extras
 .endif
 
 all: libicucore.A.dylib

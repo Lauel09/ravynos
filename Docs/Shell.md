@@ -149,6 +149,7 @@ pass.
 * The boot shell stays useful after the kernel works: it is the fallback when
   the kernel refuses the handoff, and the place to inspect an image whose
   kernel does not start.
-* Neither program is the "Darwin shell": a real `sh` in userland needs the
-  kernel to load a Mach-O binary, which is the next milestone (see
-  `Docs/KernelHandoff.md` §Design decisions, item 1).
+* Neither program is the "Darwin shell": a real `sh` in userland needs
+  `/usr/lib/dyld` + `libSystem` to load a Mach-O binary. The Mach-O loader is
+  done (`Docs/DarwinBoot.md` D4/D6); the remaining piece is userland
+  (`/sbin/launchd`, `/bin/sh`) — see `PROGRESS.md`.

@@ -1,9 +1,8 @@
 # RavynOS Fork — Progress Log
 
-> **⚠ ACTIVE PLAN (2026-10-31): `Docs/DarwinBoot.md` — goal: XNU prints
-> `Darwin Kernel Version` via our loader. Work only its milestones D1→D6, log
-> there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
-> not reproduce locally and is deprioritised.**
+> **Archive notice:** this file is the historical log. Live status is in
+> `PROGRESS.md`; the active plan is `Docs/DarwinBoot.md`. The "ACTIVE PLAN"
+> banner below (2026-10-31) predates D6 — the D1→D6 chain is now complete.
 
 **Last updated:** 2026-11-03 (rev 36 — the `#UD 0xB0000` blocker does not reproduce locally with current media; two real loader/image defects fixed and boot-verified)
 **Workspace:** `/path/to/test-ravyn-os`
@@ -855,6 +854,6 @@ first real gap Phases 1–2 produce. See `work/README.md`.
 - **2026-10-30 (rev 4) — Phase 1 build loop + Phase 2 stub proven:** ten `bmake world` attempts; fixed non-root chowns, yacc/lex shims, arm64 `TargetConditionals`, xar OpenSSL/libxml2, libctf `qsort_r`, quoted LLVM CMake flags, and shim-header shadowing. Target arch made explicit (`TARGET_ARCH=x86_64` default, arm64 opt-in). Portable pipeline scaffolded and its stub loop self-tested end to end (PASS). `Docs/BUILDING.md` corrected.
 - **2026-10-30 (rev 3) — Phase 0 executed:** all Homebrew prerequisites installed; clone unshallowed to full 745-commit history; `fork/darwin-dev` branch + `baseline-60aa4ff4b` tag created; rea wired to Ghidra 12.1.4; redundant Ghidra zip deleted. `bmake -n version` parses; dry run surfaced first Phase 1 findings.
 - **2026-10-30 (rev 2):** Books RE pilot retired and deleted; RE doctrine rewritten (smallest-subject-first). Portable macOS+Linux image pipeline promoted to primary work item. `work/README.md` added.
-- **2026-10-30 (rev 1):** Initial audit: repo, build system, macOS host, ISO pipeline, RE workspace assessed; first macOS build failure captured; blockers enumerated; `progress.md` and `roadmap.md` created.
+- **2026-10-30 (rev 1):** Initial audit: repo, build system, macOS host, ISO pipeline, RE workspace assessed; first macOS build failure captured; blockers enumerated; `PROGRESS.md` and `ROADMAP.md` created.
 
-*Next actions live in [`roadmap.md`](roadmap.md). Update this file whenever a blocker clears or a new one is found.*
+*Next actions live in [`ROADMAP.md`](../ROADMAP.md). Update this file whenever a blocker clears or a new one is found.*
