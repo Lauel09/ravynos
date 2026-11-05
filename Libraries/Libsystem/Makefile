@@ -51,16 +51,28 @@ LDFLAGS = -mmacos-version-min=${MACOS_VERSION_MIN} \
 
 all: lib${LIB}.dylib
 
-# libSystem bootstrap order (build-Libraries-2..4.log).  (1) Run
-# linker_arguments.sh first -- it only needs the TBD stubs seeded into the
-# SDK, so the config header must NOT depend on the recursion.  The recursion
-# then compiles with this directory's -include config... CFLAGS (its objects
-# inherit ${CFLAGS} through the environment), then libSystem.dylib links the
-# dylibs the recursion installs.  (2)+(3) are sequenced by depending on the
-# all_subdir_${DIRPRFX}${dir} targets bsd.subdir.mk attaches to `all` -- the
-# same node names it uses, so extra deps declared here merge onto them and
-# the order also holds under SUBDIR_PARALLEL.  ${OBJS} is not defined until
-# bsd.lib.mk is included (below), so the object->config edge is per-source.
+SUBDIR = copyfile removefile libdispatch libsystem_blocks libsystem_kernel \
+	libsystem_platform libsystem_malloc libsystem_pthread libsystem_notify \
+	libsystem_info libsystem_c libsystem_asl libsystem_trace \
+	libsystem_dnssd libxpc liblaunch libsystem_m libsystem_darwin \
+	libsystem_coreservices libmacho #CommonCrypto
+
+# libSystem bootstrap order (build-Libraries-2..5.log; 2026-11-05 probe).
+# bmake expands dependency lines at parse time, so this block MUST come
+# after the SUBDIR assignment above: the earlier placement (4a7828d3a0)
+# iterated an empty SUBDIR -- zero ordering edges were registered, `all`
+# reached libSystem.B.dylib via the first member only, the final link
+# failed on -llaunch, and bmake stopped before members 2..20 ever ran.
+# (1) Run linker_arguments.sh first -- it only needs the TBD stubs seeded
+#     into the SDK, so the config header must NOT depend on the recursion.
+#     The recursion then compiles with this directory's -include config...
+#     CFLAGS (its objects inherit ${CFLAGS} through the environment), and
+#     libSystem.dylib links the dylibs the recursion installs.
+# (2)+(3) are sequenced by depending on the all_subdir_${DIRPRFX}${dir}
+#     targets bsd.subdir.mk attaches to `all` -- the same node names, so
+#     extra deps declared here merge onto them and the order also holds
+#     under SUBDIR_PARALLEL.  ${OBJS} is not defined until bsd.lib.mk is
+#     included (below), so the object->config edge is per-source.
 # Everything is make(all)-guarded: install/clean-only runs see no phony
 # all_subdir_* targets.
 .if make(all)
@@ -76,13 +88,6 @@ lib${LIB}.dylib: ${SUBDIR_DEPS}
 .for s in ${SRCS}
 ${.OBJDIR}/${s:R}.o: ${.OBJDIR}/config.${CpuArch}.normal.h
 .endfor
-
-${.OBJDIR}/config.${CpuArch}.normal.h:
-	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
-	RUNTIME_SPEC_PATH=${TOOLCHAIN}/Library/Xcode/Specifications \
-	PATH="${TOOLS}:${PATH}" \
-	${.CURDIR}/xcodescripts/linker_arguments.sh \
-	${CpuArch} normal ${.OBJDIR} ${RAVYN_SDKROOT} ${.CURDIR}
 
 ${.OBJDIR}/config.${CpuArch}.normal.h:
 	DEVELOPER_DIR=${ROOT_BINARY_DIR}/Developer \
@@ -126,12 +131,6 @@ lib${LIB}.a libunwind.dylib copyfile
 	  ${SYSROOT_DIR}/System/Library/Frameworks/System.framework/Versions/B/Resources/
 
 lib${LIB}.dylib: ${.OBJDIR}/lib${LIB}.dylib
-
-SUBDIR = copyfile removefile libdispatch libsystem_blocks libsystem_kernel \
-	libsystem_platform libsystem_malloc libsystem_pthread libsystem_notify \
-	libsystem_info libsystem_c libsystem_asl libsystem_trace \
-	libsystem_dnssd libxpc liblaunch libsystem_m libsystem_darwin \
-	libsystem_coreservices libmacho #CommonCrypto
 
 # Library versions within libsystem were taken from Monterey System.tbd
 # libcache.dylib 83
