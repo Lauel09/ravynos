@@ -29,10 +29,62 @@
 #define _I386_TYPES_H_
 
 /*
- * __darwin_ptrdiff_t is consumed by <sys/_types/_ptrdiff_t.h> (included from
- * <stddef.h>).  x86_64 is LP64: ptrdiff_t is a signed long.
+ * __darwin_* types expected by the <sys/_types/*.h> sub-headers, each of
+ * which includes <machine/types.h> for them.  x86_64 is LP64.
+ * Guarded with #ifndef so this header can be included alongside
+ * <machine/_types.h> (which defines some of the same types) without a
+ * redefinition error.
  */
-typedef long		__darwin_ptrdiff_t;
-typedef unsigned long	__darwin_size_t;
+
+/* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>) */
+#ifndef __darwin_ptrdiff_t
+typedef long            __darwin_ptrdiff_t;
+#endif
+
+/* intptr_t (consumed by sys/_types/_intptr_t.h) */
+#ifndef __darwin_intptr_t
+typedef long            __darwin_intptr_t;
+#endif
+
+/* sizeof() (consumed by sys/_types/_rsize_t.h, _sigaltstack.h, _ucontext.h,
+   _ucontext64.h) */
+#ifndef __darwin_size_t
+typedef unsigned long   __darwin_size_t;
+#endif
+
+/* va_list: __builtin_va_list is a clang builtin even under -nostdinc
+   (consumed by sys/_types/_va_list.h) */
+#ifndef __darwin_va_list
+typedef __builtin_va_list   __darwin_va_list;
+#endif
+
+/* byte count or error (consumed by sys/_types/_ssize_t.h) */
+#ifndef __darwin_ssize_t
+typedef long            __darwin_ssize_t;
+#endif
+
+/* time() (consumed by sys/_types/_time_t.h) */
+#ifndef __darwin_time_t
+typedef long            __darwin_time_t;
+#endif
+
+/* clock() (consumed by sys/_types/_clock_t.h) */
+#ifndef __darwin_clock_t
+typedef unsigned long   __darwin_clock_t;
+#endif
+
+/* socklen_t (duh) (consumed by sys/_types/_socklen_t.h) */
+#ifndef __darwin_socklen_t
+typedef unsigned int    __darwin_socklen_t;
+#endif
+
+/* opaque mbstate conversion state (consumed by sys/_types/_mbstate_t.h) */
+#ifndef __darwin_mbstate_t
+typedef union {
+    char        __mbstate8[128];
+    long long   _mbstateL;                   /* for alignment */
+} __mbstate_t;
+typedef __mbstate_t     __darwin_mbstate_t;
+#endif
 
 #endif /* _I386_TYPES_H_ */
