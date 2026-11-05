@@ -29,12 +29,15 @@
 #define _I386_TYPES_H_
 
 /*
- * __darwin_* types expected by the <sys/_types/*.h> sub-headers, each of
- * which includes <machine/types.h> for them.  x86_64 is LP64.
- * Guarded with #ifndef so this header can be included alongside
- * <machine/_types.h> (which defines some of the same types) without a
- * redefinition error.
+ * Base C integer types defined here directly (using plain C types that are
+ * always available under -nostdinc) so that <machine/types.h> can be included
+ * before <machine/_types.h> (which also defines __uint8_t etc.).  x86_64 is
+ * LP64.
  */
+typedef unsigned char   __uint8_t;
+typedef unsigned short  __uint16_t;
+typedef unsigned int    __uint32_t;
+typedef unsigned long   __uint64_t;
 
 /* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>) */
 #ifndef __darwin_ptrdiff_t
@@ -78,13 +81,18 @@ typedef unsigned long   __darwin_clock_t;
 typedef unsigned int    __darwin_socklen_t;
 #endif
 
-/* opaque mbstate conversion state (consumed by sys/_types/_mbstate_t.h) */
-#ifndef __darwin_mbstate_t
-typedef union {
-    char        __mbstate8[128];
-    long long   _mbstateL;                   /* for alignment */
-} __mbstate_t;
-typedef __mbstate_t     __darwin_mbstate_t;
+/* BSD u_int* types (u_int64_t etc. consumed by sys/types.h) */
+#ifndef u_int8_t
+typedef __uint8_t       u_int8_t;
+#endif
+#ifndef u_int16_t
+typedef __uint16_t      u_int16_t;
+#endif
+#ifndef u_int32_t
+typedef __uint32_t      u_int32_t;
+#endif
+#ifndef u_int64_t
+typedef __uint64_t      u_int64_t;
 #endif
 
 #endif /* _I386_TYPES_H_ */

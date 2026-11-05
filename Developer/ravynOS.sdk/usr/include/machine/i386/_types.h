@@ -38,11 +38,26 @@
 typedef signed char     __int8_t;
 typedef signed short    __int16_t;
 typedef signed int      __int32_t;
-typedef signed long     __int64_t;
+#ifndef __uint8_t
 typedef unsigned char   __uint8_t;
+#endif
+#ifndef __uint16_t
 typedef unsigned short  __uint16_t;
+#endif
+#ifndef __uint32_t
 typedef unsigned int    __uint32_t;
+#endif
+/* Match flat i386/_types.h (installed by headers.sh) which defines these
+ * as long long / unsigned long long, so both headers agree when included
+ * together (e.g. sys/_types.h -> machine/_types.h and mach headers ->
+ * i386/_types.h).  x86_64 is LP64: unsigned long is already 64-bit, so use
+ * it consistently with machine/types.h. */
+#ifndef __int64_t
+typedef long            __int64_t;
+#endif
+#ifndef __uint64_t
 typedef unsigned long   __uint64_t;
+#endif
 
 /*
  * The __darwin_* types below are expected by the <sys/_types/*.h> sub-headers,
@@ -75,6 +90,16 @@ typedef __WINT_TYPE__    __darwin_wint_t;    /* wint_t */
 /* ct_rune_t / rune_t: int so EOF (-1) can be naturally assigned. */
 typedef int             __darwin_ct_rune_t;  /* ct_rune_t (via sys/_types/_ct_rune_t.h) */
 typedef __darwin_wchar_t __darwin_rune_t;    /* rune_t (via sys/_types/_rune_t.h) */
+
+/* opaque mbstate conversion state (consumed by sys/_types/_mbstate_t.h,
+   which includes <i386/_types.h>) */
+#ifndef __darwin_mbstate_t
+typedef union {
+    char        __mbstate8[128];
+    long long   _mbstateL;                   /* for alignment */
+} __mbstate_t;
+typedef __mbstate_t     __darwin_mbstate_t;
+#endif
 
 /* natural_t / mach port name type: 32-bit unsigned on x86_64 */
 typedef unsigned int    __darwin_natural_t;
