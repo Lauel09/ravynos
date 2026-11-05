@@ -109,4 +109,26 @@ typedef __uint32_t      u_int32_t;
 typedef __uint64_t      u_int64_t;
 #endif
 
+/* user_* types (consumed by decmpfs.h and other kernel-private headers
+ * included through the SDK).  Match Kernel/xnu/bsd/i386/types.h: x86_64 is
+ * LP64, so these are 64-bit.  __int64_t/__uint64_t are defined here
+ * directly (matching flat i386/_types.h). */
+typedef __uint64_t      user_addr_t;
+typedef __uint64_t      user_size_t;
+typedef __int64_t       user_ssize_t;
+typedef __int64_t       user_long_t;
+typedef __uint64_t      user_ulong_t;
+typedef __int64_t       user_time_t;
+typedef __int64_t       user_off_t;
+#define USER_ADDR_NULL  ((user_addr_t) 0)
+#define CAST_USER_ADDR_T(a_ptr)   ((user_addr_t)((uintptr_t)(a_ptr)))
+
+/* uintptr_t is normally from <stdint.h>, which is not yet installed at
+ * Libraries stage (its _types/_uint8_t.h etc. are missing).  Define it
+ * directly here so CAST_USER_ADDR_T and any other SDK consumer can use it
+ * without <stdint.h>.  x86_64: unsigned long is 64-bit. */
+#ifndef uintptr_t
+typedef unsigned long   uintptr_t;
+#endif
+
 #endif /* _I386_TYPES_H_ */

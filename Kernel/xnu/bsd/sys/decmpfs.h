@@ -31,6 +31,7 @@
 #include <stdbool.h>
 #include <sys/kdebug.h>
 #include <sys/kernel_types.h>
+#include <machine/types.h>  /* user_ssize_t */
 #include <sys/vnode.h>
 
 /*
