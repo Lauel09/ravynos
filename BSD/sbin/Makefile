@@ -1,4 +1,4 @@
-SUBDIR = mount_hfs #fsck_hfs 
+SUBDIR = mount_hfs launchd
 
 .include <bsd.subdir.mk>
 
