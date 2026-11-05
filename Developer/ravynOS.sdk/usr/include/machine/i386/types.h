@@ -39,9 +39,14 @@ typedef unsigned short  __uint16_t;
 typedef unsigned int    __uint32_t;
 typedef unsigned long long __uint64_t;   /* match flat i386/_types.h */
 
-/* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>) */
-#ifndef __darwin_ptrdiff_t
-typedef long            __darwin_ptrdiff_t;
+/* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>).
+ * Match flat i386/_types.h (from xnu, installed by headers.sh) which uses
+ * __PTRDIFF_TYPE__ with a long fallback, so both headers agree when
+ * included in either order. */
+#if defined(__GNUC__) && defined(__PTRDIFF_TYPE__)
+typedef __PTRDIFF_TYPE__        __darwin_ptrdiff_t;
+#else
+typedef long                    __darwin_ptrdiff_t;
 #endif
 
 /* intptr_t (consumed by sys/_types/_intptr_t.h) */
@@ -50,15 +55,20 @@ typedef long            __darwin_intptr_t;
 #endif
 
 /* sizeof() (consumed by sys/_types/_rsize_t.h, _sigaltstack.h, _ucontext.h,
-   _ucontext64.h) */
-#ifndef __darwin_size_t
-typedef unsigned long   __darwin_size_t;
+   _ucontext64.h).  Match flat i386/_types.h (from xnu, installed by
+   headers.sh) which uses __SIZE_TYPE__ with an unsigned long fallback. */
+#if defined(__SIZE_TYPE__)
+typedef __SIZE_TYPE__           __darwin_size_t;
+#else
+typedef unsigned long           __darwin_size_t;
 #endif
 
 /* va_list: __builtin_va_list is a clang builtin even under -nostdinc
-   (consumed by sys/_types/_va_list.h) */
-#ifndef __darwin_va_list
-typedef __builtin_va_list   __darwin_va_list;
+   (consumed by sys/_types/_va_list.h).  Match flat i386/_types.h. */
+#if (__GNUC__ > 2)
+typedef __builtin_va_list       __darwin_va_list;       /* va_list */
+#else
+typedef void *                  __darwin_va_list;       /* va_list */
 #endif
 
 /* byte count or error (consumed by sys/_types/_ssize_t.h) */
