@@ -83,6 +83,7 @@ all_subdir_${DIRPRFX}$d: ${.OBJDIR}/config.${CpuArch}.normal.h
 .endfor
 
 lib${LIB}.dylib: ${SUBDIR_DEPS}
+${.OBJDIR}/lib${LIB}.dylib: ${SUBDIR_DEPS}
 .endif
 
 .for s in ${SRCS}
