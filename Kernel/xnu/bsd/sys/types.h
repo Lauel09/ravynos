@@ -77,6 +77,7 @@
 /* Machine type dependent parameters. */
 #include <machine/types.h>
 #include <sys/_types.h>
+#include <stdint.h>
 
 #include <machine/endian.h>
 
