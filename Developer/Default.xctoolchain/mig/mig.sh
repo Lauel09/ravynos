@@ -96,7 +96,17 @@ fi
 cppflags="-D__MACH30__"
 
 files=
-arch=`/usr/bin/arch`
+# Cross-build default: this SDK has no ARM slice, so derive the target from
+# the tree, not from the host CPU.  On arm64 hosts /usr/bin/arch would meet
+# mach/machine/thread_state.h's ARM branch and mig would die with
+# "'mach/arm/thread_state.h' file not found" (Libraries run 7).  xnu's own
+# gmake rules always pass -arch explicitly; only the BSD-makefile users
+# (libdispatch et al.) rely on this default.  Override with MIG_ARCH.
+if [ -n "${MIG_ARCH-}" ]; then
+	arch="$MIG_ARCH"
+else
+	arch=x86_64
+fi
 
 WORKTMP=`/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mig.XXXXXX"`
 if [ $? -ne 0 ]; then
