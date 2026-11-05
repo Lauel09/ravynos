@@ -35,6 +35,7 @@ SRCS =  chared.c \
         vi.c \
         vis.c \
         wcsdup.c \
+        termcap_stub.c \
         vi.h \
         emacs.h \
         common.h \
