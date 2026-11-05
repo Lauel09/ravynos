@@ -259,14 +259,6 @@ ${.OBJDIR}/libmach.a: ${MACH_DEFS}
 	done
 	${AR} rcs ${.TARGET} ${.OBJDIR}/obj/*.o
 
-.for def in thread_act.defs mach_port.defs vm_map.defs mach_vm.defs
-${.OBJDIR}/mach/${def:R}_internal.h: ${XNU}/libsyscall/mach/${def}
-	mkdir -p ${.OBJDIR}/mach
-	${MIG} ${MIG_FLAGS} -header ${.TARGET} ${.ALLSRC}
-
-${.OBJDIR}/lib${LIB}.a: ${.OBJDIR}/mach/${def:R}_internal.h
-.endfor
-
 lib${LIB}.a: ${.OBJDIR}/libmach.a ${.OBJDIR}/libsyscalls.a
 
 ${.OBJDIR}/_libc_funcptr.o: ${XNU}/libsyscall/wrappers/_libc_funcptr.c
@@ -290,3 +282,10 @@ ${.OBJDIR}/lib${LIB}.dylib: ${.OBJDIR}/_libc_funcptr.o lib${LIB}.a
 	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libkernel.a
 
 .include <bsd.lib.mk>
+
+# thread_act.c, mach_port.c and mach_vm.c include the internal MIG headers
+# (mach/*_internal.h) that mach_install_mig.sh generates while building
+# ${.OBJDIR}/libmach.a.  The internal_hdr tree is an opaque side effect of
+# that rule, so under -j the independent object compilations can race the
+# header generation.  Serialize every object behind libmach.a.
+${OBJS}: ${.OBJDIR}/libmach.a

@@ -1715,3 +1715,25 @@ forbids substitutes. Work the **launchd-faithful track only**:
    lines in *our* sequence — do not claim fixes are new without checking
    their repo/issues first, and keep contributing `macbuild:` fixes back
    (ROADMAP Phase 5).
+
+### Run-log (2026-11-05, Libsystem stage)
+
+- **Run 8 gate — libsystem_kernel internal MIG headers (fixed in
+  `Libraries/Libsystem/libsystem_kernel/Makefile`):** under `-j`,
+  `thread_act.o` / `mach_port.o` / `mach_vm.o` compiled before the
+  `${.OBJDIR}/libmach.a` rule ran `mach_install_mig.sh`, so
+  `mach/{thread_act,mach_port,vm_map}_internal.h` were missing
+  (`fatal error: 'mach/thread_act_internal.h' file not found`). No
+  path/variable mismatch: the generated `internal_hdr` tree was correct and
+  on disk; it is an *opaque side effect* of the `libmach.a` recipe, so bmake
+  had no real-node edge from the objects to it. Also removed the dead
+  `${.OBJDIR}/mach/*_internal.h` MIG `.for` loop (it gated only
+  `lib${LIB}.a`, never ran, and its `-arch ${CpuArch}` output would have
+  shadowed the authoritative i386-arch `internal_hdr` set via
+  `-I${.OBJDIR}` — `mach_install_mig.sh` forces a 32-bit arch for
+  `vm_map_internal.h` on purpose). Fix: append `${OBJS}:
+  ${.OBJDIR}/libmach.a` after `.include <bsd.lib.mk>` (house pattern,
+  `bsd.dep.mk`'s `${__obj}: ${OBJS_DEPEND_GUESS}`).
+- (Earlier same day) `b24e956f50` SUBDIR-before-ordering fix and
+  `8eec9044b3` real-node gating recorded above; dry-run plan verified all
+  20 members recurse, umbrella link last.
