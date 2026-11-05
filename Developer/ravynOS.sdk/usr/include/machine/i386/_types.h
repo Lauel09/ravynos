@@ -59,11 +59,11 @@ typedef unsigned long long __uint64_t;
 #endif
 
 /*
- * The __darwin_* types below are expected by the sys/_types/*.h sub-headers,
- * each of which includes <machine/_types.h> for them. x86_64 is LP64.
- * Guarded with #ifndef so this header can be included alongside
- * <machine/types.h> (which defines some of the same types) without a
- * redefinition error.
+ * The __darwin_* types below are expected by the sub-headers under
+ * sys/_types/, each of which includes <machine/_types.h> for them.
+ * x86_64 is LP64. Guarded with #ifndef so this header can be included
+ * alongside <machine/types.h> (which defines some of the same types)
+ * without a redefinition error.
  */
 #ifndef __darwin_size_t
 typedef unsigned long   __darwin_size_t;   /* sizeof()  (via sys/_types/_size_t.h) */
