@@ -1634,8 +1634,23 @@ real product, so the final libSystem.B.dylib link fails `ld: library not
 found for -llaunch`. Open: why the SUBDIR recursion banners only show
 `===> Libraries/Libsystem/copyfile (all)` — the other 19 SUBDIR members
 never entered their `all` despite the merit-merged all_subdir_ deps
-(build-Libraries-5.log:79666+, banner grep returns exactly one). Probe
-next session: `bmake -C Libraries/Libsystem -DX all` with VERBOSE=YES and
+(build-Libraries-5.log:79666+, banner grep returns exactly one).
+
+**Pre-probe (2026-11-05): check upstream first.** Upstream's `demo-vm`
+release (2026-07-25, updated 2026-08-12; discussion #565) boots real XNU
++ `dyld` + BSD `ash` under OVMF with a hand-built HFS `disk.img` — proof
+their `libSystem`/`_launch` link stack functioned — and that branch is
+only ~103 commits behind `darwin`. Before debugging our recursion
+further, diff upstream `demo-vm` and `darwin`
+`Libraries/Libsystem` (+ `Libraries/Makefile`, `Libraries/dyld`) against
+ours and inherit their link-ordering fix if it exists. Caveat on the
+demo: it is hand-staged shortcut-track (maintainer: "I cheated a bit";
+release notes admit "fake `launchd`"; read-only fs, serial-only input;
+lowercase Unix rootfs with `/usr /sys /var /sbin` — not Apple layout,
+`/sys` doesn't exist on macOS). Our Boot-spirit policy above still
+governs the target.
+
+Probe if diffing yields nothing: `bmake -C Libraries/Libsystem -DX all` with VERBOSE=YES and
 watch for `removing makefile ... does not set SUBDIR`-style behavior or a
 missing makefile (liblaunch, libsystem_m, libmacho, libsystem_dnssd,
 corecrypto have no in-subdir dylib rule?). Then `bmake BSD` for
