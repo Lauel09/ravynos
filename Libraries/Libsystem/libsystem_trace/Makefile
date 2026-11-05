@@ -28,6 +28,7 @@ ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 	  -Wl,-force_load,${.OBJDIR}/lib${LIB}.a ${LDFLAGS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system ${SYSROOT_DIR}/usr/lib/system
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_trace.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system
 	mkdir -p ${RAVYN_SDKROOT}/usr/include/os
 	cp -f ${.CURDIR}/log.h ${RAVYN_SDKROOT}/usr/include/os

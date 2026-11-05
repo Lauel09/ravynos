@@ -145,6 +145,7 @@ lib${LIB}.dylib: lib${LIB}.a
 	mkdir -p ${SYSROOT_DIR}/usr/lib/system ${RAVYN_SDKROOT}/usr/lib/system
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_c.tbd
 
 .include <bsd.lib.mk>
 .include <bsd.subdir.mk>

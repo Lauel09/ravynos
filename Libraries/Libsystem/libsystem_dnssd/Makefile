@@ -38,6 +38,7 @@ ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 	${CC} -fuse-ld=${LD} -shared -dylib -o ${.TARGET} \
 	  -Wl,-force_load,${.OBJDIR}/lib${LIB}.a ${LDFLAGS}
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_dnssd.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 #SUBDIR = libdns_services

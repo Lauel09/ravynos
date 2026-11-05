@@ -48,6 +48,7 @@ ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 		-Wl,-force_load,${.OBJDIR}/lib${LIB}.a ${LDFLAGS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system ${SYSROOT_DIR}/usr/lib/system
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_notify.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 .include <bsd.lib.mk>

@@ -26,6 +26,7 @@ ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 	${CC} -shared -dylib -o ${.TARGET} \
 		-Wl,-force_load,${.ALLSRC} ${LDFLAGS}
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_blocks.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 .include <bsd.lib.mk>

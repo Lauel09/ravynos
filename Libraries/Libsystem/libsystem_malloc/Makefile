@@ -44,6 +44,7 @@ ${.OBJDIR}/lib${LIB}.dylib: lib${LIB}.a
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system \
 		${SYSROOT_DIR}/usr/lib/system
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_malloc.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 .include <bsd.lib.mk>

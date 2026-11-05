@@ -21,6 +21,7 @@ ${.OBJDIR}/lib${LIB}.dylib: dyld lib${LIB}.a
 	${CC} -fuse-ld=${LD} -o ${.TARGET} ${LDFLAGS} ${OBJS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system ${SYSROOT_DIR}/usr/lib/system
 	cp ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_pthread.tbd
 	cp ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 	mkdir -p ${RAVYN_SDKROOT}/usr/local/lib/dyld
 	cp -f ${.OBJDIR}/dyld/libpthread.a ${RAVYN_SDKROOT}/usr/local/lib/dyld

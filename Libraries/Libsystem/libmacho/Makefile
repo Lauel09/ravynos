@@ -27,6 +27,7 @@ lib${LIB}.dylib: prep lib${LIB}.a
 	  -Wl,-force_load,${.OBJDIR}/lib${LIB}.a -lSystem
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system ${SYSROOT_DIR}/usr/lib/system
 	cp -f ${.OBJDIR}/${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libmacho.tbd
 	cp -f ${.OBJDIR}/${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 .include <bsd.lib.mk>

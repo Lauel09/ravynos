@@ -277,6 +277,7 @@ ${.OBJDIR}/lib${LIB}.dylib: ${.OBJDIR}/_libc_funcptr.o lib${LIB}.a
 	  -Wl,-compatibility_version,1.0.0 \
 	  -L${RAVYN_SDKROOT}/usr/lib/system -lsystem_c -ldyld
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_kernel.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 	cp -f ${.OBJDIR}/libkernel.a \
 	  ${RAVYN_SDKROOT}/usr/local/lib/kernel/libkernel.a

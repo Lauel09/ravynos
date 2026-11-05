@@ -21,6 +21,7 @@ lib${LIB}.dylib: lib${LIB}.a
 	${CC} -o ${.TARGET} ${DYLIB_LDFLAGS}
 	mkdir -p ${RAVYN_SDKROOT}/usr/lib/system
 	cp -f lib${LIB}.dylib ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libsystem_platform.tbd
 	cp -f lib${LIB}.dylib ${SYSROOT_DIR}/usr/lib/system/
 
 .include "common.mk"

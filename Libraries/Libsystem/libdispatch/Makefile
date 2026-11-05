@@ -108,6 +108,7 @@ migs: protocolServer.h firehoseServer.h firehose_replyServer.h
 ${.OBJDIR}/lib${LIB}.dylib: migs ${LOBJS} 
 	${CC} -fuse-ld=${LD} -shared -dylib -o ${.TARGET} ${LOBJS} ${LDFLAGS}
 	cp -f ${.TARGET} ${RAVYN_SDKROOT}/usr/lib/system/
+	rm -f ${RAVYN_SDKROOT}/usr/lib/system/libdispatch.tbd
 	cp -f ${.TARGET} ${SYSROOT_DIR}/usr/lib/system/
 
 .include <bsd.lib.mk>
