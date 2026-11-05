@@ -28,7 +28,8 @@
 #ifndef _FD_SET
 #define _FD_SET
 
-#include <machine/types.h> /* __int32_t and uintptr_t */
+#include <machine/types.h> /* __int32_t */
+#include <stdint.h>        /* uintptr_t */
 #if !KERNEL
 #include <Availability.h>
 #endif

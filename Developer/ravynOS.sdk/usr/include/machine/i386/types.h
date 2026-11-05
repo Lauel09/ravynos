@@ -38,6 +38,10 @@ typedef unsigned char   __uint8_t;
 typedef unsigned short  __uint16_t;
 typedef unsigned int    __uint32_t;
 typedef unsigned long long __uint64_t;   /* match flat i386/_types.h */
+typedef signed char     __int8_t;
+typedef signed short    __int16_t;
+typedef signed int      __int32_t;
+typedef signed long long __int64_t;      /* match flat i386/_types.h */
 
 /* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>).
  * Match flat i386/_types.h (from xnu, installed by headers.sh) which uses
