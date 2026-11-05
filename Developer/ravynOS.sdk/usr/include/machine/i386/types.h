@@ -37,7 +37,7 @@
 typedef unsigned char   __uint8_t;
 typedef unsigned short  __uint16_t;
 typedef unsigned int    __uint32_t;
-typedef unsigned long   __uint64_t;
+typedef unsigned long long __uint64_t;   /* match flat i386/_types.h */
 
 /* ptr1 - ptr2 (consumed by sys/_types/_ptrdiff_t.h via <stddef.h>) */
 #ifndef __darwin_ptrdiff_t

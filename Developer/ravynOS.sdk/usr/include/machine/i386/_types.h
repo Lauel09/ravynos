@@ -50,13 +50,12 @@ typedef unsigned int    __uint32_t;
 /* Match flat i386/_types.h (installed by headers.sh) which defines these
  * as long long / unsigned long long, so both headers agree when included
  * together (e.g. sys/_types.h -> machine/_types.h and mach headers ->
- * i386/_types.h).  x86_64 is LP64: unsigned long is already 64-bit, so use
- * it consistently with machine/types.h. */
+ * i386/_types.h). */
 #ifndef __int64_t
-typedef long            __int64_t;
+typedef long long       __int64_t;
 #endif
 #ifndef __uint64_t
-typedef unsigned long   __uint64_t;
+typedef unsigned long long __uint64_t;
 #endif
 
 /*
