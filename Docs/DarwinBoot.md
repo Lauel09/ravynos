@@ -1637,24 +1637,30 @@ never entered their `all` despite the merit-merged all_subdir_ deps
 (build-Libraries-5.log:79666+, banner grep returns exactly one).
 
 **Pre-probe (2026-11-05): check upstream first.** Upstream's `demo-vm`
-release (2026-07-25, updated 2026-08-12; discussion #565) boots real XNU
-+ `dyld` + BSD `ash` under OVMF with a hand-built HFS `disk.img` — proof
-their `libSystem`/`_launch` link stack functioned — and that branch is
-only ~103 commits behind `darwin`. Before debugging our recursion
-further, diff upstream `demo-vm` and `darwin`
-`Libraries/Libsystem` (+ `Libraries/Makefile`, `Libraries/dyld`) against
-ours and inherit their link-ordering fix if it exists. Caveat on the
-demo: it is hand-staged shortcut-track (maintainer: "I cheated a bit";
-release notes admit "fake `launchd`"; read-only fs, serial-only input;
-lowercase Unix rootfs with `/usr /sys /var /sbin` — not Apple layout,
-`/sys` doesn't exist on macOS). Our Boot-spirit policy above still
-governs the target.
+release (2026-07-25, updated 2026-08-12; discussion #565, tag `demo-vm`,
+103 commits behind `darwin`) boots real XNU + `dyld` + BSD `ash` under
+OVMF with a hand-built HFS `disk.img`. Diff done (2026-11-05): upstream
+`demo-vm` and `darwin` `Libraries/{Makefile,Libsystem,dyld}` vs ours —
+**no recursion/link-ordering fix exists to inherit**: their Makefile is
+the same Apple base (unquoted `PATH=` — their hosts never tripped on it;
+same SUBDIR list; no all_subdir_ ordering block), our delta is only our
+own fixes (PATH quoting, dyld split, TBD seeding). Their demo VM is
+hand-staged shortcut-track anyway (fake `launchd`, read-only fs,
+serial-only input, lowercase Unix rootfs with `/usr /sys /var /sbin` —
+not Apple layout). Our Boot-spirit policy above still governs the target.
 
-Probe if diffing yields nothing: `bmake -C Libraries/Libsystem -DX all` with VERBOSE=YES and
-watch for `removing makefile ... does not set SUBDIR`-style behavior or a
-missing makefile (liblaunch, libsystem_m, libmacho, libsystem_dnssd,
-corecrypto have no in-subdir dylib rule?). Then `bmake BSD` for
-`/sbin/launchd` + `/bin/sh`, stage into root.img.
+**Probe conclusion (2026-11-05, fixed `b24e956f50`):** the root cause of
+run 5's copyfile-only recursion is parse-time expansion, not bsd.subdir.mk:
+the `4a7828d3a0` ordering block sat *above* the `SUBDIR` assignment, so
+bmake iterated an empty list and the `.for` loops registered zero
+`all_subdir_*` edges; `all` reached `libSystem.B.dylib` through the final
+dylib rule's literal `copyfile` remnant dep alone → link ran after member
+1, failed `-llaunch`, bmake aborted before members 2–20 recursed. Verified
+with `bmake -n Libraries` (full recursive dry-run): plan showed link between
+member 1 and member 2; after the fix the plan recurses all 20 members and
+links the umbrella last. Also: bmake `:u` is unique-dedupe (not uppercase),
+so no case-collision; duplicate `config.*.normal.h` rule deleted (the
+makefile:81/88 duplicate-script warnings).
 
 **Next stage.** Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`,
 static `/usr/lib/dyld` after `Libsystem` installs
