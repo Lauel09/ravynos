@@ -43,7 +43,7 @@ SRCS =  chared.c \
         help.h
 
 CFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
-	-I${.CURDIR}/src -I${.CURDIR} -I${.OBJDIR} -I${.CURDIR}/../../include
+	-I${.CURDIR}/src -I${.CURDIR} -I${.OBJDIR}
 LDFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
         -fuse-ld=${LD}
 
