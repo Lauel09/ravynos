@@ -1662,7 +1662,12 @@ links the umbrella last. Run 6 then exposed a second hole the dry-run hides:
 with `-j`, the real link node `${.OBJDIR}/lib${LIB}.dylib` was gated only by
 config/lib${LIB}.a/libunwind/copyfile — the all_subdir_* edge guarded the
 alias node — so the link started while members 2–20 still built
-(`8eec9044b3` merges the recursion deps onto the real node too). Also:
+(`8eec9044b3` merges the recursion deps onto the real node too). Run 7 then
+reached the first content failure in the chain: in-tree `mig` derived its
+default `-arch` from the host CPU (`/usr/bin/arch` → arm64), so dispatch's
+.defs cpp took the ARM branch of `mach/machine/thread_state.h`; the SDK has
+no `mach/arm` slice. Fixed by defaulting to x86_64 (`MIG_ARCH` override,
+`2a0d92e1f5`). Also:
 bmake `:u` is unique-dedupe (not uppercase), so no case-collision;
 duplicate `config.*.normal.h` rule deleted (the
 makefile:81/88 duplicate-script warnings).
