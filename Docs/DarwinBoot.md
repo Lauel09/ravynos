@@ -1658,8 +1658,13 @@ dylib rule's literal `copyfile` remnant dep alone → link ran after member
 1, failed `-llaunch`, bmake aborted before members 2–20 recursed. Verified
 with `bmake -n Libraries` (full recursive dry-run): plan showed link between
 member 1 and member 2; after the fix the plan recurses all 20 members and
-links the umbrella last. Also: bmake `:u` is unique-dedupe (not uppercase),
-so no case-collision; duplicate `config.*.normal.h` rule deleted (the
+links the umbrella last. Run 6 then exposed a second hole the dry-run hides:
+with `-j`, the real link node `${.OBJDIR}/lib${LIB}.dylib` was gated only by
+config/lib${LIB}.a/libunwind/copyfile — the all_subdir_* edge guarded the
+alias node — so the link started while members 2–20 still built
+(`8eec9044b3` merges the recursion deps onto the real node too). Also:
+bmake `:u` is unique-dedupe (not uppercase), so no case-collision;
+duplicate `config.*.normal.h` rule deleted (the
 makefile:81/88 duplicate-script warnings).
 
 **Next stage.** Split `Libraries/dyld` (`libdyld.dylib` before `Libsystem`,
