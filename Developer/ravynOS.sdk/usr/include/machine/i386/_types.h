@@ -90,15 +90,10 @@ typedef __WINT_TYPE__    __darwin_wint_t;    /* wint_t */
 typedef int             __darwin_ct_rune_t;  /* ct_rune_t (via sys/_types/_ct_rune_t.h) */
 typedef __darwin_wchar_t __darwin_rune_t;    /* rune_t (via sys/_types/_rune_t.h) */
 
-/* opaque mbstate conversion state (consumed by sys/_types/_mbstate_t.h,
-   which includes <i386/_types.h>) */
-#ifndef __darwin_mbstate_t
-typedef union {
-    char        __mbstate8[128];
-    long long   _mbstateL;                   /* for alignment */
-} __mbstate_t;
-typedef __mbstate_t     __darwin_mbstate_t;
-#endif
+/* opaque mbstate conversion state: provided by flat i386/_types.h
+ * (included via sys/_types/_mbstate_t.h), which also defines
+ * __darwin_mbstate_t.  Do not redefine here to avoid a conflict when both
+ * headers are included in one translation unit. */
 
 /* natural_t / mach port name type: 32-bit unsigned on x86_64 */
 typedef unsigned int    __darwin_natural_t;
