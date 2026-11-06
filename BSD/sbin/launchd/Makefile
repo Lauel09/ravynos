@@ -18,14 +18,27 @@ BASE_INCLUDE+= -I${.CURDIR}/../../sys -I${MACHINE_INCLUDES}
 DEFINES= -D__APPLE__ -fblocks -DLIBC_NO_LIBCRASHREPORTERCLIENT -DPRIVATE
 MIG_FLAGS= ${BASE_INCLUDE} 	${DEFINES}
 #override default CFLAGS
-CFLAGS= ${MIG_FLAGS}  -D__MigTypeCheck -nostdinc -isystem ${RAVYN_SDKROOT}/usr/include -include ${.CURDIR}/../../include/sys/mach/availability_stub.h
+# Do NOT add -target/-arch x86_64 here: with SDKROOT and MACOSX_DEPLOYMENT_TARGET both
+# in the environment, clang aborts with "conflicting deployment targets ... present in
+# environment" even when the values are equal (reproduced with the ravynOS toolchain
+# clang at build/.../Default.xctoolchain/usr/bin/clang). The toolchain's default target
+# is x86_64-apple-darwin, so --sysroot + -mmacos-version-min (the house pattern used by
+# BSD/sbin/mount_hfs) yields x86_64 objects without the conflict.
+CFLAGS= ${MIG_FLAGS}  -D__MigTypeCheck -nostdinc --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} -isystem ${RAVYN_SDKROOT}/usr/include -include ${.CURDIR}/../../include/sys/mach/availability_stub.h
 CFLAGS+= -I${.CURDIR}/../../contrib/openbsm -I${.CURDIR}/../../lib/liblaunch -I${.CURDIR}/../../../BSD/old-launchd/liblaunch
 CFLAGS+= -fPIC -DHAVE_INTTYPES_H
 
 DEBUG_FLAGS+= -g -O0
-
-LDFLAGS+= -static
 MK_WERROR=no
+
+# Apple's launchd is dynamically linked (dyld + /usr/lib/libSystem.B.dylib);
+# a static link can't resolve the libSystem.B.tbd umbrella at all.
+# libSystem.B.dylib is a partial umbrella that does not re-export liblaunch/
+# libxpc, and ld64 refuses direct linking against those umbrella-only dylibs.
+# Use -undefined dynamic_lookup so the link succeeds; dyld resolves
+# _launch_data_*/_vproc_* (liblaunch) and _xpc_* (libxpc) at boot time from
+# the dylibs staged into root.img by tools/xnu-boot.sh.
+LDFLAGS+= -lSystem -undefined dynamic_lookup
 
 helper.h launchd_helperServer.h: ${.CURDIR}/helper.defs
 	mig ${MIG_FLAGS} -user /dev/null -server /dev/null -header helper.h \
@@ -51,8 +64,16 @@ SRCS+= job_forwardUser.c  job_replyUser.c job_replyServer.c notifyServer.c
 SRCS+= internalUser.c
 SRCS+= launchd.c core.c kill2.c ktrace.c ipc.c log.c runtime.c
 SRCS+= init.c
-LIBADD+= auditd bsm util dispatch mach
-LIBADD+=BlocksRuntime launch osxsupport xpc nv sbuf pthread
+# Nothing beyond the libSystem umbrella (sysroot libSystem.B re-exports
+# dispatch/pthread/xpc, and the audit syscalls live in libsystem_kernel).
+# Apple's /sbin/launchd additionally links libbsm; OpenBSM is in-tree, so
+# inline the pieces launchd references (audit_token_to_au32() via
+# bsm_wrappers.c: au_to_* token builders and the BSM errno table are
+# pulled by audit_write/audit_submit).
+.PATH: ${.CURDIR}/../../../Libraries/openbsm/libbsm
+SRCS+= bsm_wrappers.c bsm_token.c bsm_errno.c
+# For <config/config.h> (OpenBSM's build selection) and <compat/...> fallbacks.
+CFLAGS+= -I${.CURDIR}/../../../Libraries/openbsm
 
 
 MAN=	launchd.conf.5 launchd.plist.5 launchd.8
@@ -62,4 +83,12 @@ launchd.1:
 
 CLEANFILES+= *Server.c *User.c job.h helper.h job_reply.h job_forward.h notify.h \
 	internal.h mach_exc.h *Server.h *~ cscope.*
+
+# Install launchd into the sysroot so XNU's load_init_program("/sbin/launchd")
+# finds it at boot.  Mirrors BSD/sbin/mount_hfs's to-sysroot target.
+all: to-sysroot
+to-sysroot: ${PROG}
+	mkdir -p ${SYSROOT_DIR}/sbin
+	cp -f ${PROG} ${SYSROOT_DIR}/sbin/
+
 .include <bsd.prog.mk>
