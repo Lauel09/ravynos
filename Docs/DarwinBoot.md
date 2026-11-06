@@ -1737,3 +1737,205 @@ forbids substitutes. Work the **launchd-faithful track only**:
 - (Earlier same day) `b24e956f50` SUBDIR-before-ordering fix and
   `8eec9044b3` real-node gating recorded above; dry-run plan verified all
   20 members recurse, umbrella link last.
+
+### 2026-11-06 — Libraries gate PASSED (all 24 libsystem dylibs + dyld + zlib, exit 0)
+
+Three one-at-a-time errors cleared this session (all under the
+uncommitted SDK-header refresh work tree):
+
+1. **`os_crash_callback_t` unknown (libsystem_c `os/assumes.c`):** the SDK's
+   `os/assumes.h` was a stale older generation. Fix: staged Libsystem's newer
+   generation (`Libraries/Libsystem/libsystem_c/os/assumes.h`) over the SDK
+   copy and staged the `os/base_private.h` it includes
+   (`Libraries/Libsystem/private/os/base_private.h`) into
+   `usr/include/os/` in both `Developer/ravynOS.sdk` and the built SDK —
+   applies Apple's model that Libsystem ships `os/assumes.h` into the SDK.
+2. **`bmake Libraries` duplicate-symbol link failure (libsystem_c umbrella
+   dylib):** `_popen`/`_fdopen`/`_fopen`/`_realpath`/`_getgroups` defined in
+   both `libFreeBSD.a` and `libvDarwinExtsn.a` with plain names, instead of
+   `_x$DARWIN_EXTSN`. Root cause: the prior session's uncommitted 21:43
+   `sys/cdefs.h` edit gutted `__DARWIN_ALIAS_STARTING(_mac, _iphone, x)` to
+   expand to nothing, so variant declarations under
+   `-D_DARWIN_C_SOURCE` (`__DARWIN_ALIAS_STARTING(__MAC_10_6, __IPHONE_3_2,
+   __DARWIN_EXTSN(popen))`) lost their `__asm` labels; on x86_64
+   `__DARWIN_ONLY_UNIX_CONFORMANCE == 1` ⇒ `LIBC_SUF_UNIX03` empty ⇒ both
+   archives exported symbol-identical `_popen`. Proof the ABI worked before:
+   the successful 2026-11-05 16:55-era dylib contains `_popen$DARWIN_EXTSN`,
+   `_realpath$DARWIN_EXTSN`. Fix: restored the passthrough
+   `#define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   x` in all three
+   userland `#if` branches of both
+   `Developer/ravynOS.sdk/usr/include/sys/cdefs.h` and
+   `Kernel/xnu/bsd/sys/cdefs.h` (the `#ifdef KERNEL` branch stays empty,
+   as at HEAD; the benign `__POSIX_C_DEPRECATED` gutting stays). The built
+   SDK header is installed read-only by installhdrs — copy with
+   `chmod u+w` first. Verified with an `-E` run using the exact variant
+   flags: `popen` now maps to `__asm("_" "popen" "$DARWIN_EXTSN")`.
+3. **`libxpc/transports/mach.c`: undeclared `mach_task_self` /
+   `mach_msg_send`:** the SDK's `mach/mach.h` is an old trimmed generation
+   (6 includes, no `mach_msg_send`, no `mach/mach_init.h`). Apple's model
+   ships libsyscall's `mach/mach.h` into the SDK, so staged
+   `Kernel/xnu/libsyscall/mach/mach/mach.h` (includes
+   `mach/mach_init.h:77` `mach_task_self()`; declares `mach_msg_send` at
+   `:107`) over `usr/include/mach/mach.h` in both SDK locations.
+
+Result: `bmake Libraries` exit 0 (14:35 run); fresh
+`usr/lib/system/libSystem.B.dylib` + `libsystem_c.dylib` carry the
+`$DARWIN_EXTSN` variant symbols (5 in `nm -gU`), matching the 2026-11-05
+20:02-era ABI.
+
+**Loader single-user prep (`tools/bootloader/uefi_stub.c`,
+`tools/xnu-boot.sh`):** the `-s` path was verified complete in-tree —
+`Kernel/xnu/bsd/kern/bsd_init.c:1275-1277` (`-s` → `RB_SINGLE`),
+`kern_exec.c:5829-5845` (PID 1 gets argv `-s`),
+`BSD/sbin/launchd/launchd.c:186-195` (parses `-s`) →
+`core.c jobmgr_init(sflag)` → `init/init.c:202-209` (`single_user_mode`).
+Only the booter's hardcoded command line lacked `-s`, so instead of
+hardcoding it the loader now reads an optional ESP `\boot-args` ASCII file
+and appends it after the default `-v debug=0x8 serial=3 keepsyms=1`
+(macOS boot-args/NVRAM analogue; `gBootArgsFileLen != 0` gate,
+`BOOTX64.EFI` rebuilt clean). `tools/xnu-boot.sh` gained
+`--boot-args STRING` which stages the file onto the fat image; the
+single-user milestone boot becomes `tools/xnu-boot.sh --boot-args -s`.
+
+### Run-log (2026-11-06, `bmake BSD` stage)
+
+- **Run 1 gate — `netinet/tcp.h: duplicate member 'th_off'/'th_x2'`
+  (`BSD/bin/ps/print.c` TU):** both the little- and big-endian `tcphdr`
+  branches compiled because `__DARWIN_BYTE_ORDER` was undefined at that
+  point (`#if` turns undefined macros into 0, so `0 == __DARWIN_BIG_ENDIAN`
+  and `0 == __DARWIN_LITTLE_ENDIAN` are both true). The prior session's
+  untracked stub `Developer/ravynOS.sdk/usr/include/machine/endian.h`
+  (NTOHS/HTONL byte-swapper macros only) never defined `__DARWIN_BYTE_ORDER`
+  — on macOS SDKs `machine/endian.h` *is* the arch header (`machine/` is a
+  symlink to `i386/`), and `i386/endian.h:89` defines it. Also removes the
+  `NTOHS/HTONL macro redefined` warnings against `sys/_endian.h` (which
+  owns those macros and has its own `_SYS__ENDIAN_H_` include guard).
+  Fix: `cp Developer/ravynOS.sdk/usr/include/i386/endian.h
+  Developer/ravynOS.sdk/usr/include/machine/endian.h` (+ synced the
+  read-only built-SDK copy with `chmod u+w` first).
+- **Run 1 gate — launchd `src.libnames.mk` rejection of its LIBADD list:**
+  `BSD/sbin/launchd/makefile` (uncommitted file from the prior session)
+  carried a FreeBSD-port LIBADD (`auditd bsm util dispatch mach
+  BlocksRuntime launch osxsupport xpc nv sbuf pthread`) whose members are
+  not registered in `BSD/share/mk/src.libnames.mk` and mostly do not exist
+  in our sysroot. Apple's `/sbin/launchd` links only `libSystem.B.dylib`
+  (+ libobjc/libauditd/libbsm); here `libSystem.B.tbd` re-exports
+  dispatch/pthread/xpc and the audit syscalls (`getaudit_addr`,
+  `setaudit_addr`, `audit_session_self/join/port`) are in
+  `libsystem_kernel.dylib` (verified with `nm`), so the whole list is
+  dropped. The only genuinely external symbol is OpenBSM's
+  `audit_token_to_au32()` (`runtime.c:1093`; `audit_quick_stop()` is
+  `#if HAVE_LIBAUDITD`-guarded, `audit_set_terminal_host()` is
+  `#ifdef notyet`). OpenBSM is in-tree (`Libraries/openbsm`), so inline
+  `bsm_wrappers.c bsm_token.c bsm_errno.c` into launchd SRCS (house
+  Nov-5 pattern of inlining Libsystem liblaunch sources). Also dropped
+  `LDFLAGS+= -static` (a TBD umbrella cannot be statically linked; Apple's
+  launchd is dynamic via dyld). Matching OpenBSM fixes for the plain
+  Apple-sdk environment: `config/config.h` switched to
+  `USE_COMPAT_ENDIAN_ENC_H` (`sys/endian.h` on Apple SDK has no `be16enc`;
+  OpenBSM's compat encoders are self-contained) and `HAVE_IPC_PERM__KEY`
+  + `HAVE_IPC_PERM__SEQ` defined (Apple `sys/ipc.h` uses `_key`/`_seq`);
+  `bsm/libbsm.h` staged into `usr/include/bsm/`; and
+  `BSD/include/sys/mach/availability_stub.h` extended with
+  `__OSX_AVAILABLE_BUT_DEPRECATED(_MSG)` (OpenBSM TUs parse
+  `sys/stat.h`/`stdlib.h` under launchd's `-nostdinc` before
+  `sys/cdefs.h` loads). All three OpenBSM files syntax-check clean under
+  the exact launchd CFLAGS.
+
+`bmake BSD`
+  from the repo root exports `TARGET_ARCH` (`Makefile:170`),
+  which gates `launchd`'s `-target` triple (`BSD/sbin/launchd/Makefile:25`)
+  — the earlier subdir-only `__uint32_t`/`arm/types.h` failure does not
+  apply to root invocation.
+
+### 2026-11-06 — `bmake BSD` stage complete (exit 0)
+
+After run 3's deployment-target conflict was fixed, a cascade of SDK-header
+and launchd-source defects surfaced, each fixed one at a time:
+
+- **`cat -Wincompatible-sysroot` under `-Werror`:** running `bmake BSD`
+  with `SDKROOT` env set made clang emit `-Wincompatible-sysroot` for the
+  ravynOS sysroot while targeting MacOSX, fatal under `-Werror`. Fix: run
+  `bmake BSD` **without** `SDKROOT`/`MACOSX_DEPLOYMENT_TARGET` in the env;
+  the Makefile uses `RAVYN_SDKROOT`, not `SDKROOT`. Confirmed by probe:
+  SDKROOT+MWDT+`--sysroot`+`-Werror` → error; no-SDKROOT+`--sysroot`+`-Werror`
+  → clean; x86_64 objects either way (toolchain default target).
+
+- **`BSD/include/apple/sys/resource.h` redefinitions:** the apple wrapper
+  `#undef _SYS_RESOURCE_H_; #include_next <sys/resource.h>` pulls Libsystem's
+  complete header (which defines `rusage_info_v0`–`v4`,
+  `proc_rlimit_control_wakeupmon`, `_iopol_param_t`), then redefines them.
+  Fix: removed the 7 duplicate definitions from the wrapper; `#include_next`
+  still provides `struct rlimit` etc. Cites: `BSD/include/apple/sys/resource.h`.
+
+- **SDK `bsm/audit.h` missing `au_evname_map_t`:** libbsm.h uses it but the
+  SDK's `bsm/audit.h` (stale Apple snapshot) only had `au_evclass_map_t`.
+  Fix: added `EVNAMEMAP_NAME_SIZE`/`struct au_evname_map`/`au_evname_map_t`
+  to SDK `bsm/audit.h` (built SDK + `Developer/ravynOS.sdk` source).
+  Cites: `SDK/usr/include/bsm/audit.h`.
+
+- **SDK `sys/syslog.h` missing `LOG_CONSOLE`/`LOG_CONS`/`LOG_MASK`/`LOG_UPTO`:**
+  launchd uses `LOG_CONSOLE` pervasively. Fix: added the option macros and
+  `LOG_MASK`/`LOG_UPTO` to the `syslog.h` stub (built SDK + repo source).
+  Cites: `SDK/usr/include/sys/syslog.h`.
+
+- **`BSD/sbin/launchd/shim.h` `VQ_FLAG0100` undefined:** `VQ_UPDATE
+  VQ_FLAG0100` referenced an undefined macro. Fix: added
+  `#define VQ_FLAG0100 0x0100`. Cites: `BSD/sbin/launchd/shim.h:35`.
+
+- **`BSD/sbin/launchd/core.c` `typeof` on bit-fields + `uuid_compare`:**
+  `job_assumes(j, msi->recv|per_user|weird_bootstrap)` passes bit-fields to
+  `os_assumes_ctx` which does `__typeof__(e)` — invalid on bit-fields. Fix:
+  cast to `(bool)`. `uuid_compare()` is gated behind undefined
+  `__DARWIN_UUID_COMPARE` in `BSD/include/apple/uuid/uuid.h`; replaced both
+  calls with `memcmp(..., sizeof(uuid_t))`. Added `#include <uuid/uuid.h>`.
+  Cites: `BSD/sbin/launchd/core.c:8717,8255,8558,9254,9689`.
+
+- **`BSD/old-launchd/liblaunch/launch.h` missing `LAUNCH_KEY_*` keys:** the
+  shadowed old-launchd `launch.h` (first on launchd's include path) lacked
+  `LAUNCH_KEY_LEGACYTIMERS`, `LOWPRIORITYBACKGROUNDIO`,
+  `GETUSERENVIRONMENT`/`SETUSERENVIRONMENT`/`UNSETUSERENVIRONMENT`,
+  `GETRESOURCELIMITS`/`SETRESOURCELIMITS`, `GETRUSAGESELF`/`GETRUSAGECHILDREN`,
+  `SHUTDOWN`. Fix: added all missing keys. Cites: `BSD/old-launchd/liblaunch/launch.h`.
+
+- **SDK `sys/endian.h` missing `be64toh`/`be32toh`:** core.c byte-swaps a
+  `uuid_t` on little-endian. Fix: added `beXXtoh`/`htobeXX` macros using
+  `__DARWIN_OSSwapInt*` (built SDK + repo source).
+  Cites: `SDK/usr/include/sys/endian.h`.
+
+- **`BSD/sbin/launchd/log.c` manual `typedef int boolean_t`:** conflicts with
+  `mach/i386/boolean.h` which defines `boolean_t = unsigned int` on x86_64.
+  Fix: removed the manual typedef; `dispatch/dispatch.h` brings in the
+  correct mach definition. Cites: `BSD/sbin/launchd/log.c:2-3`.
+
+- **SDK `sys/reboot.h` missing `RB_POWEROFF`/`RB_PAUSE`:** runtime.c uses
+  these reboot flags. Fix: added `RB_POWEROFF 0x4000`, `RB_PAUSE 0x8000`
+  (built SDK + repo source). Cites: `SDK/usr/include/sys/reboot.h`.
+
+- **SDK `sys/syslog.h` missing `vsyslog`:** init.c calls `vsyslog()`.
+  Fix: added `void vsyslog(int, const char *, va_list)` declaration
+  (built SDK + repo source). Cites: `SDK/usr/include/sys/syslog.h`.
+
+- **SDK `bsm/audit.h` missing `A_GETEVENT`/`A_SETEVENT`:** bsm_wrappers.c
+  uses these OpenBSM audit commands. Fix: added `#define A_GETEVENT 39` and
+  `A_SETEVENT 40` (built SDK + repo source). Cites: `SDK/usr/include/bsm/audit.h`.
+
+- **SDK `bsm/audit_errno.h` missing `BSM_ERRNO_*`:** bsm_errno.c uses
+  `BSM_ERRNO_EINTEGRITY`/`ENOTCAPABLE`/`ECAPMODE`. Fix: added the three
+  defines (built SDK only; no repo-source equivalent at that path).
+  Cites: `SDK/usr/include/bsm/audit_errno.h`.
+
+- **launchd link: no `-l` flags:** the link command had no libraries, so all
+  external symbols (`_launch_data_*`, `_xpc_*`, `_malloc_size`) were
+  undefined. Fix: `LDFLAGS+= -lSystem -undefined dynamic_lookup` (libSystem
+  doesn't re-export liblaunch/libxpc in our SDK, and ld64 refuses direct
+  linking against them; dyld resolves at boot from staged dylibs).
+  Cites: `BSD/sbin/launchd/makefile`.
+
+- **launchd not installed to sysroot:** `bmake BSD` built `launchd` but
+  didn't copy it to `../build/sysroot/sbin/`. Fix: added `all: to-sysroot`
+  target mirroring `BSD/sbin/mount_hfs`. Cites: `BSD/sbin/launchd/makefile`.
+
+Result: `bmake BSD` exit 0; `/sbin/launchd` and `/bin/sh` are x86_64 Mach-O
+in `../build/sysroot`. Userland stage is complete; next is the boot milestone
+(`tools/xnu-boot.sh --boot-args -s`).
