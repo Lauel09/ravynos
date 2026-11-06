@@ -1,7 +1,4 @@
 #include <Availability.h>
-#ifndef boolean_t
-typedef int boolean_t;
-#endif
 
 #include <dispatch/dispatch.h>
 #include <os/assumes.h>
