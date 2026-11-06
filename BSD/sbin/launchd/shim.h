@@ -32,7 +32,8 @@ typedef char event_name_t[64];
 #define EBADARCH	86	/* Bad CPU type in executable */
 
 
-#define VQ_UPDATE VQ_FLAG0100
+#define VQ_FLAG0100	0x0100	/* filesystem information has changed */
+#define VQ_UPDATE	VQ_FLAG0100
 
 
 #define XPC_EVENT_ROUTINE_KEY_STREAM "XPC key stream"
