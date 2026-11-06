@@ -220,94 +220,13 @@ struct	rusage {
 
 typedef void *rusage_info_t;
 
-struct rusage_info_v0 {
-	uint8_t  ri_uuid[16];
-	uint64_t ri_user_time;
-	uint64_t ri_system_time;
-	uint64_t ri_pkg_idle_wkups;
-	uint64_t ri_interrupt_wkups;
-	uint64_t ri_pageins;
-	uint64_t ri_wired_size;
-	uint64_t ri_resident_size;	
-	uint64_t ri_phys_footprint;
-	uint64_t ri_proc_start_abstime;
-	uint64_t ri_proc_exit_abstime;
-};
 
-struct rusage_info_v1 {
-	uint8_t  ri_uuid[16];
-	uint64_t ri_user_time;
-	uint64_t ri_system_time;
-	uint64_t ri_pkg_idle_wkups;
-	uint64_t ri_interrupt_wkups;
-	uint64_t ri_pageins;
-	uint64_t ri_wired_size;
-	uint64_t ri_resident_size;	
-	uint64_t ri_phys_footprint;
-	uint64_t ri_proc_start_abstime;
-	uint64_t ri_proc_exit_abstime;
-	uint64_t ri_child_user_time;
-	uint64_t ri_child_system_time;
-	uint64_t ri_child_pkg_idle_wkups;
-	uint64_t ri_child_interrupt_wkups;
-	uint64_t ri_child_pageins;
-	uint64_t ri_child_elapsed_abstime;
-};
 
-struct rusage_info_v2 {
-	uint8_t  ri_uuid[16];
-	uint64_t ri_user_time;
-	uint64_t ri_system_time;
-	uint64_t ri_pkg_idle_wkups;
-	uint64_t ri_interrupt_wkups;
-	uint64_t ri_pageins;
-	uint64_t ri_wired_size;
-	uint64_t ri_resident_size;	
-	uint64_t ri_phys_footprint;
-	uint64_t ri_proc_start_abstime;
-	uint64_t ri_proc_exit_abstime;
-	uint64_t ri_child_user_time;
-	uint64_t ri_child_system_time;
-	uint64_t ri_child_pkg_idle_wkups;
-	uint64_t ri_child_interrupt_wkups;
-	uint64_t ri_child_pageins;
-	uint64_t ri_child_elapsed_abstime;
-	uint64_t ri_diskio_bytesread;
-	uint64_t ri_diskio_byteswritten;
-};
 
-struct rusage_info_v3 {
-	uint8_t  ri_uuid[16];
-	uint64_t ri_user_time;
-	uint64_t ri_system_time;
-	uint64_t ri_pkg_idle_wkups;
-	uint64_t ri_interrupt_wkups;
-	uint64_t ri_pageins;
-	uint64_t ri_wired_size;
-	uint64_t ri_resident_size;	
-	uint64_t ri_phys_footprint;
-	uint64_t ri_proc_start_abstime;
-	uint64_t ri_proc_exit_abstime;
-	uint64_t ri_child_user_time;
-	uint64_t ri_child_system_time;
-	uint64_t ri_child_pkg_idle_wkups;
-	uint64_t ri_child_interrupt_wkups;
-	uint64_t ri_child_pageins;
-	uint64_t ri_child_elapsed_abstime;
-	uint64_t ri_diskio_bytesread;
-	uint64_t ri_diskio_byteswritten;
-	uint64_t ri_cpu_time_qos_default;
-	uint64_t ri_cpu_time_qos_maintenance;
-	uint64_t ri_cpu_time_qos_background;
-	uint64_t ri_cpu_time_qos_utility;
-	uint64_t ri_cpu_time_qos_legacy;
-	uint64_t ri_cpu_time_qos_user_initiated;
-	uint64_t ri_cpu_time_qos_user_interactive;
-	uint64_t ri_billed_system_time;
-	uint64_t ri_serviced_system_time;
-};
 
-typedef struct rusage_info_v3 rusage_info_current;
+
+
+
 
 #endif /* __DARWIN_C_LEVEL >= __DARWIN_C_FULL */
 
@@ -443,10 +362,7 @@ struct rlimit {
  */
 #define	CPUMON_MAKE_FATAL		0x1000
 
-struct proc_rlimit_control_wakeupmon {
-	uint32_t wm_flags;
-	int32_t wm_rate;
-};
+
 
 /* I/O type */
 #define IOPOL_TYPE_DISK	0
@@ -491,11 +407,7 @@ struct proc_rlimit_control_wakeupmon {
 /*
  * Second parameter to iopolicysys()
  */
-struct _iopol_param_t {
-	int iop_scope;	/* current process or a thread */
-	int iop_iotype;
-	int iop_policy;
-};
+
 
 #endif	/* PRIVATE */
 #endif /* __DARWIN_C_LEVEL >= __DARWIN_C_FULL */
