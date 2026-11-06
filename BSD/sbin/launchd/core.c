@@ -62,6 +62,7 @@
 #include <sys/proc.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <uuid/uuid.h>
 #include <sys/kern_memorystatus.h>
 #include <net/if.h>
 #include <net/if_var.h>
@@ -8252,7 +8253,7 @@ job_mig_log_forward(job_t j, vm_offset_t inval, mach_msg_type_number_t invalCnt)
 		RETURN_NO_MEMORY();
 	}
 
-	if (!job_assumes(j, j->per_user)) {
+	if (!job_assumes(j, (bool)j->per_user)) {
 		return BOOTSTRAP_NOT_PRIVILEGED;
 	}
 
@@ -8555,7 +8556,7 @@ job_mig_swap_integer(job_t j, vproc_gsk_t inkey, vproc_gsk_t outkey, int64_t inv
 		/* No-op. */
 		break;
 	case VPROC_GSK_WEIRD_BOOTSTRAP:
-		if (job_assumes(j, j->weird_bootstrap)) {
+		if (job_assumes(j, (bool)j->weird_bootstrap)) {
 			job_log(j, LOG_DEBUG, "Unsetting weird bootstrap.");
 
 			mach_msg_size_t mxmsgsz = (typeof(mxmsgsz)) sizeof(union __RequestUnion__job_mig_job_subsystem);
@@ -8714,7 +8715,7 @@ job_mig_get_listener_port_rights(job_t j, mach_port_array_t *sports, mach_msg_ty
 	size_t cnt = 0;
 	struct machservice *msi = NULL;
 	SLIST_FOREACH(msi, &j->machservices, sle) {
-		if (msi->upfront && job_assumes(j, msi->recv)) {
+		if (msi->upfront && job_assumes(j, (bool)msi->recv)) {
 			cnt++;
 		}
 	}
@@ -9251,7 +9252,7 @@ job_mig_look_up2(job_t j, mach_port_t srp, name_t servicename, mach_port_t *serv
 			job_t ji = NULL;
 			job_t instance = NULL;
 			LIST_FOREACH(ji, &ms->job->subjobs, subjob_sle) {
-				if (uuid_compare(instance_id, ji->instance_id) == 0) {
+				if (memcmp(instance_id, ji->instance_id, sizeof(uuid_t)) == 0) {
 					instance = ji;
 					break;
 				}
@@ -9686,7 +9687,7 @@ job_mig_set_security_session(job_t j, uuid_t uuid, mach_port_t asport)
 		uuid_string_t uuid_str2;
 		uuid_unparse(ji->expected_audit_uuid, uuid_str2);
 
-		if (uuid_compare(uuid, ji->expected_audit_uuid) == 0) {
+		if (memcmp(uuid, ji->expected_audit_uuid, sizeof(uuid_t)) == 0) {
 			uuid_clear(ji->expected_audit_uuid);
 			if (asport != MACH_PORT_NULL) {
 				job_log(ji, LOG_DEBUG, "Job should join session with port 0x%x", asport);
