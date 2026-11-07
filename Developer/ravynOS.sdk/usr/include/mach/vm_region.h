@@ -134,6 +134,31 @@ typedef struct vm_region_basic_info              vm_region_basic_info_data_t;
  * back.
  */
 
+#ifdef MACH_KERNEL_PRIVATE
+#define VM_REGION_EXTENDED_INFO__legacy 11
+struct vm_region_extended_info__legacy {
+	vm_prot_t               protection;
+	unsigned int            user_tag;
+	unsigned int            pages_resident;
+	unsigned int            pages_shared_now_private;
+	unsigned int            pages_swapped_out;
+	unsigned int            pages_dirtied;
+	unsigned int            ref_count;
+	unsigned short          shadow_depth;
+	unsigned char           external_pager;
+	unsigned char           share_mode;
+	/*
+	 * XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX
+	 *  DO NOT EXTEND THIS DATA STRUCTURE.
+	 *  IT IS NOW ABANDONED AND REPLACED WITH vm_region_extended_info BELOW.
+	 * XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX XXX
+	 */
+};
+#define VM_REGION_EXTENDED_INFO_COUNT__legacy               \
+	((mach_msg_type_number_t)                           \
+	 (sizeof (struct vm_region_extended_info__legacy) / \
+	  sizeof (natural_t)))
+#endif /* MACH_KERNEL_PRIVATE */
 
 
 

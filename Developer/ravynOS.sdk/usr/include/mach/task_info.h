@@ -113,8 +113,14 @@ typedef struct task_basic_info_32       *task_basic_info_32_t;
 struct task_basic_info_64 {
 	integer_t       suspend_count;  /* suspend count for task */
 #if defined(__arm__) || defined(__arm64__)
+#if defined(KERNEL)
+	/* Compatibility with old 32-bit mach_vm_size_t */
+	natural_t       virtual_size;   /* virtual memory size (bytes) */
+	natural_t       resident_size;  /* resident memory size (bytes) */
+#else
 	mach_vm_size_t  virtual_size;   /* virtual memory size (bytes) */
 	mach_vm_size_t  resident_size;  /* resident memory size (bytes) */
+#endif
 #else /* defined(__arm__) || defined(__arm64__) */
 	mach_vm_size_t  virtual_size;   /* virtual memory size (bytes) */
 	mach_vm_size_t  resident_size;  /* resident memory size (bytes) */
@@ -129,7 +135,20 @@ typedef struct task_basic_info_64       task_basic_info_64_data_t;
 typedef struct task_basic_info_64       *task_basic_info_64_t;
 
 #if defined(__arm__) || defined(__arm64__)
-	#if   defined(__arm__) && defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_5_0)
+	#if defined(KERNEL)
+/*
+ * Backwards-compatibility for old mach_vm*_t types.
+ * The kernel knows about old and new, and if you are compiled
+ * to run on an earlier iOS version, you interact with the old
+ * (narrow) version.  If you are compiled for a newer OS
+ * version, however, you are mapped to the wide version.
+ */
+
+	#define TASK_BASIC_INFO_64      5
+	#define TASK_BASIC_INFO_64_COUNT   \
+	        (sizeof(task_basic_info_64_data_t) / sizeof(natural_t))
+
+	#elif defined(__arm__) && defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && (__IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_5_0)
 /*
  * Note: arm64 can't use the old flavor.  If you somehow manage to,
  * you can cope with the nonsense data yourself.
@@ -471,6 +490,7 @@ typedef struct task_power_info_v2       *task_power_info_v2_t;
 
 #define TASK_VM_INFO_PURGEABLE_ACCOUNT 27 /* Used for xnu purgeable vm unit tests */
 
+#ifdef PRIVATE
 struct pvm_account_info {
 	uint64_t pvm_volatile_count; /* Number of volatile bytes associated with a task */
 	uint64_t pvm_volatile_compressed_count; /* Number of volatile compressed bytes associated with a task */
@@ -483,6 +503,7 @@ typedef struct pvm_account_info pvm_account_info_data_t;
 
 #define PVM_ACCOUNT_INFO_COUNT ((mach_msg_type_number_t) \
 	        (sizeof (pvm_account_info_data_t) / sizeof (natural_t)))
+#endif /* PRIVATE */
 
 #define TASK_FLAGS_INFO  28                     /* return t_flags field */
 struct task_flags_info {
@@ -498,6 +519,7 @@ typedef struct task_flags_info * task_flags_info_t;
 
 #define TASK_DEBUG_INFO_INTERNAL    29 /* Used for kernel internal development tests. */
 
+#ifdef PRIVATE
 struct task_debug_info_internal {
 	integer_t suspend_count;
 	uint64_t ipc_space_size;
@@ -507,6 +529,7 @@ typedef struct task_debug_info_internal task_debug_info_internal_data_t;
 #define TASK_DEBUG_INFO_INTERNAL_COUNT  ((mach_msg_type_number_t) \
 	        (sizeof (task_debug_info_internal_data_t) / sizeof(natural_t)))
 
+#endif /* PRIVATE */
 
 /*
  * Type to control EXC_GUARD delivery options for a task
@@ -529,11 +552,13 @@ typedef uint32_t task_exc_guard_behavior_t;
 
 #define TASK_EXC_GUARD_ALL                   0xff /* All optional deliver settings */
 
+#ifdef PRIVATE
 /*
  * Experimental mode of setting default guard behavior for non-Apple processes
  * The default for 3rd party guards is shifted up 8 bits - but otherwise the same values as above.
  */
 #define TASK_EXC_GUARD_THIRD_PARTY_DEFAULT_SHIFT 0x8 /* 3rd party default shifted up in boot-arg */
+#endif
 
 /*
  * Obsolete interfaces.

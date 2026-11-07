@@ -63,7 +63,14 @@ typedef mach_voucher_name_t     *mach_voucher_name_array_t;
  * This type changes appearance between user-space and kernel.  It is
  * a port at user-space and a reference to an ipc_voucher structure in-kernel.
  */
+#if !defined(KERNEL)
 typedef mach_voucher_t          ipc_voucher_t;
+#else
+#if !defined(MACH_KERNEL_PRIVATE)
+struct ipc_voucher;
+#endif
+typedef struct ipc_voucher      *ipc_voucher_t;
+#endif
 #define IPC_VOUCHER_NULL        ((ipc_voucher_t) 0)
 
 /*
@@ -201,8 +208,17 @@ typedef mach_port_t                     mach_voucher_attr_control_t;
  * pointers to opaque structs in most of the kernel, and pointers to known struct
  * types in the Mach portion of the kernel.
  */
+#if !defined(KERNEL)
 typedef mach_port_t             ipc_voucher_attr_manager_t;
 typedef mach_port_t             ipc_voucher_attr_control_t;
+#else
+#if !defined(MACH_KERNEL_PRIVATE)
+struct ipc_voucher_attr_manager;
+struct ipc_voucher_attr_control;
+#endif
+typedef const struct ipc_voucher_attr_manager *ipc_voucher_attr_manager_t;
+typedef struct ipc_voucher_attr_control *ipc_voucher_attr_control_t;
+#endif
 #define IPC_VOUCHER_ATTR_MANAGER_NULL ((ipc_voucher_attr_manager_t) 0)
 #define IPC_VOUCHER_ATTR_CONTROL_NULL ((ipc_voucher_attr_control_t) 0)
 

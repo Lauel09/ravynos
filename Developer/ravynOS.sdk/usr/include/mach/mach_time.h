@@ -42,6 +42,7 @@ typedef struct mach_timebase_info       *mach_timebase_info_t;
 typedef struct mach_timebase_info       mach_timebase_info_data_t;
 
 __BEGIN_DECLS
+#ifndef KERNEL
 
 kern_return_t           mach_timebase_info(
 	mach_timebase_info_t    info);
@@ -49,6 +50,7 @@ kern_return_t           mach_timebase_info(
 kern_return_t           mach_wait_until(
 	uint64_t                deadline);
 
+#endif  /* KERNEL */
 
 uint64_t                        mach_absolute_time(void);
 
@@ -67,6 +69,7 @@ uint64_t                        mach_continuous_time(void);
 __OSX_AVAILABLE(10.12) __IOS_AVAILABLE(10.0) __TVOS_AVAILABLE(10.0) __WATCHOS_AVAILABLE(3.0)
 uint64_t                        mach_continuous_approximate_time(void);
 
+#if !defined(KERNEL) && defined(PRIVATE)
 // Forward definition because this is a BSD value
 struct timespec;
 
@@ -78,6 +81,7 @@ kern_return_t           mach_get_times(uint64_t* absolute_time,
 __OSX_AVAILABLE(10.12) __IOS_AVAILABLE(10.0) __TVOS_AVAILABLE(10.0) __WATCHOS_AVAILABLE(3.0)
 uint64_t                mach_boottime_usec(void);
 
+#endif /* KERNEL */
 
 __END_DECLS
 

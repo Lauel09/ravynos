@@ -288,11 +288,16 @@ typedef struct{
 
 typedef struct{
 	mach_port_t                   name;
+#if !(defined(KERNEL) && defined(__LP64__))
 // Pad to 8 bytes everywhere except the K64 kernel where mach_port_t is 8 bytes
 	mach_msg_size_t               pad1;
+#endif
 	unsigned int                  pad2 : 16;
 	mach_msg_type_name_t          disposition : 8;
 	mach_msg_descriptor_type_t    type : 8;
+#if defined(KERNEL)
+	uint32_t          pad_end;
+#endif
 } mach_msg_port_descriptor_t;
 
 typedef struct{
@@ -324,6 +329,9 @@ typedef struct{
 	mach_msg_descriptor_type_t    type: 8;
 #if defined(__LP64__)
 	mach_msg_size_t               size;
+#endif
+#if defined(KERNEL) && !defined(__LP64__)
+	uint32_t          pad_end;
 #endif
 } mach_msg_ool_descriptor_t;
 
@@ -357,6 +365,9 @@ typedef struct{
 #if defined(__LP64__)
 	mach_msg_size_t               count;
 #endif
+#if defined(KERNEL) && !defined(__LP64__)
+	uint32_t          pad_end;
+#endif
 } mach_msg_ool_ports_descriptor_t;
 
 typedef struct{
@@ -376,6 +387,18 @@ typedef struct{
 } mach_msg_guarded_port_descriptor64_t;
 
 typedef struct{
+#if defined(KERNEL)
+	mach_port_t                   name;
+#if !defined(__LP64__)
+	uint32_t                      pad1;
+#endif
+	mach_msg_guard_flags_t        flags : 16;
+	mach_msg_type_name_t          disposition : 8;
+	mach_msg_descriptor_type_t    type : 8;
+#if defined(__LP64__)
+	uint32_t                      pad_end;
+#endif /* defined(__LP64__) */
+#else
 	mach_port_context_t           context;
 #if !defined(__LP64__)
 	mach_port_name_t              name;
@@ -386,6 +409,7 @@ typedef struct{
 #if defined(__LP64__)
 	mach_port_name_t              name;
 #endif /* defined(__LP64__) */
+#endif /* defined(KERNEL) */
 } mach_msg_guarded_port_descriptor_t;
 
 /*
@@ -393,6 +417,15 @@ typedef struct{
  * appropriate in LP64 mode because not all descriptors
  * are of the same size in that environment.
  */
+#if defined(__LP64__) && defined(KERNEL)
+typedef union{
+	mach_msg_port_descriptor_t            port;
+	mach_msg_ool_descriptor32_t           out_of_line;
+	mach_msg_ool_ports_descriptor32_t     ool_ports;
+	mach_msg_type_descriptor_t            type;
+	mach_msg_guarded_port_descriptor32_t  guarded_port;
+} mach_msg_descriptor_t;
+#else
 typedef union{
 	mach_msg_port_descriptor_t            port;
 	mach_msg_ool_descriptor_t             out_of_line;
@@ -400,6 +433,7 @@ typedef union{
 	mach_msg_type_descriptor_t            type;
 	mach_msg_guarded_port_descriptor_t    guarded_port;
 } mach_msg_descriptor_t;
+#endif
 
 typedef struct{
 	mach_msg_size_t msgh_descriptor_count;
@@ -493,6 +527,25 @@ typedef struct{
 	mach_port_context_t           msgh_context;
 } mach_msg_context_trailer_t;
 
+#if defined(MACH_KERNEL_PRIVATE) && defined(__arm64__)
+typedef struct{
+	mach_msg_trailer_type_t       msgh_trailer_type;
+	mach_msg_trailer_size_t       msgh_trailer_size;
+	mach_port_seqno_t             msgh_seqno;
+	security_token_t              msgh_sender;
+	audit_token_t                 msgh_audit;
+	mach_port_context32_t         msgh_context;
+} mach_msg_context_trailer32_t;
+
+typedef struct{
+	mach_msg_trailer_type_t       msgh_trailer_type;
+	mach_msg_trailer_size_t       msgh_trailer_size;
+	mach_port_seqno_t             msgh_seqno;
+	security_token_t              msgh_sender;
+	audit_token_t                 msgh_audit;
+	mach_port_context64_t         msgh_context;
+} mach_msg_context_trailer64_t;
+#endif
 
 
 typedef struct{
@@ -515,6 +568,30 @@ typedef struct{
 	msg_labels_t                  msgh_labels;
 } mach_msg_mac_trailer_t;
 
+#if defined(MACH_KERNEL_PRIVATE) && defined(__arm64__)
+typedef struct{
+	mach_msg_trailer_type_t       msgh_trailer_type;
+	mach_msg_trailer_size_t       msgh_trailer_size;
+	mach_port_seqno_t             msgh_seqno;
+	security_token_t              msgh_sender;
+	audit_token_t                 msgh_audit;
+	mach_port_context32_t         msgh_context;
+	int                           msgh_ad;
+	msg_labels_t                  msgh_labels;
+} mach_msg_mac_trailer32_t;
+
+typedef struct{
+	mach_msg_trailer_type_t       msgh_trailer_type;
+	mach_msg_trailer_size_t       msgh_trailer_size;
+	mach_port_seqno_t             msgh_seqno;
+	security_token_t              msgh_sender;
+	audit_token_t                 msgh_audit;
+	mach_port_context64_t         msgh_context;
+	int                           msgh_ad;
+	msg_labels_t                  msgh_labels;
+} mach_msg_mac_trailer64_t;
+
+#endif
 
 #define MACH_MSG_TRAILER_MINIMUM_SIZE  sizeof(mach_msg_trailer_t)
 
@@ -527,6 +604,10 @@ typedef struct{
  * another module may exceed the local modules notion of
  * MAX_TRAILER_SIZE.
  */
+#if defined(MACH_KERNEL_PRIVATE) && defined(__arm64__)
+typedef mach_msg_mac_trailer64_t mach_msg_max_trailer64_t;
+typedef mach_msg_mac_trailer32_t mach_msg_max_trailer32_t;
+#endif
 
 typedef mach_msg_mac_trailer_t mach_msg_max_trailer_t;
 #define MAX_TRAILER_SIZE ((mach_msg_size_t)sizeof(mach_msg_max_trailer_t))
@@ -573,6 +654,27 @@ typedef union{
 #define round_msg(x)    (((mach_msg_size_t)(x) + sizeof (natural_t) - 1) & \
 	                        ~(sizeof (natural_t) - 1))
 
+#ifdef XNU_KERNEL_PRIVATE
+
+#include <os/base.h>
+#include <os/overflow.h>
+#include <kern/debug.h>
+
+#define round_msg_overflow(in, out) __os_warn_unused(({ \
+	        bool __ovr = os_add_overflow(in, (__typeof__(*out))(sizeof(natural_t) - 1), out); \
+	        *out &= ~((__typeof__(*out))(sizeof(natural_t) - 1)); \
+	        __ovr; \
+	}))
+
+static inline mach_msg_size_t
+mach_round_msg(mach_msg_size_t x)
+{
+	if (round_msg_overflow(x, &x)) {
+		panic("round msg overflow");
+	}
+	return x;
+}
+#endif /* XNU_KERNEL_PRIVATE */
 
 /*
  *  There is no fixed upper bound to the size of Mach messages.
@@ -681,6 +783,19 @@ typedef integer_t mach_msg_option_t;
 	                                         * the context in which a thread replies to a message.
 	                                         * This flag must be passed on both the SEND and RCV */
 
+#ifdef XNU_KERNEL_PRIVATE
+
+#define MACH_RCV_STACK          0x00002000      /* receive into highest addr of buffer */
+
+/*
+ * NOTE:
+ * This internal-only flag is intended for use by a single thread per-port/set!
+ * If more than one thread attempts to MACH_PEEK_MSG on a port or set, one of
+ * the threads may miss messages (in fact, it may never wake up).
+ */
+#define MACH_PEEK_MSG           0x80000000      /* receive, but leave msgs queued */
+
+#endif
 
 /*
  * NOTE: a 0x00------ RCV mask implies to ask for
@@ -705,6 +820,53 @@ typedef integer_t mach_msg_option_t;
 
 #define GET_RCV_ELEMENTS(y) (((y) >> 24) & 0xf)
 
+#ifdef MACH_KERNEL_PRIVATE
+/* The options that the kernel honors when passed from user space */
+#define MACH_SEND_USER (MACH_SEND_MSG | MACH_SEND_TIMEOUT | \
+	                                        MACH_SEND_NOTIFY | MACH_SEND_OVERRIDE | \
+	                                        MACH_SEND_TRAILER | MACH_SEND_NOIMPORTANCE | \
+	                                        MACH_SEND_SYNC_OVERRIDE | MACH_SEND_PROPAGATE_QOS | \
+	                                        MACH_SEND_SYNC_BOOTSTRAP_CHECKIN | \
+	                                        MACH_MSG_STRICT_REPLY | MACH_RCV_GUARDED_DESC)
+
+#define MACH_RCV_USER (MACH_RCV_MSG | MACH_RCV_TIMEOUT | \
+	                                   MACH_RCV_LARGE | MACH_RCV_LARGE_IDENTITY | \
+	                                   MACH_RCV_VOUCHER | MACH_RCV_TRAILER_MASK | \
+	                                   MACH_RCV_SYNC_WAIT | MACH_RCV_SYNC_PEEK  | \
+	                                   MACH_RCV_GUARDED_DESC | MACH_MSG_STRICT_REPLY)
+
+#define MACH_MSG_OPTION_USER     (MACH_SEND_USER | MACH_RCV_USER)
+
+/* The options implemented by the library interface to mach_msg et. al. */
+#define MACH_MSG_OPTION_LIB      (MACH_SEND_INTERRUPT | MACH_RCV_INTERRUPT)
+
+/*
+ * Default options to use when sending from the kernel.
+ *
+ * Until we are sure of its effects, we are disabling
+ * importance donation from the kernel-side of user
+ * threads in importance-donating tasks.
+ * (11938665 & 23925818)
+ */
+#define MACH_SEND_KERNEL_DEFAULT (MACH_SEND_MSG | \
+	                          MACH_SEND_ALWAYS | MACH_SEND_NOIMPORTANCE)
+
+#define MACH_SEND_WITH_STRICT_REPLY(_opts) (((_opts) & (MACH_MSG_STRICT_REPLY | MACH_SEND_MSG)) == \
+	                                    (MACH_MSG_STRICT_REPLY | MACH_SEND_MSG))
+
+#define MACH_SEND_REPLY_IS_IMMOVABLE(_opts) (((_opts) & (MACH_MSG_STRICT_REPLY | \
+	                                                 MACH_SEND_MSG | MACH_RCV_MSG | \
+	                                                 MACH_RCV_GUARDED_DESC)) == \
+	                                     (MACH_MSG_STRICT_REPLY | MACH_SEND_MSG | MACH_RCV_GUARDED_DESC))
+
+#define MACH_RCV_WITH_STRICT_REPLY(_opts)  (((_opts) & (MACH_MSG_STRICT_REPLY | MACH_RCV_MSG)) == \
+	                                    (MACH_MSG_STRICT_REPLY | MACH_RCV_MSG))
+
+#define MACH_RCV_WITH_IMMOVABLE_REPLY(_opts) (((_opts) & (MACH_MSG_STRICT_REPLY | \
+	                                                  MACH_RCV_MSG | MACH_RCV_GUARDED_DESC)) == \
+	                                      (MACH_MSG_STRICT_REPLY | MACH_RCV_MSG | MACH_RCV_GUARDED_DESC))
+
+#endif /* MACH_KERNEL_PRIVATE */
 
 /*
  * XXXMAC: note that in the case of MACH_RCV_TRAILER_LABELS,
@@ -732,7 +894,31 @@ typedef integer_t mach_msg_option_t;
 	     sizeof(mach_msg_max_trailer_t))))))))
 
 
+#ifdef XNU_KERNEL_PRIVATE
+
+#if defined(__arm64__)
+#define REQUESTED_TRAILER_SIZE(is64, y)                                 \
+	((mach_msg_trailer_size_t)                              \
+	 ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_NULL) ?      \
+	  sizeof(mach_msg_trailer_t) :                          \
+	  ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_SEQNO) ?    \
+	   sizeof(mach_msg_seqno_trailer_t) :                   \
+	  ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_SENDER) ?   \
+	   sizeof(mach_msg_security_trailer_t) :                \
+	   ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_AUDIT) ?   \
+	    sizeof(mach_msg_audit_trailer_t) :                  \
+	    ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_CTX) ?    \
+	     ((is64) ? sizeof(mach_msg_context_trailer64_t) : sizeof(mach_msg_context_trailer32_t)) : \
+	     ((GET_RCV_ELEMENTS(y) == MACH_RCV_TRAILER_AV) ?    \
+	      ((is64) ? sizeof(mach_msg_mac_trailer64_t) : sizeof(mach_msg_mac_trailer32_t)) : \
+	       sizeof(mach_msg_max_trailer_t))))))))
+#else
+#define REQUESTED_TRAILER_SIZE(is64, y) REQUESTED_TRAILER_SIZE_NATIVE(y)
+#endif
+
+#else /* XNU_KERNEL_PRIVATE */
 #define REQUESTED_TRAILER_SIZE(y) REQUESTED_TRAILER_SIZE_NATIVE(y)
+#endif /* XNU_KERNEL_PRIVATE */
 
 /*
  *  Much code assumes that mach_msg_return_t == kern_return_t.
@@ -835,6 +1021,12 @@ typedef kern_return_t mach_msg_return_t;
 #define MACH_RCV_INVALID_REPLY          0x10004012
 /* invalid reply port used in a STRICT_REPLY message */
 
+#ifdef XNU_KERNEL_PRIVATE
+#define MACH_PEEK_IN_PROGRESS           0x10008001
+/* Waiting for a peek. (Internal use only.) */
+#define MACH_PEEK_READY                 0x10008002
+/* Waiting for a peek. (Internal use only.) */
+#endif
 
 
 __BEGIN_DECLS
@@ -867,6 +1059,7 @@ extern mach_msg_return_t        mach_msg_overwrite(
 	mach_msg_header_t *rcv_msg,
 	mach_msg_size_t rcv_limit);
 
+#ifndef KERNEL
 
 /*
  *	Routine:	mach_msg
@@ -896,6 +1089,11 @@ __WATCHOS_PROHIBITED __TVOS_PROHIBITED
 extern kern_return_t            mach_voucher_deallocate(
 	mach_port_name_t voucher);
 
+#elif defined(MACH_KERNEL_PRIVATE)
+
+extern mach_msg_return_t        mach_msg_receive_results(mach_msg_size_t *size);
+
+#endif  /* KERNEL */
 
 __END_DECLS
 

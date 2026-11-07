@@ -260,6 +260,7 @@ typedef struct thread_throughput_qos_policy     *thread_throughput_qos_policy_t;
 #define THREAD_THROUGHPUT_QOS_POLICY_COUNT      ((mach_msg_type_number_t) \
 	    (sizeof (thread_throughput_qos_policy_data_t) / sizeof (integer_t)))
 
+#ifdef PRIVATE
 
 /*
  * THREAD_POLICY_STATE:
@@ -361,7 +362,9 @@ typedef struct thread_qos_policy      *thread_qos_policy_t;
 #define THREAD_QOS_POLICY_COUNT    ((mach_msg_type_number_t) \
 	(sizeof (thread_qos_policy_data_t) / sizeof (integer_t)))
 
+#endif /* PRIVATE */
 
+#ifdef PRIVATE
 
 /*
  * Internal bitfields are privately exported for revlocked tracing tools like msa to decode tracepoints.
@@ -417,6 +420,7 @@ struct thread_effective_policy {
 	    thep_reserved           :40;
 };
 
+#endif /* PRIVATE */
 
 
 #endif  /* _MACH_THREAD_POLICY_H_ */

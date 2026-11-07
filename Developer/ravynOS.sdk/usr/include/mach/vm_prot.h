@@ -129,12 +129,14 @@ typedef int             vm_prot_t;
 
 #define VM_PROT_WANTS_COPY      ((vm_prot_t) 0x10)
 
+#ifdef PRIVATE
 /*
  *	The caller wants this memory region treated as if it had a valid
  *	code signature.
  */
 
 #define VM_PROT_TRUSTED         ((vm_prot_t) 0x20)
+#endif /* PRIVATE */
 
 /*
  *      Another invalid protection value.

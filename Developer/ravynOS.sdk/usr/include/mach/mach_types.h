@@ -110,6 +110,59 @@
 #include <mach/kmod.h>
 #include <mach/dyld_kernel.h>
 
+#ifdef  KERNEL
+
+#include <mach/vm_param.h>
+
+/*
+ * If we are in the kernel, then pick up the kernel definitions for
+ * the basic mach types.
+ */
+typedef struct task                     *task_t, *task_name_t, *task_inspect_t, *task_suspension_token_t;
+typedef struct thread           *thread_t, *thread_act_t, *thread_inspect_t;
+typedef struct ipc_space                *ipc_space_t, *ipc_space_inspect_t;
+typedef struct coalition                *coalition_t;
+typedef struct host                     *host_t;
+typedef struct host                     *host_priv_t;
+typedef struct host                     *host_security_t;
+typedef struct processor                *processor_t;
+typedef struct processor_set            *processor_set_t;
+typedef struct processor_set            *processor_set_control_t;
+typedef struct semaphore                *semaphore_t;
+typedef struct ledger                   *ledger_t;
+typedef struct alarm                    *alarm_t;
+typedef struct clock                    *clock_serv_t;
+typedef struct clock                    *clock_ctrl_t;
+typedef struct arcade_register          *arcade_register_t;
+typedef struct suid_cred               *suid_cred_t;
+
+/*
+ * OBSOLETE: lock_set interfaces are obsolete.
+ */
+typedef struct lock_set                 *lock_set_t;
+struct lock_set;
+
+#ifndef MACH_KERNEL_PRIVATE
+
+__BEGIN_DECLS
+
+struct task;
+struct thread;
+struct host;
+struct processor;
+struct processor_set;
+struct semaphore;
+struct ledger;
+struct alarm;
+struct clock;
+struct arcade_register;
+struct suid_cred;
+
+__END_DECLS
+
+#endif  /* MACH_KERNEL_PRIVATE */
+
+#else   /* KERNEL */
 
 /*
  * If we are not in the kernel, then these will all be represented by
@@ -140,6 +193,7 @@ typedef mach_port_t             clock_ctrl_t;
 typedef mach_port_t             arcade_register_t;
 typedef mach_port_t             suid_cred_t;
 
+#endif  /* KERNEL */
 
 /*
  * These aren't really unique types.  They are just called
@@ -210,6 +264,31 @@ typedef char nspace_path_t[1024]; /* 1024 == PATH_MAX */
 typedef char suid_cred_path_t[1024];
 typedef uint32_t suid_cred_uid_t;
 
+#ifdef KERNEL
+#define TASK_NULL               ((task_t) NULL)
+#define TASK_NAME_NULL          ((task_name_t) NULL)
+#define TASK_INSPECT_NULL               ((task_inspect_t) NULL)
+#define THREAD_NULL             ((thread_t) NULL)
+#define THREAD_INSPECT_NULL     ((thread_inspect_t)NULL)
+#define TID_NULL                ((uint64_t) NULL)
+#define THR_ACT_NULL            ((thread_act_t) NULL)
+#define IPC_SPACE_NULL          ((ipc_space_t) NULL)
+#define IPC_SPACE_INSPECT_NULL  ((ipc_space_inspect_t) NULL)
+#define COALITION_NULL          ((coalition_t) NULL)
+#define HOST_NULL               ((host_t) NULL)
+#define HOST_PRIV_NULL          ((host_priv_t)NULL)
+#define HOST_SECURITY_NULL      ((host_security_t)NULL)
+#define PROCESSOR_SET_NULL      ((processor_set_t) NULL)
+#define PROCESSOR_NULL          ((processor_t) NULL)
+#define SEMAPHORE_NULL          ((semaphore_t) NULL)
+#define LOCK_SET_NULL           ((lock_set_t) NULL)
+#define LEDGER_NULL             ((ledger_t) NULL)
+#define ALARM_NULL              ((alarm_t) NULL)
+#define CLOCK_NULL              ((clock_t) NULL)
+#define UND_SERVER_NULL         ((UNDServerRef) NULL)
+#define ARCADE_REG_NULL         ((arcade_register_t) NULL)
+#define SUID_CRED_NULL         ((suid_cred_t) NULL)
+#else
 #define TASK_NULL               ((task_t) 0)
 #define TASK_NAME_NULL          ((task_name_t) 0)
 #define TASK_INSPECT_NULL               ((task_inspect_t) 0)
@@ -233,6 +312,7 @@ typedef uint32_t suid_cred_uid_t;
 #define UND_SERVER_NULL         ((UNDServerRef) 0)
 #define ARCADE_REG_NULL         ((arcade_register_t) 0)
 #define SUID_CRED_NULL         ((suid_cred_t) 0)
+#endif
 
 /* DEPRECATED */
 typedef natural_t       ledger_item_t;

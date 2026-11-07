@@ -225,6 +225,43 @@ typedef struct vm_purgeable_info        *vm_purgeable_info_t;
 #define VM_PAGE_QUERY_PAGE_CS_NX        0x400
 #define VM_PAGE_QUERY_PAGE_REUSABLE     0x800
 
+#ifdef  MACH_KERNEL_PRIVATE
+
+/*
+ *	Each machine dependent implementation is expected to
+ *	keep certain statistics.  They may do this anyway they
+ *	so choose, but are expected to return the statistics
+ *	in the following structure.
+ */
+
+struct pmap_statistics {
+	integer_t       resident_count; /* # of pages mapped (total)*/
+	integer_t       resident_max;   /* # of pages mapped (peak) */
+	integer_t       wired_count;    /* # of pages wired */
+
+	integer_t       device;
+	integer_t       device_peak;
+	integer_t       internal;
+	integer_t       internal_peak;
+	integer_t       external;
+	integer_t       external_peak;
+	integer_t       reusable;
+	integer_t       reusable_peak;
+	uint64_t        compressed __attribute__((aligned(8)));
+	uint64_t        compressed_peak __attribute__((aligned(8)));
+	uint64_t        compressed_lifetime __attribute__((aligned(8)));
+};
+
+typedef struct pmap_statistics  *pmap_statistics_t;
+
+#define PMAP_STATS_PEAK(field)                  \
+	MACRO_BEGIN                             \
+	if (field > field##_peak) {             \
+	        field##_peak = field;           \
+	}                                       \
+	MACRO_END
+
+#endif  /* MACH_KERNEL_PRIVATE */
 
 /*
  * VM allocation flags:
@@ -278,9 +315,11 @@ typedef struct vm_purgeable_info        *vm_purgeable_info_t;
 #define VM_FLAGS_ALIAS_MASK     0xFF000000
 #define VM_GET_FLAGS_ALIAS(flags, alias)                        \
 	        (alias) = ((flags) & VM_FLAGS_ALIAS_MASK) >> 24
+#if !XNU_KERNEL_PRIVATE
 #define VM_SET_FLAGS_ALIAS(flags, alias)                        \
 	        (flags) = (((flags) & ~VM_FLAGS_ALIAS_MASK) |   \
 	        (((alias) & ~VM_FLAGS_ALIAS_MASK) << 24))
+#endif /* !XNU_KERNEL_PRIVATE */
 
 /* These are the flags that we accept from user-space */
 #define VM_FLAGS_USER_ALLOCATE  (VM_FLAGS_FIXED |               \
@@ -308,8 +347,10 @@ typedef struct vm_purgeable_info        *vm_purgeable_info_t;
 #define SUPERPAGE_SIZE_ANY              1
 #define VM_FLAGS_SUPERPAGE_NONE     (SUPERPAGE_NONE     << VM_FLAGS_SUPERPAGE_SHIFT)
 #define VM_FLAGS_SUPERPAGE_SIZE_ANY (SUPERPAGE_SIZE_ANY << VM_FLAGS_SUPERPAGE_SHIFT)
+#if defined(__x86_64__) || !defined(KERNEL)
 #define SUPERPAGE_SIZE_2MB              2
 #define VM_FLAGS_SUPERPAGE_SIZE_2MB (SUPERPAGE_SIZE_2MB<<VM_FLAGS_SUPERPAGE_SHIFT)
+#endif
 
 /*
  * EXC_GUARD definitions for virtual memory.
@@ -321,6 +362,69 @@ enum virtual_memory_guard_exception_codes {
 	kGUARD_EXC_DEALLOC_GAP  = 1u << 0
 };
 
+#ifdef KERNEL_PRIVATE
+typedef struct {
+	unsigned int
+	    vmkf_atomic_entry:1,
+	    vmkf_permanent:1,
+	    vmkf_guard_after:1,
+	    vmkf_guard_before:1,
+	    vmkf_submap:1,
+	    vmkf_already:1,
+	    vmkf_beyond_max:1,
+	    vmkf_no_pmap_check:1,
+	    vmkf_map_jit:1,
+	    vmkf_iokit_acct:1,
+	    vmkf_keep_map_locked:1,
+	    vmkf_fourk:1,
+	    vmkf_overwrite_immutable:1,
+	    vmkf_remap_prot_copy:1,
+	    vmkf_cs_enforcement_override:1,
+	    vmkf_cs_enforcement:1,
+	    vmkf_nested_pmap:1,
+	    vmkf_no_copy_on_read:1,
+#if !defined(CONFIG_EMBEDDED)
+	    vmkf_32bit_map_va:1,
+	    __vmkf_unused:13;
+#else
+	    __vmkf_unused:14;
+#endif
+} vm_map_kernel_flags_t;
+#define VM_MAP_KERNEL_FLAGS_NONE (vm_map_kernel_flags_t) {              \
+	.vmkf_atomic_entry = 0, /* keep entry atomic (no coalescing) */ \
+	.vmkf_permanent = 0,    /* mapping can NEVER be unmapped */     \
+	.vmkf_guard_after = 0,  /* guard page after the mapping */      \
+	.vmkf_guard_before = 0, /* guard page before the mapping */     \
+	.vmkf_submap = 0,       /* mapping a VM submap */               \
+	.vmkf_already = 0,      /* OK if same mapping already exists */ \
+	.vmkf_beyond_max = 0,   /* map beyond the map's max offset */   \
+	.vmkf_no_pmap_check = 0, /* do not check that pmap is empty */  \
+	.vmkf_map_jit = 0,      /* mark entry as JIT region */          \
+	.vmkf_iokit_acct = 0,   /* IOKit accounting */                  \
+	.vmkf_keep_map_locked = 0, /* keep map locked when returning from vm_map_enter() */ \
+	.vmkf_fourk = 0,        /* use fourk pager */                   \
+	.vmkf_overwrite_immutable = 0,  /* can overwrite immutable mappings */ \
+	.vmkf_remap_prot_copy = 0, /* vm_remap for VM_PROT_COPY */      \
+	.vmkf_cs_enforcement_override = 0, /* override CS_ENFORCEMENT */ \
+	.vmkf_cs_enforcement = 0,  /* new value for CS_ENFORCEMENT */   \
+	.vmkf_nested_pmap = 0, /* use a nested pmap */                  \
+	.vmkf_no_copy_on_read = 0, /* do not use copy_on_read */        \
+	.__vmkf_unused = 0                                              \
+}
+
+typedef struct {
+	unsigned int
+	    vmnekf_ledger_tag:3,
+	    vmnekf_ledger_no_footprint:1,
+	    __vmnekf_unused:28;
+} vm_named_entry_kernel_flags_t;
+#define VM_NAMED_ENTRY_KERNEL_FLAGS_NONE (vm_named_entry_kernel_flags_t) {    \
+	.vmnekf_ledger_tag = 0,                                                \
+	.vmnekf_ledger_no_footprint = 0,                                       \
+	.__vmnekf_unused = 0                                                   \
+}
+
+#endif /* KERNEL_PRIVATE */
 
 /* current accounting postmark */
 #define __VM_LEDGER_ACCOUNTING_POSTMARK 2019032600
@@ -516,8 +620,80 @@ enum virtual_memory_guard_exception_codes {
 #define VM_MEMORY_APPLICATION_SPECIFIC_1 240
 #define VM_MEMORY_APPLICATION_SPECIFIC_16 255
 
+#if !XNU_KERNEL_PRIVATE
 #define VM_MAKE_TAG(tag) ((tag) << 24)
+#endif /* XNU_KERNEL_PRIVATE */
 
 
+#if KERNEL_PRIVATE
+
+/* kernel map tags */
+/* please add new definition strings to zprint */
+
+#define VM_KERN_MEMORY_NONE             0
+
+#define VM_KERN_MEMORY_OSFMK            1
+#define VM_KERN_MEMORY_BSD              2
+#define VM_KERN_MEMORY_IOKIT            3
+#define VM_KERN_MEMORY_LIBKERN          4
+#define VM_KERN_MEMORY_OSKEXT           5
+#define VM_KERN_MEMORY_KEXT             6
+#define VM_KERN_MEMORY_IPC              7
+#define VM_KERN_MEMORY_STACK            8
+#define VM_KERN_MEMORY_CPU              9
+#define VM_KERN_MEMORY_PMAP             10
+#define VM_KERN_MEMORY_PTE              11
+#define VM_KERN_MEMORY_ZONE             12
+#define VM_KERN_MEMORY_KALLOC           13
+#define VM_KERN_MEMORY_COMPRESSOR       14
+#define VM_KERN_MEMORY_COMPRESSED_DATA  15
+#define VM_KERN_MEMORY_PHANTOM_CACHE    16
+#define VM_KERN_MEMORY_WAITQ            17
+#define VM_KERN_MEMORY_DIAG             18
+#define VM_KERN_MEMORY_LOG              19
+#define VM_KERN_MEMORY_FILE             20
+#define VM_KERN_MEMORY_MBUF             21
+#define VM_KERN_MEMORY_UBC              22
+#define VM_KERN_MEMORY_SECURITY         23
+#define VM_KERN_MEMORY_MLOCK            24
+#define VM_KERN_MEMORY_REASON           25
+#define VM_KERN_MEMORY_SKYWALK          26
+#define VM_KERN_MEMORY_LTABLE           27
+
+#define VM_KERN_MEMORY_FIRST_DYNAMIC    28
+/* out of tags: */
+#define VM_KERN_MEMORY_ANY              255
+#define VM_KERN_MEMORY_COUNT            256
+
+/* end kernel map tags */
+
+// mach_memory_info.flags
+#define VM_KERN_SITE_TYPE               0x000000FF
+#define VM_KERN_SITE_TAG                0x00000000
+#define VM_KERN_SITE_KMOD               0x00000001
+#define VM_KERN_SITE_KERNEL             0x00000002
+#define VM_KERN_SITE_COUNTER            0x00000003
+#define VM_KERN_SITE_WIRED              0x00000100      /* add to wired count */
+#define VM_KERN_SITE_HIDE               0x00000200      /* no zprint */
+#define VM_KERN_SITE_NAMED              0x00000400
+#define VM_KERN_SITE_ZONE               0x00000800
+
+#define VM_KERN_COUNT_MANAGED           0
+#define VM_KERN_COUNT_RESERVED          1
+#define VM_KERN_COUNT_WIRED             2
+#define VM_KERN_COUNT_WIRED_MANAGED     3
+#define VM_KERN_COUNT_STOLEN            4
+#define VM_KERN_COUNT_LOPAGE            5
+#define VM_KERN_COUNT_MAP_KERNEL        6
+#define VM_KERN_COUNT_MAP_ZONE          7
+#define VM_KERN_COUNT_MAP_KALLOC        8
+
+#define VM_KERN_COUNT_WIRED_BOOT    9
+
+#define VM_KERN_COUNT_BOOT_STOLEN       10
+
+#define VM_KERN_COUNTER_COUNT           11
+
+#endif /* KERNEL_PRIVATE */
 
 #endif  /* _MACH_VM_STATISTICS_H_ */

@@ -54,6 +54,7 @@
  * the rights to redistribute these changes.
  */
 
+#ifdef	PRIVATE
 
 #ifndef	_MACH_SYSCALL_SW_H_
 #define _MACH_SYSCALL_SW_H_
@@ -187,3 +188,4 @@ kernel_trap(debug_control_port_for_pid,-96,3)
  */
 #endif	/* _MACH_SYSCALL_SW_H_ */
 
+#endif	/* PRIVATE */

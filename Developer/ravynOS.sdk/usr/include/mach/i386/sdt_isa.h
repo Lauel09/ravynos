@@ -35,8 +35,35 @@
 
 #define DTRACE_STRINGIFY(s) #s
 #define DTRACE_TOSTRING(s) DTRACE_STRINGIFY(s)
+#if defined(KERNEL)
+/*
+ * For the kernel, set an explicit global label so the symbol can be located
+ */
+#ifdef __x86_64__
+#define DTRACE_LAB(p, n)		\
+   "__dtrace_probe$" DTRACE_TOSTRING(%=__LINE__) DTRACE_STRINGIFY(_##p##___##n)
+
+#define DTRACE_LABEL(p, n)		\
+      ".section __DATA, __data\n\t"	\
+      ".globl " DTRACE_LAB(p, n) "\n\t"	\
+       DTRACE_LAB(p, n) ":" ".quad 1f""\n\t"	\
+       ".text" "\n\t"			\
+	"1:"
+#else
+#define DTRACE_LAB(p, n)		\
+   "__dtrace_probe$" DTRACE_TOSTRING(%=__LINE__) DTRACE_STRINGIFY(_##p##___##n)
+
+#define DTRACE_LABEL(p, n)		\
+      ".section __DATA, __data\n\t"	\
+      ".globl " DTRACE_LAB(p, n) "\n\t"	\
+       DTRACE_LAB(p, n) ":" ".long 1f""\n\t"	\
+       ".text" "\n\t"			\
+	"1:"
+#endif
+#else	/* !KERNEL */
 #define DTRACE_LABEL(p, n)									\
 	"__dtrace_probe$" DTRACE_TOSTRING(%=__LINE__) DTRACE_STRINGIFY(_##p##___##n) ":"	"\n\t"
+#endif	/* !KERNEL */
 
 #ifdef DTRACE_CALL_TEST
 

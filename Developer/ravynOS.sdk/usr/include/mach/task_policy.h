@@ -183,6 +183,7 @@ typedef struct task_qos_policy *task_qos_policy_t;
 #define PROC_FLAG_APPLICATION        0x1000000 /* Process is an application */
 #define PROC_FLAG_IOS_APPLICATION PROC_FLAG_APPLICATION /* Process is an application */
 
+#ifdef PRIVATE
 
 /*
  * Internal bitfields are privately exported for *revlocked*
@@ -253,8 +254,30 @@ struct task_effective_policy {
 	    tep_reserved            :31;
 };
 
+#endif /* PRIVATE */
 
+#ifdef MACH_KERNEL_PRIVATE
 
+extern const struct task_requested_policy default_task_requested_policy;
+extern const struct task_effective_policy default_task_effective_policy;
+
+extern kern_return_t
+    qos_latency_policy_validate(task_latency_qos_t);
+
+extern kern_return_t
+    qos_throughput_policy_validate(task_throughput_qos_t);
+
+extern uint32_t
+    qos_extract(uint32_t);
+
+extern uint32_t
+    qos_latency_policy_package(uint32_t);
+extern uint32_t
+    qos_throughput_policy_package(uint32_t);
+
+#endif /* MACH_KERNEL_PRIVATE */
+
+#ifdef PRIVATE
 
 /*
  * Control structure for applying suppression behaviors to tasks
@@ -417,5 +440,6 @@ typedef struct task_policy_state *task_policy_state_t;
 #define POLICY_PEND_TIMERS                   0x00000004
 #define POLICY_PEND_WATCHERS                 0x00000008
 
+#endif /* PRIVATE */
 
 #endif  /* _MACH_TASK_POLICY_H_ */

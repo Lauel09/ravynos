@@ -131,6 +131,21 @@ typedef uint64_t                vm_map_size_t;
 
 typedef mach_vm_address_t       mach_port_context_t;
 
+#ifdef  MACH_KERNEL_PRIVATE
+
+#ifdef VM32_SUPPORT
+
+/*
+ * These are types used internal to Mach to implement the
+ * legacy 32-bit VM APIs published by the kernel.
+ */
+typedef uint32_t                vm32_address_t;
+typedef uint32_t                vm32_offset_t;
+typedef uint32_t                vm32_size_t;
+
+#endif  /* VM32_SUPPORT */
+
+#endif  /* MACH_KERNEL_PRIVATE */
 
 #endif  /* ASSEMBLER */
 

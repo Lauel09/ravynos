@@ -1,0 +1,3 @@
+#ifndef _MACH_CLOCK_REPLY_SERVER_H_
+#define _MACH_CLOCK_REPLY_SERVER_H_
+#endif

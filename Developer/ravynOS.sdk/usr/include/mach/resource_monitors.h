@@ -30,7 +30,9 @@
 #define _MACH_RESOURCE_MONITORS_H_
 
 #include <sys/syslimits.h>      /* PATH_MAX */
+#ifndef XNU_KERNEL_PRIVATE
 #include <TargetConditionals.h>
+#endif
 
 __BEGIN_DECLS
 

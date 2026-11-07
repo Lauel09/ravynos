@@ -133,6 +133,7 @@ struct shared_region_range_np {
 	mach_vm_size_t          srr_size;
 };
 
+#ifndef KERNEL
 
 __BEGIN_DECLS
 int     shared_region_map_file_np(int fd,
@@ -143,5 +144,6 @@ int     shared_region_make_private_np(uint32_t rangeCount,
     const struct shared_region_range_np *ranges);
 __END_DECLS
 
+#endif /* !KERNEL */
 
 #endif /* _MACH_SHARED_MEMORY_SERVER_H_ */

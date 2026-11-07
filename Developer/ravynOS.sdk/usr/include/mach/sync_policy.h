@@ -43,6 +43,18 @@ typedef int sync_policy_t;
 #define SYNC_POLICY_ORDER_MASK          0x3
 #define SYNC_POLICY_LIFO                (SYNC_POLICY_FIFO|SYNC_POLICY_REVERSED)
 
+#ifdef  KERNEL_PRIVATE
+
+/*
+ *	These options provide addition (kernel-private) behaviors
+ */
+
+#define SYNC_POLICY_PREPOST             0x4
+#define SYNC_POLICY_DISABLE_IRQ         0x8
+#define SYNC_POLICY_TURNSTILE           0x10
+#define SYNC_POLICY_TURNSTILE_PROXY     0x20
+
+#endif  /* KERNEL_PRIVATE */
 
 #define SYNC_POLICY_MAX                 0x7
 

@@ -162,6 +162,9 @@
 	                 EXC_MASK_GUARD |                       \
 	                 EXC_MASK_MACHINE)
 
+#ifdef  KERNEL_PRIVATE
+#define EXC_MASK_VALID  (EXC_MASK_ALL | EXC_MASK_CRASH | EXC_MASK_CORPSE_NOTIFY)
+#endif /* KERNEL_PRIVATE */
 
 #define FIRST_EXCEPTION         1       /* ZERO is illegal */
 

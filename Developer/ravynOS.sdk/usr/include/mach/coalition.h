@@ -151,6 +151,7 @@ struct coalition_resource_usage {
 	uint64_t cpu_cycles;
 };
 
+#ifdef PRIVATE
 /* definitions shared by only xnu + Libsyscall */
 
 /* Syscall flavors */
@@ -175,6 +176,16 @@ struct procinfo_coalinfo {
 	uint32_t coalition_tasks;
 };
 
+#endif /* PRIVATE */
 
+#ifdef XNU_KERNEL_PRIVATE
+#if COALITION_DEBUG
+#define coal_dbg(fmt, ...) \
+	printf("%s: " fmt "\n", __func__, ## __VA_ARGS__)
+#else
+#define coal_dbg(fmt, ...)
+#endif
+
+#endif
 
 #endif /* _MACH_COALITION_H_ */

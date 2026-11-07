@@ -77,6 +77,9 @@
 #define SHARED_REGION_NESTING_MIN_ARM64_32      ?
 #define SHARED_REGION_NESTING_MAX_ARM64_32      ?
 
+#ifdef XNU_KERNEL_PRIVATE
+/* ARM64_TODO: move to higher memory */
+#endif
 #define SHARED_REGION_BASE_ARM64                0x180000000ULL
 #define SHARED_REGION_SIZE_ARM64                0x100000000ULL
 #define SHARED_REGION_NESTING_BASE_ARM64        0x180000000ULL
@@ -121,6 +124,18 @@
 #define SHARED_REGION_NESTING_MAX               SHARED_REGION_NESTING_MAX_ARM64
 #endif
 
+#ifdef KERNEL_PRIVATE
+
+/*
+ * This is routine sets  the current source of power.
+ * Arguments:
+ * 0 if it is external source (connected to power )
+ * 1 if it is internal power source ie battery
+ */
+
+void post_sys_powersource(int);
+
+#endif /* KERNEL_PRIVATE */
 /*
  * All shared_region_* declarations are a private interface
  * between dyld and the kernel.
@@ -137,6 +152,7 @@ struct shared_file_mapping_np {
 #define VM_PROT_ZF  0x10  /* must not interfere with normal prot assignments */
 #define VM_PROT_SLIDE  0x20  /* must not interfere with normal prot assignments */
 
+#ifndef KERNEL
 
 __BEGIN_DECLS
 int     shared_region_check_np(uint64_t *startaddress);
@@ -146,5 +162,6 @@ int     shared_region_map_np(int fd,
 int     shared_region_slide_np(void);
 __END_DECLS
 
+#endif /* !KERNEL */
 
 #endif /* _MACH_SHARED_REGION_H_ */

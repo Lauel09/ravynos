@@ -106,6 +106,56 @@
 typedef natural_t mach_port_name_t;
 typedef mach_port_name_t *mach_port_name_array_t;
 
+#ifdef  KERNEL
+
+/*
+ *	mach_port_t - a named port right
+ *
+ *	In the kernel, "rights" are represented [named] by pointers to
+ *	the ipc port object in question. There is no port namespace for the
+ *	rights to be collected.
+ *
+ *	Actually, there is namespace for the kernel task.  But most kernel
+ *	code - including, but not limited to, Mach IPC code - lives in the
+ *	limbo between the current user-level task and the "next" task. Very
+ *	little of the kernel code runs in full kernel task context.  So very
+ *	little of it gets to use the kernel task's port name space.
+ *
+ *	Because of this implementation approach, all in-kernel rights for
+ *	a given port coalesce [have the same name/pointer].  The actual
+ *	references are counted in the port itself.  It is up to the kernel
+ *	code in question to "just remember" how many [and what type of]
+ *	rights it holds and handle them appropriately.
+ *
+ */
+
+#ifndef MACH_KERNEL_PRIVATE
+/*
+ *	For kernel code that resides outside of Mach proper, we opaque the
+ *	port structure definition.
+ */
+struct ipc_port;
+
+#endif  /* MACH_KERNEL_PRIVATE */
+
+typedef struct ipc_port         *ipc_port_t;
+
+#define IPC_PORT_NULL           ((ipc_port_t) NULL)
+#define IPC_PORT_DEAD           ((ipc_port_t)~0UL)
+#define IPC_PORT_VALID(port) \
+	((port) != IPC_PORT_NULL && (port) != IPC_PORT_DEAD)
+
+typedef ipc_port_t              mach_port_t;
+
+/*
+ * Since the 32-bit and 64-bit representations of ~0 are different,
+ * explicitly handle MACH_PORT_DEAD
+ */
+
+#define CAST_MACH_PORT_TO_NAME(x) ((mach_port_name_t)(uintptr_t)(x))
+#define CAST_MACH_NAME_TO_PORT(x) ((x) == MACH_PORT_DEAD ? (mach_port_t)IPC_PORT_DEAD : (mach_port_t)(uintptr_t)(x))
+
+#else   /* KERNEL */
 
 /*
  *	mach_port_t - a named port right
@@ -126,6 +176,7 @@ typedef mach_port_name_t *mach_port_name_array_t;
 #include <sys/_types.h>
 #include <sys/_types/_mach_port_t.h>
 
+#endif  /* KERNEL */
 
 typedef mach_port_t                     *mach_port_array_t;
 
@@ -138,7 +189,11 @@ typedef mach_port_t                     *mach_port_array_t;
  *  that a port right was present, but it died.
  */
 
+#if defined(XNU_KERNEL_PRIVATE) && defined(__cplusplus)
+#define MACH_PORT_NULL          NULL
+#else
 #define MACH_PORT_NULL          0  /* intentional loose typing */
+#endif
 #define MACH_PORT_DEAD          ((mach_port_name_t) ~0)
 #define MACH_PORT_VALID(name)                           \
 	        (((name) != MACH_PORT_NULL) &&          \
@@ -195,6 +250,10 @@ typedef natural_t mach_port_right_t;
 #define MACH_PORT_RIGHT_LABELH          ((mach_port_right_t) 5) /* obsolete right */
 #define MACH_PORT_RIGHT_NUMBER          ((mach_port_right_t) 6) /* right not implemented */
 
+#ifdef MACH_KERNEL_PRIVATE
+#define MACH_PORT_RIGHT_VALID_TRANSLATE(right) \
+	((right) >= MACH_PORT_RIGHT_SEND && (right) <= MACH_PORT_RIGHT_DEAD_NAME)
+#endif
 
 typedef natural_t mach_port_type_t;
 typedef mach_port_type_t *mach_port_type_array_t;
@@ -211,6 +270,10 @@ typedef mach_port_type_t *mach_port_type_array_t;
 #define MACH_PORT_TYPE_LABELH       MACH_PORT_TYPE(MACH_PORT_RIGHT_LABELH) /* obsolete */
 
 
+#ifdef MACH_KERNEL_PRIVATE
+/* Holder used to have a receive right - remembered to filter exceptions */
+#define MACH_PORT_TYPE_EX_RECEIVE   MACH_PORT_TYPE_LABELH
+#endif
 
 /* Convenient combinations. */
 

@@ -736,9 +736,9 @@
 #include <sys/_symbol_aliasing.h>
 
 #if defined(__ENVIRONMENT_IPHONE_OS_VERSION_MIN_REQUIRED__)
-#define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   __DARWIN_ALIAS_STARTING_IPHONE_##_iphone(x)
+#define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   x
 #elif defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__)
-#define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   __DARWIN_ALIAS_STARTING_MAC_##_mac(x)
+#define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   x
 #else
 #define __DARWIN_ALIAS_STARTING(_mac, _iphone, x)   x
 #endif
@@ -805,7 +805,7 @@
 #else
 #include <sys/_posix_availability.h>
 
-#define __POSIX_C_DEPRECATED(ver) ___POSIX_C_DEPRECATED_STARTING_##ver
+#define __POSIX_C_DEPRECATED(ver)
 #endif
 
 /*
