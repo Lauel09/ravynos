@@ -1602,3 +1602,19 @@ vproc_swap_integer(struct vproc_s *vp, unsigned int key,
 	}
 	return NULL;
 }
+
+/*
+ * Stub for _ccrng (CommonCrypto random).  libsystem_c.dylib references this
+ * symbol at bootstrap but libcommonCrypto.dylib is not loaded as a dependency.
+ * With -flat_namespace the stub defined here satisfies the reference.
+ * Fills the buffer with zeros; adequate for early boot before real RNG is
+ * available.
+ */
+int
+ccrng(void *buf, size_t size)
+{
+	if (buf != NULL && size > 0) {
+		memset(buf, 0, size);
+	}
+	return 0;
+}
