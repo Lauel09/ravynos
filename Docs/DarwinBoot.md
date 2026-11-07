@@ -1983,36 +1983,53 @@ Next: run `tools/xnu-boot.sh --boot-args -s` on the macOS host and paste the
 output is in this log. This Linux checkout cannot run the macOS build or the
 QEMU boot.
 
-### 2026-11-07 — D7 attempt 1: kernel boots with `-s`, faults before userspace (blocked)
+### 2026-11-07 — D7 attempt 1: kernel boots to userspace, launchd starts, blocked on `_vproc_swap_integer`
 
-Did: ran `tools/xnu-boot.sh --boot-args -s` on the macOS host. The loader read
-the ESP `\boot-args` file and XNU booted with `Darwin Kernel Version 19.6.0`
-and boot args `-v debug=0x8 serial=3 keepsyms=1 -s` (D6 re-verified), then
-`corecrypto loaded`, `Starting pthread kext`, `kernel_bootstrap: PE_init_iokit
-completed`, and ACPI PE started (`parseAPIC`/`parseMCFG`/`ACPICPU::start`).
-It did NOT reach `IOFindBSDRoot()`/`hfs: mounted`/`devfs`/`load_init_program`;
-QEMU was killed at 25s.
+Did: ran `tools/xnu-boot.sh --boot-args -s` on the macOS host multiple times.
+The loader reads the ESP `\boot-args` file and XNU boots with `Darwin Kernel
+Version 19.6.0` and boot args `-v debug=0x8 serial=3 keepsyms=1 -s` (D6
+re-verified). `corecrypto loaded`, `PE_init_iokit completed`, ACPI PE started,
+PCI enumeration completed, `IOFindBSDRoot()` found `RavynAHCIPort/disk1`,
+`BSD root: disk1s1`, `hfs: mounted ravynOS on device b(14, 3)`, `devfs` on
+`/dev`, `load_init_program: attempting to load /sbin/launchd` — launchd as PID 1
+started under dyld.
 
-Evidence (verbatim):
+Blocker: dyld panics: `Symbol not found: _vproc_swap_integer`.
+Root cause: `Libraries/dyld/src/dyldAPIsInLibSystem.cpp:1387` has a static
+initializer `static vswapproc swapProc = &vproc_swap_integer;` which forces
+dyld to resolve `_vproc_swap_integer` at load time. This symbol is defined in
+`liblaunch.dylib` but liblaunch is never loaded as a dependency (libSystem.B.dylib
+does not re-export it, and `-flat_namespace` on the executable does not make
+dependent libraries' symbols globally resolvable).
+
+Evidence (verbatim from latest run):
 ```
-Darwin Kernel Version 19.6.0: Fri Nov  6 19:42:04 IST 2026; ariya:xnu/RELEASE_X86_64
+Darwin Kernel Version 19.6.0: Sat Nov  7 13:47:17 IST 2026; ariya:xnu/RELEASE_X86_64
 Kernel boot args: '-v debug=0x8 serial=3 keepsyms=1 -s'
-"name" not a kext
-Error unserializing built-in personalities: OSUnserializeXML: unexpected end of buffer near line 1
-kernel_bootstrap: PE_init_iokit completed
+BSD root: disk1s1, major 14, minor 3
+hfs: mounted ravynOS on device b(14, 3)
+bsd_init: calling devfs_kernel_mount
+bsd_init: bsd_do_post - done
+load_init_program: attempting to load /sbin/launchd
+panic(...): initproc exited -- exit reason namespace 6 subcode 0x4 description: Symbol not found: _vproc_swap_integer
 ```
-plus qemu-int.log page-fault storm: `v=0e e=0002` at `RIP=ffffff80001970f6`
-(`__HIB` region), `CR2` walking `ffffff7f80e00000...` (kext submap, corecrypto
-region `register_and_init_prng ctx=0xffffff7f80e186e0`).
 
-Cites: `tools/xnu-boot.sh` (`--boot-args -s`, userland staging);
-`out/arena/boot/serial.log:30,124-131`; `out/arena/boot/qemu-int.log:2852+`;
-`Kernel/xnu/osfmk/x86_64/pmap.c:1143` (`pmap_lowmem_finalize` frees
-`[eHIB, stext)`); `Kernel/xnu/osfmk/mach/i386/vm_param.h:197` (`__HIB` at
-`0xffffff8000100000`); `Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995`.
+Source fix applied (needs dyld rebuild):
+`Libraries/dyld/src/dyldAPIsInLibSystem.cpp` — replaced
+`static vswapproc swapProc = &vproc_swap_integer;` with a local stub
+function `stub_vproc_swap_integer()` that returns 0, removing the external
+symbol reference. Also added a matching stub `_vproc_swap_integer` (via
+`vproc_swap_integer` C name → `_vproc_swap_integer` Mach-O symbol on this
+x86_64 cross-toolchain) in `BSD/sbin/launchd/runtime.c`.
 
-Next: diagnose the page-fault storm — is `__HIB` (`0xffffff80001970f6`) still
-mapped/writable after `pmap_lowmem_finalize()`? Is kxld failing to make
-corecrypto/pthread kext-submap pages writable? Run with `--gdb`/longer `--secs`
-to catch the fault, and diff against the 2026-11-04 run that reached
-`IOFindBSDRoot()` (kernel rebuilt, `-s` arg, userland dylibs added since).
+Cites: `Libraries/dyld/src/dyldAPIsInLibSystem.cpp:1379-1401`;
+`BSD/sbin/launchd/runtime.c` (stub);
+`out/arena/boot/serial.log` (full log);
+`nm -u build/sysroot/usr/lib/system/libdyld.dylib` (shows `_vproc_swap_integer`
+undefined);
+`nm build/sysroot/system/sbin/launchd` (shows `_vproc_swap_integer` defined).
+
+Next: rebuild `libdyld.dylib` from `Libraries/dyld/` with the source fix,
+copy to `build/sysroot/usr/lib/system/libdyld.dylib`, re-run
+`tools/xnu-boot.sh --boot-args -s`. D7 gate = serial log shows launchd as PID 1
+→ `single_user_mode` → real `/bin/sh` on the console.

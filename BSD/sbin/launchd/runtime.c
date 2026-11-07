@@ -1583,3 +1583,22 @@ do_file_init(void)
 	}
 #endif
 }
+
+/*
+ * Stub for _vproc_swap_integer (liblaunch).  libdyld.dylib references
+ * this symbol at bootstrap but liblaunch.dylib is not loaded as a dependency.
+ * With -flat_namespace the stub defined here satisfies the reference.
+ * (The x86_64 cross-compiler prepends one underscore, so the C name below
+ *  has none; vproc_t is an opaque pointer, forward-declared to match the
+ *  header's declaration without pulling in the full vproc_priv.h.)
+ */
+struct vproc_s;
+void *
+vproc_swap_integer(struct vproc_s *vp, unsigned int key,
+                   long long *inval, long long *outval)
+{
+	if (inval != NULL && outval != NULL) {
+		*outval = *inval;
+	}
+	return NULL;
+}

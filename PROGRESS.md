@@ -12,19 +12,33 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. **Blocked — D7 shell boot attempt 1.** `tools/xnu-boot.sh --boot-args -s`
-   ran on the macOS host: XNU prints `Darwin Kernel Version 19.6.0` with boot
-   args `-v debug=0x8 serial=3 keepsyms=1 -s` (ESP `\boot-args` file read OK,
-   D6 re-verified), `corecrypto loaded`, `PE_init_iokit completed`, ACPI PE
-   started — then a page-fault storm (`v=0e e=0002` at
-   `RIP=ffffff80001970f6` `__HIB`, `CR2` walking kext submap
-   `ffffff7f80e00000+`) and QEMU killed at 25s before
-   `IOFindBSDRoot()`/`hfs: mounted`/`load_init_program`. D7 gate NOT met.
-   See `Docs/DarwinBoot.md` §D7 + run-log entry `2026-11-07 — D7 attempt 1`.
-   Diagnosis: is `__HIB` still mapped after `pmap_lowmem_finalize()`? Is kxld
-   failing to make corecrypto/pthread kext-submap pages writable? Run with
-   `--gdb`/longer `--secs`; diff against the 2026-11-04 run that reached
-   `IOFindBSDRoot()`.
+1. **Blocked — D7 shell boot.** `tools/xnu-boot.sh --boot-args -s` boots XNU
+   with `Darwin Kernel Version 19.6.0`, boot args `-v debug=0x8 serial=3
+   keepsyms=1 -s` (ESP `\boot-args` read OK, D6 re-verified). PCI enumeration,
+   `IOFindBSDRoot()` find `RavynAHCIPort/disk1`, `BSD root: disk1s1`,
+   `hfs: mounted ravynOS on device b(14, 3)`, `devfs` on `/dev`,
+   `load_init_program: attempting to load /sbin/launchd` — launchd starts as
+   PID 1 — then dyld panics:
+   `Symbol not found: _vproc_swap_integer`.
+
+   Root cause: `Libraries/dyld/src/dyldAPIsInLibSystem.cpp:1387` has a static
+   initializer `static vswapproc swapProc = &vproc_swap_integer;` which forces
+   dyld to resolve `_vproc_swap_integer` at load time. The symbol is defined in
+   `liblaunch.dylib` but liblaunch is never loaded as a dependency
+   (libSystem.B.dylib does not re-export it).
+
+   Source fix applied (needs dyld rebuild):
+   `Libraries/dyld/src/dyldAPIsInLibSystem.cpp` — replaced `&vproc_swap_integer`
+   with a local stub function `stub_vproc_swap_integer()` (returns 0), removing
+   the external symbol reference. Also added a matching stub
+   `_vproc_swap_integer` in `BSD/sbin/launchd/runtime.c`.
+
+   Next: rebuild `libdyld.dylib` from `Libraries/dyld/`, copy to
+   `build/sysroot/usr/lib/system/libdyld.dylib`, re-run
+   `tools/xnu-boot.sh --boot-args -s`. D7 gate = serial log shows launchd as
+   PID 1 → `single_user_mode` → real `/bin/sh` on the console.
+   See `Docs/DarwinBoot.md` §D7 + run-log entry
+   `2026-11-07 — D7 attempt 1`.
 
 **Boot-spirit policy (agreed 2026-11-05):** the shell milestone is Apple's single-user mode (`boot-args=-s` → real `/sbin/launchd` → real `/bin/sh`); no static init / busybox substitutes. Deferred convergence: prelinked kernelcache, `boot-uuid` handoff, GPT root, real dyld shared cache. Full text in `Docs/DarwinBoot.md` §"Boot-spirit policy". Estimate: P50 ≈ 5 / P90 ≈ 8–9 sessions.
 

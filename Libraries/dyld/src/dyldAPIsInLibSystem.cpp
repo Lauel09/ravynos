@@ -1384,7 +1384,13 @@ static bool isLaunchdOwned()
 #else
 // use non-lazy pointer to vproc_swap_integer so that lazy binding does not recurse
 typedef vproc_err_t (*vswapproc)(vproc_t vp, vproc_gsk_t key,int64_t *inval, int64_t *outval);
-static vswapproc swapProc = &vproc_swap_integer;
+static vproc_err_t stub_vproc_swap_integer(vproc_t vp, vproc_gsk_t key, int64_t *inval, int64_t *outval)
+{
+    if (inval != NULL && outval != NULL)
+        *outval = *inval;
+    return 0;
+}
+static vswapproc swapProc = stub_vproc_swap_integer;
 
 static bool isLaunchdOwned()
 {
