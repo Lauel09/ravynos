@@ -1333,6 +1333,13 @@ typedef struct boot_args {
 
 _Static_assert(sizeof(boot_args_t) == 4096, "boot_args size mismatch");
 
+/* Extra boot-args loaded from the ESP \boot-args file (ASCII, one argument
+ * word per whitespace token, e.g. "-s" for single-user).  Mirrors how
+ * com.apple.Boot.plist boot-args are appended to the default kernel flags on
+ * macOS.  Empty by default; build_boot_args() appends it verbatim. */
+static char gBootArgsFile[BOOT_LINE_LENGTH];
+static UINTN gBootArgsFileLen = 0;
+
 /* On a failed fixed-address reservation, print every firmware memory-map
  * descriptor that overlaps [addr, addr+len) so the occupying type is visible
  * in the serial log instead of just the address. */
@@ -2187,13 +2194,23 @@ static UINT32 build_boot_args(EFI_BOOT_SERVICES *bs, EFI_SYSTEM_TABLE *st,
     ba->Revision = kBootArgsRevision;
     ba->Version = kBootArgsVersion;
     ba->efiMode = kBootArgsEfiMode64;
-    /* CommandLine */
+    /* CommandLine: built-in default plus any extra args staged from the
+     * ESP \boot-args file (Apple's NVRAM boot-args analogue). */
     {
         const char *cmd = "-v debug=0x8 serial=3 keepsyms=1";
         UINTN i = 0;
         while (cmd[i] && i < BOOT_LINE_LENGTH - 1) {
             ba->CommandLine[i] = cmd[i];
             i++;
+        }
+        if (gBootArgsFileLen) {
+            UINTN j = 0;
+            if (i && ba->CommandLine[i - 1] != ' ' && i < BOOT_LINE_LENGTH - 1) {
+                ba->CommandLine[i++] = ' ';
+            }
+            while (j < gBootArgsFileLen && i < BOOT_LINE_LENGTH - 1) {
+                ba->CommandLine[i++] = gBootArgsFile[j++];
+            }
         }
         ba->CommandLine[i] = 0;
     }
@@ -2547,6 +2564,43 @@ EFI_STATUS EFIAPI EfiMain(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st)
                 }
                 tried = 1;
                 say("loader: found ");
+                /* Load the optional \boot-args file once the ESP volume is
+                 * known; appended to the default command line below. */
+                if (gBootArgsFileLen == 0) {
+                    void *args_buf = 0;
+                    UINTN args_size = 0, args_pages = 0;
+                    if (!EFI_ERROR(esp_read_file(bs, li->DeviceHandle,
+                                                 L"boot-args", &args_buf,
+                                                 &args_size, &args_pages)) &&
+                        args_buf && args_size) {
+                        UINTN n = args_size < sizeof(gBootArgsFile) - 1 ?
+                                  args_size : sizeof(gBootArgsFile) - 1;
+                        UINTN i;
+                        for (i = 0; i < n; i++) {
+                            char c = ((char *)args_buf)[i];
+                            if (c == '\n' || c == '\r') {
+                                c = ' '; /* allow newline-terminated files */
+                            }
+                            gBootArgsFile[i] = c;
+                        }
+                        while (n > 0 && gBootArgsFile[n - 1] == ' ') {
+                            n--;
+                        }
+                        gBootArgsFile[n] = 0;
+                        gBootArgsFileLen = n;
+                        if (n) {
+                            say("loader: ESP boot-args: ");
+                            say(gBootArgsFile);
+                            say("\n");
+                        }
+                    } else {
+                        gBootArgsFileLen = 0;
+                    }
+                    if (args_buf && args_pages) {
+                        bs->FreePages(
+                            (EFI_PHYSICAL_ADDRESS)(UINTN)args_buf, args_pages);
+                    }
+                }
                 {
                     char name[64];
                     UINTN n = 0;

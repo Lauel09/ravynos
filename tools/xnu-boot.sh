@@ -5,7 +5,7 @@
 #
 # Usage: tools/xnu-boot.sh [--kernel PATH] [--root-dir PATH] [--no-root]
 #                          [--secs N] [--cpu MODEL] [--gdb] [--no-build]
-#                          [--out DIR]
+#                          [--boot-args STRING] [--out DIR]
 #   --kernel PATH    Mach-O kernel (default ../build/sysroot/System/Library/Kernels/kernel)
 #   --root-dir PATH  Directory to stage into Apple_HFS root.img (default: minimal / + sysroot userland)
 #   --no-root        Omit the HFS+ root disk (stop at IOFindBSDRoot)
@@ -14,6 +14,9 @@
 #   --gdb            start QEMU halted with a gdbstub on :1234 and wait for it to
 #                    exit; attach with the lldb line printed below
 #   --no-build       reuse tools/bootloader/BOOTX64.EFI instead of rebuilding it
+#   --boot-args STR  extra kernel args (e.g. "-s" for Apple single-user shell),
+#                    staged as \boot-args on the ESP; the loader appends them
+#                    to its built-in defaults
 #   --out DIR        work directory (default out/arena/boot)
 #
 # Files left in --out: serial.log (COM1), qemu-int.log (QEMU -d int,cpu_reset), root.img.
@@ -31,6 +34,7 @@ CPU=Penryn
 GDB=0
 BUILD=1
 OUT="$ROOT/out/arena/boot"
+BOOT_ARGS=""
 FW=${QEMU_FW_DIR:-/opt/homebrew/share/qemu}
 
 while [ $# -gt 0 ]; do
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
         --cpu) CPU=$2; shift 2 ;;
         --gdb) GDB=1; shift ;;
         --no-build) BUILD=0; shift ;;
+        --boot-args) BOOT_ARGS=$2; shift 2 ;;
         --out) OUT=$2; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "xnu-boot: unknown option $1" >&2; exit 2 ;;
@@ -77,6 +82,11 @@ find "$OUT/fat/System/Library/Extensions" -name '*.dSYM' -exec rm -rf {} + 2>/de
 chmod -R u+rwX "$OUT/fat"
 cp "$FW/edk2-i386-vars.fd" "$OUT/vars.fd"
 
+if [ -n "$BOOT_ARGS" ]; then
+    printf '%s\n' "$BOOT_ARGS" > "$OUT/fat/boot-args"
+    echo "xnu-boot: ESP boot-args '$BOOT_ARGS'"
+fi
+
 ROOT_IMG=""
 if [ "$USE_ROOT" = 1 ]; then
     ROOT_STAGE="$OUT/root"
@@ -101,7 +111,7 @@ if [ "$USE_ROOT" = 1 ]; then
         ln -s private/var "$ROOT_STAGE/var"
         ln -s private/tmp "$ROOT_STAGE/tmp"
         SYSROOT="$BUILD_DIR/sysroot"
-        for rel in sbin/launchd bin/sh usr/lib/dyld usr/lib/libSystem.B.dylib usr/lib/libSystem.dylib; do
+        for rel in sbin/launchd bin/sh usr/lib/dyld usr/lib/libSystem.B.dylib usr/lib/libSystem.dylib usr/lib/libc++.1.dylib usr/lib/libobjc.A.dylib usr/lib/libobjc-trampolines.dylib usr/lib/system/liblaunch.dylib usr/lib/system/libxpc.dylib usr/lib/system/libcommonCrypto.dylib; do
             if [ -e "$SYSROOT/$rel" ] || [ -L "$SYSROOT/$rel" ]; then
                 cp -RP "$SYSROOT/$rel" "$ROOT_STAGE/$rel"
             fi
