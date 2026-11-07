@@ -1982,3 +1982,37 @@ Next: run `tools/xnu-boot.sh --boot-args -s` on the macOS host and paste the
 `out/arena/boot/serial.log` verdict here — D7 is done only when its real
 output is in this log. This Linux checkout cannot run the macOS build or the
 QEMU boot.
+
+### 2026-11-07 — D7 attempt 1: kernel boots with `-s`, faults before userspace (blocked)
+
+Did: ran `tools/xnu-boot.sh --boot-args -s` on the macOS host. The loader read
+the ESP `\boot-args` file and XNU booted with `Darwin Kernel Version 19.6.0`
+and boot args `-v debug=0x8 serial=3 keepsyms=1 -s` (D6 re-verified), then
+`corecrypto loaded`, `Starting pthread kext`, `kernel_bootstrap: PE_init_iokit
+completed`, and ACPI PE started (`parseAPIC`/`parseMCFG`/`ACPICPU::start`).
+It did NOT reach `IOFindBSDRoot()`/`hfs: mounted`/`devfs`/`load_init_program`;
+QEMU was killed at 25s.
+
+Evidence (verbatim):
+```
+Darwin Kernel Version 19.6.0: Fri Nov  6 19:42:04 IST 2026; ariya:xnu/RELEASE_X86_64
+Kernel boot args: '-v debug=0x8 serial=3 keepsyms=1 -s'
+"name" not a kext
+Error unserializing built-in personalities: OSUnserializeXML: unexpected end of buffer near line 1
+kernel_bootstrap: PE_init_iokit completed
+```
+plus qemu-int.log page-fault storm: `v=0e e=0002` at `RIP=ffffff80001970f6`
+(`__HIB` region), `CR2` walking `ffffff7f80e00000...` (kext submap, corecrypto
+region `register_and_init_prng ctx=0xffffff7f80e186e0`).
+
+Cites: `tools/xnu-boot.sh` (`--boot-args -s`, userland staging);
+`out/arena/boot/serial.log:30,124-131`; `out/arena/boot/qemu-int.log:2852+`;
+`Kernel/xnu/osfmk/x86_64/pmap.c:1143` (`pmap_lowmem_finalize` frees
+`[eHIB, stext)`); `Kernel/xnu/osfmk/mach/i386/vm_param.h:197` (`__HIB` at
+`0xffffff8000100000`); `Kernel/xnu/iokit/Kernel/IOPlatformExpert.cpp:1995`.
+
+Next: diagnose the page-fault storm — is `__HIB` (`0xffffff80001970f6`) still
+mapped/writable after `pmap_lowmem_finalize()`? Is kxld failing to make
+corecrypto/pthread kext-submap pages writable? Run with `--gdb`/longer `--secs`
+to catch the fault, and diff against the 2026-11-04 run that reached
+`IOFindBSDRoot()` (kernel rebuilt, `-s` arg, userland dylibs added since).

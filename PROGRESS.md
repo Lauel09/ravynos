@@ -12,13 +12,19 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. **In progress — boot to a shell.** `tools/xnu-boot.sh --boot-args -s`
-   stages `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib`
-   and `/usr/lib/system/*.dylib` into `$OUT/root.img` (macOS host only; this
-   Linux checkout cannot run it). Verdict from
-   `out/arena/boot/serial.log`: launchd as PID 1 → `single_user_mode` → real
-   `/bin/sh` on the console; first acceptable verdict is launchd getting past
-   the D6 ENOENT. See `Docs/DarwinBoot.md` §D7 and §"Boot-spirit policy".
+1. **Blocked — D7 shell boot attempt 1.** `tools/xnu-boot.sh --boot-args -s`
+   ran on the macOS host: XNU prints `Darwin Kernel Version 19.6.0` with boot
+   args `-v debug=0x8 serial=3 keepsyms=1 -s` (ESP `\boot-args` file read OK,
+   D6 re-verified), `corecrypto loaded`, `PE_init_iokit completed`, ACPI PE
+   started — then a page-fault storm (`v=0e e=0002` at
+   `RIP=ffffff80001970f6` `__HIB`, `CR2` walking kext submap
+   `ffffff7f80e00000+`) and QEMU killed at 25s before
+   `IOFindBSDRoot()`/`hfs: mounted`/`load_init_program`. D7 gate NOT met.
+   See `Docs/DarwinBoot.md` §D7 + run-log entry `2026-11-07 — D7 attempt 1`.
+   Diagnosis: is `__HIB` still mapped after `pmap_lowmem_finalize()`? Is kxld
+   failing to make corecrypto/pthread kext-submap pages writable? Run with
+   `--gdb`/longer `--secs`; diff against the 2026-11-04 run that reached
+   `IOFindBSDRoot()`.
 
 **Boot-spirit policy (agreed 2026-11-05):** the shell milestone is Apple's single-user mode (`boot-args=-s` → real `/sbin/launchd` → real `/bin/sh`); no static init / busybox substitutes. Deferred convergence: prelinked kernelcache, `boot-uuid` handoff, GPT root, real dyld shared cache. Full text in `Docs/DarwinBoot.md` §"Boot-spirit policy". Estimate: P50 ≈ 5 / P90 ≈ 8–9 sessions.
 
