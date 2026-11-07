@@ -12,7 +12,13 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - The OVMF `#UD 0xB0000` "blocker" did not reproduce locally (2026-11-03): ISO, GPT/ESP and bare FAT16 all boot to `RAVYNOS-ENTRY`.
 
 ## Next steps
-1. **Stage userland and boot to a shell.** `tools/xnu-boot.sh` auto-copies `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib` and `/usr/lib/system/*.dylib` into `$OUT/root.img`; boot with `tools/xnu-boot.sh --boot-args -s` for Apple single-user mode (the loader appends the ESP `\boot-args` file to its default command line; verdict from `out/arena/boot/serial.log`).
+1. **In progress — boot to a shell.** `tools/xnu-boot.sh --boot-args -s`
+   stages `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib`
+   and `/usr/lib/system/*.dylib` into `$OUT/root.img` (macOS host only; this
+   Linux checkout cannot run it). Verdict from
+   `out/arena/boot/serial.log`: launchd as PID 1 → `single_user_mode` → real
+   `/bin/sh` on the console; first acceptable verdict is launchd getting past
+   the D6 ENOENT. See `Docs/DarwinBoot.md` §D7 and §"Boot-spirit policy".
 
 **Boot-spirit policy (agreed 2026-11-05):** the shell milestone is Apple's single-user mode (`boot-args=-s` → real `/sbin/launchd` → real `/bin/sh`); no static init / busybox substitutes. Deferred convergence: prelinked kernelcache, `boot-uuid` handoff, GPT root, real dyld shared cache. Full text in `Docs/DarwinBoot.md` §"Boot-spirit policy". Estimate: P50 ≈ 5 / P90 ≈ 8–9 sessions.
 

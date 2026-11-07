@@ -148,6 +148,32 @@ string goes in §4 with the fix.
 * Expected afterwards (not part of this goal): a panic about platform
   expert / ACPI / no root device. That is the next plan, not this one.
 
+### D7 — Apple single-user shell (boot-args=-s)
+
+**Goal:** XNU reaches userspace the way Apple does — `/sbin/launchd` as PID 1,
+which detects the root flag (`-s`) and execs real `/bin/sh` on the console
+(see §"Boot-spirit policy", launchd-faithful track only).
+
+* **Do:** `tools/xnu-boot.sh --boot-args -s`. The loader reads the optional
+  ESP `\boot-args` file and appends it to the built-in command line
+  (`-v debug=0x8 serial=3 keepsyms=1`); xnu-boot.sh stages
+  `/sbin/launchd`, `/bin/sh`, `/usr/lib/dyld`, `libSystem.B.dylib` and
+  `/usr/lib/system/*.dylib` from `../build/sysroot` into the Apple_HFS
+  `root.img` built by `tools/image/hfs.py` (`bsd_init` finds `disk1s1`,
+  mounts `/`, mounts `devfs` on `/dev`, then PID 1 calls
+  `load_init_program("/sbin/launchd")`).
+* **Gate:** `out/arena/boot/serial.log` shows, in order: `BSD root:`,
+  `hfs: mounted`, `devfs` on `/dev`, `load_init_program` no longer failing
+  with errno 2, launchd as PID 1, `single_user_mode`, and real `/bin/sh` on
+  the console. First acceptable verdict is launchd getting past the ENOENT
+  that stopped D6; the full gate is the shell prompt. Iterate on dyld/
+  launchd runtime exceptions one at a time.
+* **Deferred per boot-spirit policy:** prelinked kernelcache, `boot-uuid`,
+  GPT root image, dyld shared cache (normal mode) — converge to the real
+  Apple mechanisms later, never substitutes.
+* **Note:** the macOS build and this QEMU boot run on the macOS host; this
+  Linux checkout cannot run either one.
+
 ## 3. Local boot recipe (Verified 2026-10-31)
 
 ```sh
@@ -1939,3 +1965,20 @@ and launchd-source defects surfaced, each fixed one at a time:
 Result: `bmake BSD` exit 0; `/sbin/launchd` and `/bin/sh` are x86_64 Mach-O
 in `../build/sysroot`. Userland stage is complete; next is the boot milestone
 (`tools/xnu-boot.sh --boot-args -s`).
+
+### 2026-11-07 — userland-build fixes committed; D7 shell boot is active
+
+Did: committed the accumulated Libraries+BSD fixes on `fork/darwin-dev`:
+`sdk: staged mach headers + __DARWIN_ALIAS_STARTING cdefs passthrough`
+(74cd41c6b0); `bsd: _types stubs, availability stub, launchd flat_namespace
+link, xnu cdefs.h` (f6a95863d6); `libs: openbsm config.h` (d96649a0a3);
+`loader: ESP \boot-args file + xnu-boot.sh --boot-args and userland staging`
+(053030f152). `bmake Libraries` and `bmake BSD` both exit 0 (verified on the
+macOS host, 2026-11-06). Local checks from this checkout: `sh -n` on
+`tools/xnu-boot.sh` and `tools/bootloader/build.sh` clean;
+`tools/tests/run-tests.sh` selftest passes (the 2 image-writer test groups
+fail identically on `a1f084c549`, pre-existing).
+Next: run `tools/xnu-boot.sh --boot-args -s` on the macOS host and paste the
+`out/arena/boot/serial.log` verdict here — D7 is done only when its real
+output is in this log. This Linux checkout cannot run the macOS build or the
+QEMU boot.

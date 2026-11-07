@@ -1,15 +1,16 @@
 # RavynOS Fork — Roadmap
 
-> **⚠ ACTIVE PLAN (2026-11-05): `Docs/DarwinBoot.md` — the D1→D6 chain is
-> complete: XNU prints `Darwin Kernel Version` and mounts `/` via `hfs.kext`
-> (`load_init_program("/sbin/launchd")` reached, `errno 2`). Current goal: the
-> Apple single-user shell — finish `bmake Libraries`, then `bmake BSD`
-> (`/sbin/launchd` + `/bin/sh`), stage userland, boot with `boot-args=-s`.
-> Work only from `Docs/DarwinBoot.md` §"Run-log" and §"Boot-spirit policy"; log
-> there. Everything below is background; the OVMF `#UD 0xB0000` "blocker" does
-> not reproduce locally and is deprioritised.**
+> **⚠ ACTIVE PLAN (2026-11-07): `Docs/DarwinBoot.md` — D1→D6 complete and
+> `bmake Libraries` + `bmake BSD` both exit 0 (2026-11-06): `/sbin/launchd`
+> and `/bin/sh` are x86_64 Mach-O in `../build/sysroot`. Current goal: D7,
+> the Apple single-user shell — stage userland and boot with
+> `boot-args=-s` (`tools/xnu-boot.sh --boot-args -s`; verdict from
+> `out/arena/boot/serial.log`). Work only from `Docs/DarwinBoot.md`
+> §"Run-log" and §"Boot-spirit policy"; log there. Everything below is
+> background; the OVMF `#UD 0xB0000` "blocker" does not reproduce locally and
+> is deprioritised.**
 
-**Last updated:** 2026-11-05 (D1–D6 done; XNU boots and mounts `/`; current goal is the single-user shell — see `Docs/DarwinBoot.md` and `PROGRESS.md`)
+**Last updated:** 2026-11-07 (Libraries + BSD pass, userland staged in `../build/sysroot`; D7 shell boot active — see `Docs/DarwinBoot.md` and `PROGRESS.md`)
 **Mission:** A macOS-first fork of RavynOS that (a) builds on this MacBook, (b) ships a **portable** one-command pipeline — source → bootable IMG/ISO → automated boot smoke test — that runs identically on macOS and any suitably equipped Linux box, and (c) improves OS fidelity by reverse-engineering Apple behavior on this machine with [rea](https://github.com/morluto/rea), strictly need-driven and smallest-subject-first.
 
 **Guiding rules**
@@ -53,10 +54,15 @@ interrupted LLVM build is resumable, and prints the next actions on failure.
 `tools/macbuild-audit.py` statically finds the host assumptions that break a
 build (non-root chowns, FreeBSD-only tools, GNU-only flags, host-arch leakage)
 before one is attempted, and is clean at `--severity high` over the build
-surface. Kernel + kexts + most userland now build and XNU boots (D6 passed);
-remaining: `Libraries` (Libsystem link) and `BSD` (`/sbin/launchd`,
-`/bin/sh`). Failure→fix table: `Docs/PROGRESS-archive.md`
-§3.2; conventions: `Docs/macOS-Host.md`.
+surface. Kernel + kexts + most userland now build and XNU boots (D6 passed).
+`bmake Libraries` (all 24 libsystem dylibs + `libSystem.B.dylib` + `dyld` +
+zlib) and `bmake BSD` (`/sbin/launchd` + `/bin/sh`) both exit 0 as of
+2026-11-06, so the Phase 1 build surface is green; the formal M1 check is a
+clean `bmake world` re-run on macOS with Linux unaffected. Fixes this stage
+are committed on `fork/darwin-dev` (`sdk:`, `bsd:`, `libs:`, `loader:`).
+See `Docs/DarwinBoot.md` §Log.
+Failure→fix table: `Docs/PROGRESS-archive.md` §3.2; conventions:
+`Docs/macOS-Host.md`.
 
 Approach: run the build, fix failures host-by-host, keep every patch guarded so Linux is unaffected. Expected work areas (in likely order):
 
@@ -74,8 +80,14 @@ Conventions: one fix per commit, prefix `macbuild:`, log every failure→fix pai
 
 **Goal:** `tools/mkimage.sh` + `tools/bootcheck.sh` run **unchanged on macOS and Linux**, no root, producing `ravynos-<version>-<git-short>.iso` (+ `.img`) and a pass/fail boot verdict. Work starts in parallel with Phase 1 — the pipeline can be scaffolded and validated with stub content (loader-only image, even a foreign kernel) before the full OS build is green, so QEMU-verdict plumbing is proven early.
 
-**Status (2026-10-30, rev 5): done except real-image content.** Every deliverable
-below exists and is tested:
+**Status (2026-11-07):** all pipeline modes (stub, milestone-stub, real
+`--root` staging) and both ISO + `.img` outputs exist and are tested, and
+`tools/xnu-boot.sh` now stages the built sysroot userland into a portable
+rootless MBR `0xAF` Apple_HFS `root.img` (`tools/image/hfs.py`) — so
+real-image content for the shell-boot milestone is ready. Remaining: run the
+D7 boot verdict on macOS (`tools/xnu-boot.sh --boot-args -s`), then run
+`mkimage --root <staged-sysroot> --format both` end-to-end through
+`bootcheck`. Every deliverable below exists and is tested:
 
 * `tools/mkimage.sh` — stub, milestone-stub and **real staging (`--root`)** modes;
   ISO **and** `.img` (`--format both`); explicit backends (`xorriso`, `mtools`,
@@ -193,7 +205,7 @@ Standing rules: only analyze software we own/are entitled to inspect; open-sourc
 |---|---|---|
 | M0 | Fork + Mac env ready | push to fork works; `bmake -n` parses; `rea doctor` green; xorriso/mtools/qemu present |
 | M1 | Builds on macOS | `bmake world` (or `tools/macbuild.sh`) exit 0 |
-| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux — **stub and UEFI-loader verdicts; real-image content pending M1** |
+| M2 | **Portable image pipeline** | `tools/mkimage.sh` + `tools/bootcheck.sh` give a boot verdict, root-free, on macOS **and** Linux — stub and UEFI-loader verdicts done; real-image D7 shell-boot verdict pending the macOS run |
 | M3 | CI | PRs auto-built on mac+linux; ISO artifact + boot verdict on every push |
 | M4 | RE loop live | one gap → probe → note → merged fix, full evidence trail |
 | M5 | Parity demos | a real Mac app runs under ravynOS (QEMU or hardware) |
@@ -230,6 +242,9 @@ tools/mkimage.sh --root ../build/stage --format both \
 tools/bootcheck.sh out/stub.iso --expect RAVYNOS-BOOTCHECK-STUB-OK
 tools/pipeline-selftest.sh                               # whole loop
 tools/tests/run-tests.sh                                 # unit + CLI tests
+
+# D7 — Apple single-user shell (macOS host only)
+tools/xnu-boot.sh --boot-args -s                         # verdict: out/arena/boot/serial.log
 
 # Phase 2, Step B — the real UEFI loader (build + PE check + OVMF boot)
 tools/bootloader/build.sh -o stage/EFI/BOOT/BOOTX64.EFI
