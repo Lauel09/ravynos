@@ -1392,7 +1392,7 @@ static vproc_err_t stub_vproc_swap_integer(vproc_t vp, vproc_gsk_t key, int64_t 
 }
 static vswapproc swapProc = stub_vproc_swap_integer;
 
-extern "C" int stub_ccrng(void *buf, unsigned long size)
+extern "C" int ccrng(void *buf, unsigned long size)
 {
     if (buf != NULL && size > 0)
         memset(buf, 0, size);
