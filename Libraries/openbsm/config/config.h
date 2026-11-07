@@ -68,10 +68,10 @@
 #define HAVE_INTTYPES_H 1
 
 /* Define if ipc_perm._key instead of key */
-/* #undef HAVE_IPC_PERM__KEY */
+#define HAVE_IPC_PERM__KEY /**/
 
 /* Define if ipc_perm._seq instead of seq */
-/* #undef HAVE_IPC_PERM__SEQ */
+#define HAVE_IPC_PERM__SEQ /**/
 
 /* Define if ipc_perm.__key instead of key */
 /* #undef HAVE_IPC_PERM___KEY */
@@ -258,7 +258,7 @@
 /* #undef TM_IN_SYS_TIME */
 
 /* Define if compat/endian_enc.h is required */
-/* #undef USE_COMPAT_ENDIAN_ENC_H */
+#define USE_COMPAT_ENDIAN_ENC_H /**/
 
 /* Define if compat/endian.h is required */
 /* #undef USE_COMPAT_ENDIAN_H */
@@ -276,7 +276,7 @@
 /* #undef USE_NATIVE_INCLUDES */
 
 /* Define if sys/endian.h should be included */
-#define USE_SYS_ENDIAN_H /**/
+/* #undef USE_SYS_ENDIAN_H */
 
 /* Version number of package */
 #define VERSION "1.2-alpha5"
