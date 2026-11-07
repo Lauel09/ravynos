@@ -35,10 +35,11 @@ MK_WERROR=no
 # a static link can't resolve the libSystem.B.tbd umbrella at all.
 # libSystem.B.dylib is a partial umbrella that does not re-export liblaunch/
 # libxpc, and ld64 refuses direct linking against those umbrella-only dylibs.
-# Use -undefined dynamic_lookup so the link succeeds; dyld resolves
-# _launch_data_*/_vproc_* (liblaunch) and _xpc_* (libxpc) at boot time from
-# the dylibs staged into root.img by tools/xnu-boot.sh.
-LDFLAGS+= -lSystem -undefined dynamic_lookup
+# libSystem.B.dylib in sysroot has been patched with LC_REEXPORT_DYLIB entries
+# for liblaunch.dylib and libxpc.dylib; libdyld.dylib has been patched to load
+# both and to clear MH_TWOLEVEL. launchd is linked with -flat_namespace so
+# dyld resolves _vproc_*/_xpc_* symbols from the re-exported libraries at boot.
+LDFLAGS+= -lSystem -Wl,-flat_namespace -undefined dynamic_lookup
 
 helper.h launchd_helperServer.h: ${.CURDIR}/helper.defs
 	mig ${MIG_FLAGS} -user /dev/null -server /dev/null -header helper.h \

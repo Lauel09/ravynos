@@ -1,3 +1,4 @@
+#include <machine/types.h>
 /*
  * Copyright (c) 2003-2012 Apple Inc. All rights reserved.
  *
