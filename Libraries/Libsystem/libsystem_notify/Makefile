@@ -27,13 +27,16 @@ CFLAGS = --sysroot=${RAVYN_SDKROOT} -mmacos-version-min=${MACOS_VERSION_MIN} \
 
 MIG_FLAGS = ${CFLAGS} -D__MigTypeCheck
 
+# List liblaunch before libxpc: the seeded CLT libxpc.tbd also claims
+# _bootstrap_look_up2, and a first-match link binds it to libxpc, which does
+# not export it at runtime (liblaunch does).
 LDFLAGS = -Wl,-syslibroot,${RAVYN_SDKROOT}/usr/lib -umbrella System \
 	-L${RAVYN_SDKROOT}/usr/lib -L${RAVYN_SDKROOT}/usr/lib/system \
 	-Wl,-current_version,241 -Wl,-compatibility_version,1 \
 	-Wl,-install_name,/usr/lib/system/libsystem_notify.dylib \
-	-mmacos-version-min=${MACOS_VERSION_MIN} -lxpc -lsystem_blocks \
+	-mmacos-version-min=${MACOS_VERSION_MIN} -llaunch -lxpc -lsystem_blocks \
 	-lsystem_c -lsystem_kernel -lsystem_platform -lsystem_asl \
-	-lsystem_malloc -ldispatch -llaunch -ldyld
+	-lsystem_malloc -ldispatch -ldyld
 
 all: ${.OBJDIR}/lib${LIB}.dylib
 
