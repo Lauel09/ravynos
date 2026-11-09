@@ -111,7 +111,7 @@ if [ "$USE_ROOT" = 1 ]; then
         ln -s private/var "$ROOT_STAGE/var"
         ln -s private/tmp "$ROOT_STAGE/tmp"
         SYSROOT="$BUILD_DIR/sysroot"
-        for rel in sbin/launchd bin/sh usr/lib/dyld usr/lib/libSystem.B.dylib usr/lib/libSystem.dylib usr/lib/libc++.1.dylib usr/lib/libobjc.A.dylib usr/lib/libobjc-trampolines.dylib usr/lib/system/liblaunch.dylib usr/lib/system/libxpc.dylib usr/lib/system/libcommonCrypto.dylib; do
+        for rel in sbin/launchd bin/sh usr/lib/dyld usr/lib/libSystem.B.dylib usr/lib/libSystem.dylib usr/lib/libc++.1.dylib usr/lib/libobjc.A.dylib usr/lib/libobjc-trampolines.dylib usr/lib/libedit.dylib usr/lib/system/liblaunch.dylib usr/lib/system/libxpc.dylib usr/lib/system/libcommonCrypto.dylib; do
             if [ -e "$SYSROOT/$rel" ] || [ -L "$SYSROOT/$rel" ]; then
                 cp -RP "$SYSROOT/$rel" "$ROOT_STAGE/$rel"
             fi
