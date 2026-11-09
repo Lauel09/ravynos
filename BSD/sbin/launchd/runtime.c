@@ -1619,7 +1619,7 @@ static int ccrng_fill_stub(void *rng, void *buf, unsigned long size)
 	return 0;
 }
 
-int
+void *
 ccrng(void *buf, size_t size)
 {
 	static void *dummy_rng[2] = { (void *)(uintptr_t)ccrng_fill_stub, 0 };
