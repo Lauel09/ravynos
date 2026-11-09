@@ -1742,6 +1742,41 @@ forbids substitutes. Work the **launchd-faithful track only**:
    their repo/issues first, and keep contributing `macbuild:` fixes back
    (ROADMAP Phase 5).
 
+## Compatibility policy (agreed 2026-11-09, permanent)
+
+RavynOS aims to be binary compatible with macOS. **Apple's observable behavior
+is the specification; everything programs cannot observe is ours to build.**
+This extends the boot-spirit policy and holds for the life of the project.
+Matching Apple in every internal detail is not the goal, and shortcuts that
+break the contract are not allowed.
+
+1. **Must match exactly:** exported symbols, install names, struct layouts,
+   syscall numbers, Mach message formats, file paths, plist formats, and
+   observable behavior.
+2. **Source order:** use Apple's open source where it exists. Where it is
+   closed, write our own to the same interface.
+3. **No substitutes and no fake success:** a temporary gap must return a real
+   error, be logged, and have a milestone that replaces it.
+4. **Compatibility is proven by tests:** run the same test programs on real
+   macOS and on RavynOS, then compare results.
+5. **Reverse-engineer only to answer a specific gap** (ROADMAP Phase 4).
+   Legality is not automatic: macOS license terms restrict reverse engineering,
+   and copying decompiled code is an infringement risk. Use a clean-room
+   process, where one side writes specs and the other implements them, and get
+   legal review before shipping.
+
+**Platform and baseline:**
+
+- x86_64 PCs are the primary target. Other hardware is out of scope for now.
+- The ABI baseline is macOS 10.15 x86_64 (XNU 19.6). Raise it deliberately, one
+  version at a time.
+- Keep architecture-specific code behind `TARGET_ARCH`, with no new x86-only
+  assumptions in shared code.
+- Each year, check how many target apps still ship x86_64. When too few do,
+  choose between translating arm64 apps on x86_64 and a full arm64 port.
+
+Existing violations and temporary steps are tracked in `Docs/PostD7Plan.md` §2.
+
 ### Run-log (2026-11-05, Libsystem stage)
 
 - **Run 8 gate — libsystem_kernel internal MIG headers (fixed in

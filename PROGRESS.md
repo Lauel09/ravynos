@@ -35,6 +35,8 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 
 **Boot-spirit policy (agreed 2026-11-05):** the shell milestone is Apple's single-user mode (`boot-args=-s` → real `/sbin/launchd` → real `/bin/sh`); no static init / busybox substitutes. Deferred convergence: prelinked kernelcache, `boot-uuid` handoff, GPT root, real dyld shared cache. Full text in `Docs/DarwinBoot.md` §"Boot-spirit policy". Estimate: P50 ≈ 5 / P90 ≈ 8–9 sessions.
 
+**Compatibility policy (agreed 2026-11-09, permanent):** Apple's observable behavior is the spec; match its ABI exactly, use Apple source where open, write our own where closed; no fake success; prove with tests against real macOS. Target: x86_64 PCs, ABI baseline macOS 10.15. Full text in `Docs/DarwinBoot.md` §"Compatibility policy".
+
 ## Key commands
 - Remote runner: `tools/arena-run.sh <branch> <task> [<task> ...]`
 - Build: `tools/macbuild.sh --audit --target-arch x86_64` — logs `work/logs/world-N.log`

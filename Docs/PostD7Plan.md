@@ -28,9 +28,22 @@ Not yet proved or still incomplete:
 
 ## 2. Agreed decisions
 
-- Port the existing `BSD/bin/launchctl` and vendor jansson (MIT). Apple's older
+- **Compatibility policy** (`Docs/DarwinBoot.md`, agreed 2026-11-09, permanent):
+  Apple's observable behavior is the spec; x86_64 PCs; ABI baseline macOS 10.15.
+- Port the existing `BSD/bin/launchctl` and vendor jansson (MIT) as a logged
+  temporary step only. It speaks JSON, while Apple's format is plists, so real
+  plist support is required before D9 counts as converged. Apple's older
   launchctl in `BSD/old-launchd` needs CoreFoundation, which is deferred.
 - Push `fork/darwin-dev` to `origin` for backup.
+
+Existing conflicts with the policy, each needing a real replacement:
+
+| Item | Conflict | Replaced by |
+|---|---|---|
+| `ccrng` zero-fill and `_ccrng_uniform` returning 0 | Fake success | Real entropy, before D10 daemons |
+| `init_pre_kevent()` shell route | Not Apple's launchctl route | D9 |
+| JSON `launchctl` | Not Apple's plist format | Plist support, D9 onward |
+| `-undefined dynamic_lookup` in launchd | Hides missing symbols | Zero audit results, then remove the flag |
 
 ## 3. Proposed milestones
 
@@ -40,7 +53,7 @@ output is pasted into a run-log.
 | # | Milestone | Gate |
 |---|---|---|
 | D8 | Usable single-user shell | Commands sent over serial run; `ls /` works; root remounted read-write; a written file reads back |
-| D9 | Apple bootstrap route | `launchctl bootstrap -S System -s` gives the shell, and the `init_pre_kevent()` call is disabled again |
+| D9 | Apple bootstrap route | `launchctl bootstrap -S System -s` gives the shell, the `init_pre_kevent()` call is disabled again, and jobs load from plists |
 | D10 | Minimal multi-user | Real entropy; `/etc/bootstrap` runs; `notifyd` and `syslogd` start from launchd plists and survive |
 | D11 | Real XPC | A small client and server exchange messages through launchd over Mach |
 | D12 | Frameworks | ICU, then CoreFoundation, then Foundation build and a test tool runs in the guest |
