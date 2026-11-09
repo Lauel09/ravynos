@@ -44,6 +44,7 @@ Build XNU + userland on the macOS host, and boot ravynOS to a shell in QEMU.
 - Structural verify: `tools/image/verify.py <iso|img> …`
 
 ## Pointers
+- `Docs/PostD7Plan.md` — milestones D8–D13, symbol audit results (`tools/symaudit.py`), risk register
 - `Docs/DarwinBoot.md` — boot plan (D1–D6 complete); §"Post-D6 handoff status (2026-11-04)" has the fault table and next fix
 - `Docs/macOS-Host.md` — macOS prerequisites, build loop, failure classes, portability audit (§5)
 - `Docs/BUILDING.md` — entry points (`bmake world`), Homebrew prereqs, target vs host arch
