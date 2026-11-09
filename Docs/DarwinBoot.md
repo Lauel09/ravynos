@@ -2033,3 +2033,54 @@ Next: rebuild `libdyld.dylib` from `Libraries/dyld/` with the source fix,
 copy to `build/sysroot/usr/lib/system/libdyld.dylib`, re-run
 `tools/xnu-boot.sh --boot-args -s`. D7 gate = serial log shows launchd as PID 1
 → `single_user_mode` → real `/bin/sh` on the console.
+
+### 2026-11-09 — D7 attempt 2: PASSED (launchd PID 1 → single-user `/bin/sh`)
+
+`tools/xnu-boot.sh --boot-args -s` on the macOS host now reaches the Apple
+single-user shell. Five boots, one cause fixed per boot.
+
+Verdict: **D7 gate PASSED.** Serial (`out/arena/boot/serial.log`) shows, in
+order (line numbers from that run):
+
+```
+367: BSD root: disk1s1, major 14, minor 3
+369: hfs: mounted ravynOS on device b(14, 3)
+371: bsd_init: calling devfs_kernel_mount
+383: bsd_init: bsd_do_post - done
+383: load_init_program: attempting to load /sbin/launchd
+384: com.apple.launchd  1  *** launchd[1] has started up in single-user mode. ***
+393: Singleuser boot -- fsck not done
+     Root device is mounted read-only
+     ...
+     exit
+403: Cannot read termcap database;
+     using dumb terminal settings.
+405: # 
+```
+
+`Singleuser boot ...` comes from launchd's own `init/init.c:single_user()`
+and the `# ` prompt is the real `/bin/sh` exec'd by launchd PID 1 (no dyld
+`Library not loaded` for `/bin/sh` after `libedit.dylib` was staged).
+
+Fixes, each committed separately:
+
+1. `b9bbed58c7` — `ccrng(int *error)` stubs now use the corecrypto ABI
+   (`struct ccrng_state *` with `generate(rng, outlen, out)`) instead of
+   `ccrng(void *buf, size)`, which had memset the caller's `&err` and
+   smashed launchd's stack (SIGSEGV).
+2. `f7fb73723d` — link `libsystem_notify`/`libsystem_asl` with `-llaunch`
+   before `-lxpc`; the seeded CLT `libxpc.tbd` also claims
+   `_bootstrap_look_up2`, but only liblaunch exports it at runtime.
+3. `9c8fde74b4` — implement libxpc `xpc_pipe_try_receive()` (MIG receive on
+   launchd's port set, audit trailer, demux + reply), plus
+   `xpc_pipe_routine_reply()` / `xpc_call_wakeup()`.
+4. `ae36f65eae` — enable launchd's `init_pre_kevent(sflag)` /
+   `init/init.c:single_user()` path and its console `setctty()`, since
+   `/bin/launchctl` cannot be built yet (no libmach, libosxsupport,
+   libjansson, BlocksRuntime sources).
+5. `f4d468b0e6` — stage `/usr/lib/libedit.dylib` (a `/bin/sh` dependency)
+   into `root.img` from `tools/xnu-boot.sh`.
+
+Open defects (do not treat D7 as "real randomness"): the `_ccrng` stub
+returns zeros instead of entropy, and libsystem_c's `_ccrng_uniform`
+always returns 0. Both need a real RNG after D7.
