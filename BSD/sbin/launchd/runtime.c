@@ -1610,11 +1610,21 @@ vproc_swap_integer(struct vproc_s *vp, unsigned int key,
  * Fills the buffer with zeros; adequate for early boot before real RNG is
  * available.
  */
-int
-ccrng(void *buf, size_t size)
+typedef int (*ccrng_fill_fn)(void *rng, void *buf, unsigned long size);
+static int ccrng_fill_stub(void *rng, void *buf, unsigned long size)
 {
 	if (buf != NULL && size > 0) {
 		memset(buf, 0, size);
 	}
-	return 1;  /* non-zero = success; arc4random treats 0 as failure and crashes */
+	return 0;
+}
+
+int
+ccrng(void *buf, size_t size)
+{
+	static void *dummy_rng[2] = { (void *)(uintptr_t)ccrng_fill_stub, 0 };
+	if (buf != NULL && size > 0) {
+		memset(buf, 0, size);
+	}
+	return dummy_rng; /* non-NULL ptr to {fill_fn, 0}; arc4random treats 0 as failure */
 }
