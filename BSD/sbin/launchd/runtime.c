@@ -1610,21 +1610,31 @@ vproc_swap_integer(struct vproc_s *vp, unsigned int key,
  * Fills the buffer with zeros; adequate for early boot before real RNG is
  * available.
  */
-typedef int (*ccrng_fill_fn)(void *rng, void *buf, unsigned long size);
-static int ccrng_fill_stub(void *rng, void *buf, unsigned long size)
+/*
+ * Real ABI (corecrypto/ccrng.h): ccrng(int *error) returns struct ccrng_state *;
+ * its first member is int (*generate)(struct ccrng_state *, size_t, void *).
+ * libsystem_c's arc4random calls ccrng(&err) and ccrng_generate(rng, len, buf).
+ */
+typedef int (*ccrng_fill_fn)(void *rng, size_t outlen, void *out);
+static int ccrng_fill_stub(void *rng, size_t outlen, void *out)
 {
-	if (buf != NULL && size > 0) {
-		memset(buf, 0, size);
+	if (out != NULL && outlen > 0) {
+		memset(out, 0, outlen);
 	}
 	return 0;
 }
 
+struct ccrng_state_stub {
+	ccrng_fill_fn generate;
+};
+
+static struct ccrng_state_stub dummy_rng = { ccrng_fill_stub };
+
 void *
-ccrng(void *buf, size_t size)
+ccrng(int *error)
 {
-	static void *dummy_rng[2] = { (void *)(uintptr_t)ccrng_fill_stub, 0 };
-	if (buf != NULL && size > 0) {
-		memset(buf, 0, size);
+	if (error != NULL) {
+		*error = 0;
 	}
-	return dummy_rng; /* non-NULL ptr to {fill_fn, 0}; arc4random treats 0 as failure */
+	return &dummy_rng; /* non-NULL ptr to {generate}; zeros, not real entropy */
 }
