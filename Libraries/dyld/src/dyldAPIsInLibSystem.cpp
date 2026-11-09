@@ -1396,7 +1396,7 @@ extern "C" int ccrng(void *buf, unsigned long size)
 {
     if (buf != NULL && size > 0)
         memset(buf, 0, size);
-    return 0;
+    return 1;  /* non-zero = success; arc4random treats 0 as failure and crashes */
 }
 
 static bool isLaunchdOwned()
