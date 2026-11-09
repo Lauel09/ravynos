@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <mach/mach.h>
+#include <mach/message.h>
+
 #include "xpc/launchd.h"
 
 struct xpc_pipe_state {
@@ -138,6 +141,96 @@ xpc_pipe_routine(xpc_pipe_t pipe, xpc_object_t msg, xpc_object_t *reply)
         *reply = xpc_dictionary_create(NULL, NULL, 0);
 
     return 0;
+}
+
+/*
+ * launchd's event loop (runtime.c:1155) receives MIG messages on a port set
+ * and lets launchd_mig_demux dispatch them.  The private XPC wire protocol is
+ * not used on this port set in single-user mode, so handle MIG only; a
+ * message the demux does not claim is reported as EINVAL.  A return of 1
+ * means "no message" (timeout), which launchd treats as a normal idle pass.
+ */
+int
+xpc_pipe_try_receive(mach_port_t ipc_port_set, xpc_object_t *request,
+    mach_port_t *recvp, boolean_t (*demux)(mach_msg_header_t *, mach_msg_header_t *),
+    mach_msg_size_t msg_size, int flags)
+{
+	mach_msg_header_t *req;
+	mach_msg_header_t *rep;
+	mach_msg_size_t rcv_size;
+	mach_msg_return_t mr;
+	int ret = EINVAL;
+
+	(void)flags;
+
+	if (request == NULL || recvp == NULL || demux == NULL)
+		return EINVAL;
+
+	*request = NULL;
+	*recvp = MACH_PORT_NULL;
+
+	if (msg_size == 0)
+		msg_size = 4096;
+	rcv_size = msg_size + sizeof(mach_msg_audit_trailer_t);
+
+	req = calloc(1, rcv_size);
+	rep = calloc(1, rcv_size);
+	if (req == NULL || rep == NULL) {
+		free(req);
+		free(rep);
+		return ENOMEM;
+	}
+
+	mr = mach_msg(req, MACH_RCV_MSG | MACH_RCV_TIMEOUT |
+	    MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT) |
+	    MACH_RCV_TRAILER_TYPE(MACH_MSG_TRAILER_FORMAT_0),
+	    0, rcv_size, ipc_port_set, 1000, MACH_PORT_NULL);
+
+	if (mr == MACH_RCV_TIMED_OUT || mr == MACH_RCV_INTERRUPTED) {
+		ret = 1;
+		goto out;
+	}
+	if (mr != MACH_MSG_SUCCESS) {
+		ret = EINVAL;
+		goto out;
+	}
+
+	if (demux(req, rep)) {
+		mr = mach_msg(rep, MACH_SEND_MSG, rep->msgh_size, 0,
+		    MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+		ret = (mr == MACH_MSG_SUCCESS) ? 0 : EINVAL;
+	} else {
+		ret = EINVAL;
+	}
+
+out:
+	free(req);
+	free(rep);
+	return ret;
+}
+
+/*
+ * FIXME: replies for the pipe-stub transport are not implemented; no XPC
+ * request reaches xpc_pipe_try_receive() yet.  EPIPE makes launchd skip its
+ * error log path (runtime.c:1180).
+ */
+int
+xpc_pipe_routine_reply(xpc_object_t reply)
+{
+	(void)reply;
+	return EPIPE;
+}
+
+/*
+ * FIXME: real libxpc wakes a thread blocked on a bootstrap request; the
+ * pipe-stub transport has no such waiter, so succeed without sending.
+ */
+kern_return_t
+xpc_call_wakeup(mach_port_t port, int error)
+{
+	(void)port;
+	(void)error;
+	return KERN_SUCCESS;
 }
 
 
