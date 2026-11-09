@@ -320,9 +320,7 @@ single_user(void)
 		syslog(LOG_ERR, "can't fork single-user shell, trying again: %m");
 		return;
 	} else if (single_user_pid == 0) {
-#if 0
 		setctty(_PATH_CONSOLE, O_POPUP);
-#endif
                 setenv("TERM", "vt100", 1);
 		setenv("SafeBoot", runcom_safe ? "-x" : "", 1);
 		setenv("VerboseFlag", "-v", 1); /* single user mode implies verbose mode */
